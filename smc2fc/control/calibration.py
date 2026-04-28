@@ -23,21 +23,24 @@ def calibrate_beta_max(
     *,
     theta_dim: int,
     sigma_prior: float,
+    prior_mean: float = 0.0,
     n_samples: int = 256,
     target_nats: float = 8.0,
     seed: int = 0,
 ) -> tuple[float, float, float]:
     """Auto-calibrate β_max from the prior-cloud cost spread.
 
-    Sample N_calib θ values from the broad Gaussian prior, evaluate
-    cost_fn on each, set β_max = target_nats / std(costs).
+    Sample N_calib θ values from the broad Gaussian prior
+    `N(prior_mean, sigma_prior²)`, evaluate cost_fn on each, set
+    `β_max = target_nats / std(costs)`.
 
     Returns (β_max, prior_cost_mean, prior_cost_std).
     """
     rng_key = jax.random.PRNGKey(seed)
-    prior_samples = sigma_prior * jax.random.normal(
-        rng_key, (n_samples, theta_dim), dtype=jnp.float64,
-    )
+    prior_samples = (prior_mean
+                     + sigma_prior * jax.random.normal(
+                         rng_key, (n_samples, theta_dim), dtype=jnp.float64,
+                     ))
     prior_costs = jax.vmap(cost_fn)(prior_samples)
     prior_cost_mean = float(jnp.mean(prior_costs))
     prior_cost_std = float(jnp.std(prior_costs))

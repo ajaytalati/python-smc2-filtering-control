@@ -77,6 +77,10 @@ class ControlSpec:
     # Search space
     theta_dim: int = 0
     sigma_prior: float = 1.5
+    prior_mean: float = 0.0           # default: zero-centered prior. Set to
+                                       # a non-zero scalar (broadcast) when
+                                       # the optimum is known to be far from 0
+                                       # (e.g. Stage A3's Riccati gains around 2.1).
 
     # Core API
     cost_fn: Optional[Callable] = None

@@ -79,6 +79,7 @@ def run_tempered_smc_loop(
         cost_fn,
         theta_dim=spec.theta_dim,
         sigma_prior=spec.sigma_prior,
+        prior_mean=spec.prior_mean,
         n_samples=cfg.n_calibration_samples,
         target_nats=cfg.beta_max_target_nats,
         seed=seed,
@@ -90,11 +91,12 @@ def run_tempered_smc_loop(
 
     # 2. logprior + loglikelihood
     sigma_prior = spec.sigma_prior
+    prior_mean = spec.prior_mean
 
     @jax.jit
     def logprior_fn(theta):
         return jnp.sum(
-            -0.5 * (theta / sigma_prior) ** 2
+            -0.5 * ((theta - prior_mean) / sigma_prior) ** 2
             - jnp.log(sigma_prior) - 0.5 * jnp.log(2 * jnp.pi)
         )
 
@@ -113,12 +115,13 @@ def run_tempered_smc_loop(
     )
     smc_kernel_jit = jax.jit(smc_kernel, static_argnums=(2,))
 
-    # 4. Initial particle cloud
+    # 4. Initial particle cloud — drawn from prior `N(prior_mean, sigma_prior²)`
     rng_key = jax.random.PRNGKey(seed + 17)
     rng_key, sub = jax.random.split(rng_key)
-    init_particles = sigma_prior * jax.random.normal(
-        sub, (cfg.n_smc, spec.theta_dim), dtype=jnp.float64,
-    )
+    init_particles = (prior_mean
+                      + sigma_prior * jax.random.normal(
+                          sub, (cfg.n_smc, spec.theta_dim), dtype=jnp.float64,
+                      ))
     state = tempered.init(init_particles)
     inv_mass = estimate_mass_matrix(init_particles)
 
