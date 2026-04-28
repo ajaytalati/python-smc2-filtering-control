@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "smc2fc"
+version = "0.1.0"
+description = "SMC² for Bayesian filtering and stochastic optimal control on simple test models"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Ajay Talati" },
+]
+dependencies = [
+    "jax>=0.4.30",
+    "jaxlib>=0.4.30",
+    "numpy>=1.26",
+    "matplotlib>=3.8",
+    "blackjax>=1.2",
+    "diffrax>=0.6",
+    "scipy>=1.11",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+    "pytest-xdist>=3.5",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["smc2fc*", "models*", "drivers*"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+filterwarnings = [
+    "ignore::DeprecationWarning:jax.*",
+]
