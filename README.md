@@ -1,215 +1,120 @@
 # python-smc2-filtering-control
 
-**SMC² for Bayesian filtering and stochastic optimal control**, demonstrated
-end-to-end on three test models — two with closed-form ground truth, one
-the user's actual research target (a 3-state physiological SDE).
+**SMC² for Bayesian filtering and stochastic optimal control** —
+demonstrated end-to-end on three test models, then carried through to
+a closed-loop MPC pipeline on a 3-state physiological SDE (the user's
+actual research target).
 
-The repo exercises **two pillars** of the same outer tempered-SMC engine:
-
-1. **Filtering side** — Bayesian inference of SDE parameters and latent
-   states from time-series observations. Rolling-window SMC² with a
-   Schrödinger-Föllmer bridge (information-aware, FIM-keyed
-   per-eigenvector blend).
-2. **Control side** — stochastic optimal control via the
-   control-as-inference duality (Toussaint 2009; Levine 2018; Kappen
-   2005). The same outer kernel is reused with the marginal log-
-   likelihood replaced by `-β · J(u)` where `J` is a cost functional
-   and `u` is the control schedule.
-
-## Three test models, all gates passing
-
-| Stage | What | Headline gate | Result |
-|-------|------|---------------|--------|
-| **A1** scalar OU LQG filter | PF log p(y\|truth) vs analytical Kalman LL | bias < 5 nats | **−0.18 nats** ✓ |
-| **A2** scalar OU LQG control (open-loop) | SMC² / open-loop u=0 cost ratio | ∈ [0.95, 1.10] | **1.036** ✓ |
-| **A3** scalar OU LQG control (state feedback) | SMC² / MC LQG cost ratio | ∈ [0.95, 1.10] | **0.995** ✓ |
-|        | K RMS error vs Riccati gains | < 25% | **20%** ✓ |
-| **B1** bistable filter | 90% CI covers truth (identifiable params) | 4/4 | **8/8** ✓ |
-| **B2** bistable control | basin transition rate, cost vs default | ≥ 80%, ≤ default | **100%, 38%** ✓ |
-| **B3** bistable closed-loop | transition rate, cost vs oracle | ≥ 80%, ≤ 1.20× | **100%, 0.99×** ✓ |
-| **D**  FSA control v2 (Banister) — T=42d  | mean ∫A/T vs sedentary, vs constant Φ=1; F-viol | ≥ 1.40×, match within 3%, ≤ 5% | **1.48×, 1.005×, 0.05%** ✓ |
-|        T=56d (1.33 τ_B)                  | same (gain over const baseline grows)  | — | SMC² **+20%** over const, +127% over sedentary ✓ |
-|        T=84d (2.00 τ_B)                  | same (front-loaded periodisation)       | — | SMC² **+28%** over const, +208% over sedentary ✓ |
-|        T=28d (0.67 τ_B)                  | sub-canonical: too short for any schedule | — | gates fail by design — horizon < τ_B ✗ |
-
-See [`outputs/scalar_ou_lqg/RESULT.md`](outputs/scalar_ou_lqg/RESULT.md),
-[`outputs/bistable_controlled/RESULT.md`](outputs/bistable_controlled/RESULT.md),
-and [`outputs/fsa_high_res/RESULT.md`](outputs/fsa_high_res/RESULT.md)
-for full details.
-
-## Headline plots
-
-### A3 — state-feedback recovers LQR/LQG
-
-![A3 state-feedback](outputs/scalar_ou_lqg/A3_state_feedback_diagnostic.png)
-
-Tempered SMC over the gain vector `K` discovers the analytical Riccati
-solution. SMC²-mean-gain cost (5.61) matches the MC LQG cost (5.63)
-within 0.5%; both are 40% below open-loop (9.29). Gain shape tracks
-the Riccati decay through the horizon.
-
-### B2 — SMC² discovers front-loaded intervention
-
-![B2 control](outputs/bistable_controlled/B2_control_diagnostic.png)
-
-SMC²-as-controller (top-left) finds that `u_target ≈ 1.5` at t=0
-decaying through the horizon is far cheaper than the hand-coded
-default's "wait 24h then u_on=0.5" step. Same 100% basin-transition
-success rate, **62% lower cost**. The SMC² didn't know about u_c or
-"early intervention is better" — just minimised expected cost.
-
-### B3 — Closed-loop pipeline (filter then plan)
-
-![B3 closed-loop](outputs/bistable_controlled/B3_closed_loop_diagnostic.png)
-
-Phase 1 (0-24h, no control): observe x in the pathological well.
-Filter to get parameter posterior. Use posterior mean to plan Phase 2
-schedule. The closed-loop trajectory under SMC²-with-posterior (blue)
-is statistically indistinguishable from the truth-params oracle
-(purple dashed).
-
-### D — FSA Banister control: SMC² discovers front-loaded periodisation
-
-![D FSA control](outputs/fsa_high_res/D_v2_T84_diagnostic.png)
-
-3-state physiological SDE — **Banister-coupled v2** (fitness B
-accrues from training Φ; strain F also driven by Φ; Stuart-Landau
-amplitude A modulated by μ(B, F)). Square-root Itô diffusion
-(Jacobi for B, CIR for F and A) so each state stays in its
-physiological domain without clipping. Single control input Φ(t).
-Cost rewards time-averaged amplitude `∫A(t)dt` with a soft
-F-overshoot barrier (no Φ²-effort penalty — the F-barrier already
-penalises overtraining endogenously).
-
-Run at the long horizon T = 84 d (= 2 · τ_B), SMC² discovers a
-clean **front-loaded periodisation pattern**: Φ ≈ 2.5 at t = 0
-ramping down through ≈ 2.0 in the build phase to ≈ 1.5 in the
-maintain phase. F brushes the F_max = 0.40 ceiling around day 30
-and decays as autonomic feedback (`λ_A·A`) accelerates F-clearance.
-A grows from 0.10 to its plateau at ≈ 1.0 by day 60.
-
-Headline: **mean ∫A/T = 0.645, +28% over the best constant
-baseline** (Φ=1.0 → 0.503), **+208% over sedentary** (Φ=0 → 0.209),
-F-violation 1.28% (well under 5% gate). The shape is exactly what
-canonical Banister periodisation prescribes — **discovered by SMC²
-without being told**.
-
-This is v2; v1 was rejected during user review for admitting a
-degenerate "rest cures all" optimum. See
-[`outputs/fsa_high_res/RESULT.md`](outputs/fsa_high_res/RESULT.md)
-for the full discussion.
-
-## Layout
+The repo is structured in **two top-level versioned subtrees** that
+share a common framework (`smc2fc/`):
 
 ```
-smc2fc/                # framework package
-  estimation_model.py    # base dataclass for filtering models
-  _likelihood_constants.py
-  core/
-    tempered_smc.py      # outer SMC² engine + bridge dispatch
-    sf_bridge.py         # Schrödinger-Föllmer bridge (info-aware variant)
-    config.py            # SMCConfig
-    mass_matrix.py       # diagonal mass-matrix re-estimation
-    sampling.py
-  filtering/
-    gk_dpf_v3_lite.py    # locally-optimal Pitt-Shephard inner-PF
-    _gk_kernel.py        # ESS helper
-    resample.py          # OT-rescue Sinkhorn resampler
-    transport_kernel.py
-    sinkhorn.py
-    project.py
-  transforms/
-    unconstrained.py     # constrained ↔ unconstrained transforms
-  simulator/
-    sde_model.py         # SDEModel container
-    sde_observations.py
-    sde_solver_diffrax.py
-models/
-  scalar_ou_lqg/
-    simulation.py        drift / diffusion / Gaussian obs
-    _dynamics.py         pure-JAX drift, IMEX, obs log-prob
-    estimation.py        SMC² EstimationModel
-    bench_kalman.py      analytical scalar Kalman + smoother + MLE
-    bench_lqr.py         analytical LQR (Riccati) + LQG MC + open-loop
-  bistable_controlled/
-    simulation.py        carried from public-dev (270 LoC)
-    estimation.py        carried (365 LoC; locally-optimal PF)
-    control.py           ControlSpec + RBF schedule + cost
-    sim_plots.py
-  fsa_high_res/
-    _dynamics.py         pure-JAX 3-state Banister drift + sqrt-Itô EM (~140 LoC)
-    control.py           ControlSpec + 8-RBF Φ schedule + ∫A cost (~370 LoC)
-smc2fc/control/        # control engine (extracted Stage C, ~520 LoC)
-  control_spec.py        ControlSpec dataclass
-  config.py              SMCControlConfig
-  tempered_smc_loop.py   run_tempered_smc_loop
-  calibration.py         calibrate_beta_max + build_crn_noise_grids
-  rbf_schedules.py       Gaussian-RBF schedule basis
-  diagnostics.py         plot helpers + evaluate_gates
-tools/
-  bench_smc_control_ou.py                A2 driver
-  bench_smc_control_ou_state_feedback.py A3 driver
-  bench_smc_filter_bistable.py           B1 driver
-  bench_smc_control_bistable.py          B2 driver
-  bench_smc_closed_loop_bistable.py      B3 driver
-  bench_smc_control_fsa.py               D  driver
-tests/
-  test_sf_bridge.py                       25 carried tests
-  test_kalman_lqr_baseline.py             5 analytical bench tests
-  test_scalar_ou_filter_matches_kalman.py 2 PF-vs-Kalman tests
-outputs/
-  scalar_ou_lqg/
-    RESULT.md
-    A2_control_diagnostic.png
-    A3_state_feedback_diagnostic.png
-  bistable_controlled/
-    RESULT.md
-    B1_filter_diagnostic.png
-    B2_control_diagnostic.png
-    B3_closed_loop_diagnostic.png
-  fsa_high_res/
-    RESULT.md
-    D_v2_T84_diagnostic.png    # T=84d (long-horizon, +28% over baseline)
-    D_v2_T42_diagnostic.png    # T=42d (canonical τ_B; flat optimum, SMC matches baseline)
+python-smc2-filtering-control/
+├── smc2fc/                  # SHARED framework (filter + control + simulator engines)
+├── version_1/               # Stages A-D — filter side validated; control side
+│   │                        #   shipped on FSA-v2 (Banister) for canonical horizons
+│   │                        #   T = 42, 56, 84 d. All gates passing.
+│   └── README.md            # ← per-stage RESULT.md + headline plots
+├── version_2/               # Stage E — closed-loop MPC: filter + 27-window
+│   │                        #   rolling SMC² + Stage-D controller + step-wise
+│   │                        #   simulator-as-plant on FSA-v2.
+│   └── README.md
+└── README.md                (you are here)
 ```
+
+## What's in v1 (`version_1/`)
+
+Both pillars demonstrated bit-by-bit on simple test models with
+closed-form ground truth, then carried to FSA-v2 for fully-observed
+control:
+
+| Stage | Model            | Pillar  | Headline                                                  |
+|-------|------------------|---------|-----------------------------------------------------------|
+| A1    | scalar OU LQG    | filter  | PF log-likelihood matches analytical Kalman to −0.18 nats |
+| A2    | scalar OU LQG    | control | SMC² / open-loop ratio = 1.036 ∈ [0.95, 1.10]             |
+| A3    | scalar OU LQG    | control | SMC² / MC LQG ratio = 0.995; K RMS err = 20% < 25%        |
+| B1    | bistable         | filter  | 90% CI covers truth on 8/8 estimable params               |
+| B2    | bistable         | control | basin transition 100%, cost 38% of default                |
+| B3    | bistable         | both    | filter→plan closed-loop: cost 0.99× oracle                |
+| D     | FSA-v2 (Banister)| control | T=84 d: mean ∫A/T = 1.28× constant baseline, F-viol 1.28% |
+
+47 tests, 0 regressions. Headline plot per stage in
+[`version_1/outputs/`](version_1/outputs/). Full narrative in
+[`version_1/README.md`](version_1/README.md).
+
+To re-run any v1 benchmark:
+```bash
+cd version_1
+PYTHONPATH=.:.. pytest tests/                                  # 47/47 green
+PYTHONPATH=.:.. python tools/bench_smc_control_fsa.py 84       # Stage D, ~55 min on RTX 5090
+```
+
+## What's in v2 (`version_2/`)
+
+**Stage E**: the second pillar in earnest — closed-loop MPC on FSA-v2
+with the full 4-channel observation model (HR, sleep, stress, steps)
+and rolling-window SMC². The architectural contribution is the
+**step-wise simulator-as-plant** that lets a controller decide the
+next stride's training stimulus Φ from the filter's posterior at the
+current time, rather than pre-committing to a full-horizon schedule.
+
+```
+filter (4-channel rolling SMC²) ─┐
+                                  │  posterior over (params, state)
+                                  ▼
+                          Stage-D controller (Φ schedule for next stride)
+                                  │
+                                  ▼
+                  StepwisePlant.advance(stride, Φ)  → new obs
+                                  │
+                                  ▲
+                                  └─ feedback to next window's filter
+```
+
+| Sub-stage | Goal                                                  | Status |
+|-----------|-------------------------------------------------------|--------|
+| E1        | v2 model in 3-file convention + psim consistency gate + single-window filter | (in progress) |
+| E2        | Sub-daily Φ-burst expansion + StepwisePlant           | (in progress) |
+| E3        | 27-window rolling-window SMC² (open-loop)             | (in progress) |
+| E4        | Closed-loop MPC, single cycle                          | (in progress) |
+| E5        | Full 27-window rolling MPC                             | (in progress) |
+
+Window structure matches the validated reference
+([smc2-blackjax-rolling](https://github.com/ajaytalati/smc2-blackjax-rolling)
+fsa_high_res C0: 98.5% mean coverage, 27-of-27 PASS): **1-day windows
+× 12-hour stride × 14-day total = 27 windows**.
+
+Once shipped, full narrative in
+[`version_2/README.md`](version_2/README.md).
+
+## Adjacent repos
+
+Stage E weaves three sibling repos:
+
+- **[Python-Model-Development-Simulation](https://github.com/ajaytalati/Python-Model-Development-Simulation)**
+  — canonical home for SDE models in the 3-file convention (`simulation.py`
+  + `estimation.py` + `sim_plots.py`).
+- **[Python-Model-Scenario-Simulation](https://github.com/ajaytalati/Python-Model-Scenario-Simulation)**
+  (`psim`) — the mandatory sim-est consistency validation gate
+  between (1) and the SMC² estimation work. Synthesises forward-SDE
+  scenarios + emits canonical artifacts (manifest.json + npz/).
+- **[smc2-blackjax-rolling](https://github.com/ajaytalati/smc2-blackjax-rolling)**
+  — earlier validated rolling-window SMC² implementation, the source of
+  the SF Path B-fixed bridge variant + 27-window driver template.
 
 ## Setup
 
 ```bash
-git clone <this repo>
+git clone https://github.com/ajaytalati/python-smc2-filtering-control
 cd python-smc2-filtering-control
 pip install -e ".[test]"
 
-# unit tests (fast, ~1 minute)
-pytest tests/ -v       # 47 tests, all green
+# v1 unit tests (~1 min)
+cd version_1 && PYTHONPATH=.:.. pytest tests/ -v       # 47 tests, all green
 
-# headline benchmarks (each ~1-3 min on CPU; D needs a GPU, ~15 min on RTX 5090)
-python tools/bench_smc_control_ou.py                  # A2
-python tools/bench_smc_control_ou_state_feedback.py   # A3
-python tools/bench_smc_filter_bistable.py             # B1 (~3 min)
-python tools/bench_smc_control_bistable.py            # B2 (~10 min)
-python tools/bench_smc_closed_loop_bistable.py        # B3 (~2 min)
-python tools/bench_smc_control_fsa.py 84               # D  (~55 min on GPU; pass T=42 for ~30 min run)
+# v1 headline benchmarks
+cd version_1 && PYTHONPATH=.:.. python tools/bench_smc_control_fsa.py 84
 ```
-
-## What's carried over (and what's fresh)
-
-The principled framework primitives are carried from prior experimental
-repos with `smc2bj → smc2fc` import rewrites:
-
-- **Outer tempered-SMC engine** (`smc2fc/core/tempered_smc.py`) — the
-  heart of both filter and control sides.
-- **Schrödinger-Föllmer bridge** (`smc2fc/core/sf_bridge.py`) including
-  the recently-developed FIM-keyed information-aware variant. 25/25
-  tests carry over green.
-- **Locally-optimal Pitt-Shephard inner PF** (`smc2fc/filtering/gk_dpf_v3_lite.py`)
-  with OT rescue + Liu-West correction.
-- **Bistable controlled model** (`models/bistable_controlled/`) — 270
-  LoC simulation + 365 LoC estimation, refactored only against the
-  new package paths.
-
-Everything new lives in `models/scalar_ou_lqg/` (Stage A model + Kalman/LQR
-benches) and `tools/` (the per-stage benchmark scripts).
 
 ## References
 
@@ -221,6 +126,8 @@ benches) and `tools/` (the per-stage benchmark scripts).
   optimal control theory." J. Stat. Mech.
 - Andrieu, C., Doucet, A., Holenstein, R. (2010). "Particle Markov
   chain Monte Carlo methods." JRSS-B.
+- Banister, E.W. (1991). "Modeling elite athletic performance." In
+  *Physiological testing of elite athletes*.
 
 ## License
 

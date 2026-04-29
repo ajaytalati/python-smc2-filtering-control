@@ -31,12 +31,12 @@ env/
 .coverage
 htmlcov/
 
-# Outputs (regenerable)
-outputs/**/*.png
-outputs/**/*.npz
-outputs/**/*.json
-!outputs/**/RESULT_*.md
-!outputs/**/.gitkeep
+# Outputs (regenerable) — at repo root or under any version_X/
+**/outputs/**/*.png
+**/outputs/**/*.npz
+**/outputs/**/*.json
+!**/outputs/**/RESULT_*.md
+!**/outputs/**/.gitkeep
 
 # Notebooks
 .ipynb_checkpoints/
