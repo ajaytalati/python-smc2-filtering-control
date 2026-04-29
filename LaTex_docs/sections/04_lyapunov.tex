@@ -1,150 +1,78 @@
 \section{Stability of the FSA-v2 SDE: a Lyapunov analysis}\label{sec:lyap}
 
-This section carries out the Lyapunov stability analysis that an
-earlier draft flagged as outstanding. We work with the
-G1-reparametrized model of \eqref{eq:fsa-B}--\eqref{eq:fsa-A}. The
-analysis has two parts. We first treat the deterministic skeleton --
-the noise-free ODE under a constant control $\Phi \equiv \Phi_c$ --
-and identify its equilibria, their local stability via the drift
-Jacobian, and the bifurcation locus. We then return to the full SDE
-and exhibit a quadratic Lyapunov function that satisfies a
-Foster--Lyapunov drift inequality on $\R^3_+$, from which exponential
-ergodicity of the FSA-v2 process follows by a standard theorem.
+Identifiability tells us that the inference problem for $\theta$ is
+well-posed; stability tells us that the dynamical system itself is
+well-behaved. This section asks two stability questions about the
+FSA-v2 SDE in its G1-reparametrized form: where are the equilibria
+of its deterministic skeleton, and is the full stochastic process
+ergodic on its physiological operating domain? The first question
+admits a clean answer in terms of the Stuart--Landau growth rate;
+the second is settled affirmatively via a quadratic Lyapunov
+function. Detailed Jacobian computations, the Foster--Lyapunov drift
+calculation, and bounds on constants are deferred to
+Appendix~\ref{app:lyap}.
 
-\subsection{Deterministic skeleton: equilibria and local stability}
+\subsection{Deterministic skeleton: equilibria and the Stuart--Landau bifurcation}\label{sec:lyap-det}
 
 Set $\sigma_B = \sigma_F = \sigma_A = 0$ in
 \eqref{eq:fsa-B}--\eqref{eq:fsa-A} and a constant control
-$\Phi(t) \equiv \Phi_c$. Write
-$g_B(A) = (1+\varepsilon_A A)/(1+\varepsilon_A A_{\mathrm{typ}})$ and
-$g_F(A) = (1+\lambda_A A)/(1+\lambda_A A_{\mathrm{typ}})$ for the two
-residual factors of \eqref{eq:fsa-B}--\eqref{eq:fsa-F}. The
-deterministic ODE is
-\begin{equation}
-  \dot B = \kappa_B g_B(A) \Phi_c - B/\tau_B,
-  \quad
-  \dot F = \kappa_F \Phi_c - g_F(A) F/\tau_F,
-  \quad
-  \dot A = \mu(B,F)\,A - \eta\,A^3.
-  \label{eq:skeleton}
-\end{equation}
-
-\paragraph{The $A = 0$ branch.} Setting $\dot B = \dot F = \dot A = 0$
-with $A=0$ gives $g_B(0) = 1/(1+\varepsilon_A A_{\mathrm{typ}})$ and
-$g_F(0) = 1/(1+\lambda_A A_{\mathrm{typ}})$, so
+$\Phi(t) \equiv \Phi_c$. The deterministic skeleton has an explicit
+$A=0$ branch
 \begin{equation}
   B^*_0(\Phi_c) = \frac{\kappa_B \tau_B \Phi_c}{1+\varepsilon_A A_{\mathrm{typ}}},
   \quad
   F^*_0(\Phi_c) = \kappa_F \tau_F (1+\lambda_A A_{\mathrm{typ}})\,\Phi_c,
   \quad
-  A^*_0 = 0.
+  A^*_0 = 0,
   \label{eq:eq-zero}
 \end{equation}
-Numerically, at $\Phi_c = \Phi_{\mathrm{typ}} = 1$ and the truth values
-of Table~\ref{tab:fsa-truth},
-$(B^*_0, F^*_0, A^*_0) \approx (0.504,\, 0.210,\, 0)$.
-
-\paragraph{The oscillatory branch.} Setting $\dot A = 0$ with
-$A \neq 0$ gives $A^2 = \mu(B,F)/\eta$, which together with
-$\dot B = \dot F = 0$ defines an implicit oscillatory equilibrium
-$(B^*_{\mathrm{osc}},F^*_{\mathrm{osc}},A^*_{\mathrm{osc}})(\Phi_c)$
-existing whenever $\mu(B^*_{\mathrm{osc}},F^*_{\mathrm{osc}}) > 0$.
-We will not solve this implicit equation here.
-
-\paragraph{Drift Jacobian at the $A=0$ branch.} A short computation
-gives
-\begin{equation}
-  J(B^*_0,F^*_0,0) \;=\;
-    \begin{pmatrix}
-      -1/\tau_B & 0 & \dfrac{\kappa_B \varepsilon_A \Phi_c}{1+\varepsilon_A A_{\mathrm{typ}}} \\[6pt]
-      0 & -\dfrac{1}{\tau_F(1+\lambda_A A_{\mathrm{typ}})}
-        & -\dfrac{\lambda_A F^*_0}{\tau_F(1+\lambda_A A_{\mathrm{typ}})} \\[6pt]
-      0 & 0 & \mu(B^*_0,F^*_0)
-    \end{pmatrix}.
-  \label{eq:jacobian}
-\end{equation}
-The Jacobian is upper triangular, so its eigenvalues are exactly the
-diagonal entries:
-\begin{equation}
-  \lambda_1 = -1/\tau_B < 0,
-  \qquad
-  \lambda_2 = -1/[\tau_F(1+\lambda_A A_{\mathrm{typ}})] < 0,
-  \qquad
-  \lambda_3 = \mu(B^*_0,F^*_0).
-  \label{eq:eigs}
-\end{equation}
-The first two eigenvalues are unconditionally negative; the third has
-the sign of the Stuart--Landau growth rate at the equilibrium. We have
-proved:
+together with an implicit oscillatory branch where $A^2 = \mu(B,F)/\eta$.
+Local stability of the $A=0$ branch is determined entirely by the
+sign of the Stuart--Landau growth rate at the equilibrium, as the
+following result records.
 
 \begin{proposition}[Local stability of the $A=0$ branch]\label{prop:stab-zero}
 The deterministic equilibrium \eqref{eq:eq-zero} is locally
-asymptotically stable if and only if $\mu(B^*_0(\Phi_c),F^*_0(\Phi_c)) < 0$.
+asymptotically stable if and only if
+$\mu(B^*_0(\Phi_c), F^*_0(\Phi_c)) < 0$.
 \end{proposition}
 
-\subsection{The Stuart--Landau bifurcation}
+The proof is short: the drift Jacobian at \eqref{eq:eq-zero} turns
+out to be upper triangular, with two unconditionally negative
+eigenvalues coming from the slow Banister directions and a third
+eigenvalue equal to $\mu(B^*_0,F^*_0)$ controlling the autonomic
+amplitude. Details are in Appendix~\ref{app:lyap}.
 
-The bifurcation locus is therefore the level set
-\begin{equation}
-  \Bigl\{\Phi_c > 0 \;:\; \mu(B^*_0(\Phi_c),F^*_0(\Phi_c)) = 0 \Bigr\}.
-  \label{eq:bif-locus}
-\end{equation}
-Substituting \eqref{eq:eq-zero} into the formula for $\mu$ and using
-the truth values of Table~\ref{tab:fsa-truth},
-\begin{equation}
-  \mu(B^*_0(\Phi_c),F^*_0(\Phi_c))
-   \;=\; \mu_0 + \mu_B \tilde b\,\Phi_c
-                 - \mu_F \tilde f\,\Phi_c
-                 - \mu_{FF}(\tilde f \Phi_c - F_{\mathrm{typ}})^2,
-  \label{eq:mu-of-Phi}
-\end{equation}
-where $\tilde b = \kappa_B \tau_B/(1+\varepsilon_A A_{\mathrm{typ}})$
-and $\tilde f = \kappa_F \tau_F(1+\lambda_A A_{\mathrm{typ}})$. This
-is a quadratic in $\Phi_c$ (after expansion). Solving numerically at
-the truth values gives a single positive root
-$\Phi_c^{\mathrm{crit}} \approx 7.5$ TRIMP-units per day. For
-$\Phi_c < \Phi_c^{\mathrm{crit}}$ the $A=0$ branch is unstable and
-trajectories converge to the oscillatory branch; for
-$\Phi_c > \Phi_c^{\mathrm{crit}}$ the quadratic
-overtraining-collapse term $\mu_{FF}(F-F_{\mathrm{typ}})^2$ dominates
-and the $A=0$ branch becomes stable.
+The bifurcation locus $\{\Phi_c \!:\! \mu(B^*_0(\Phi_c),F^*_0(\Phi_c)) = 0\}$
+turns out to be a single positive root
+$\Phi_c^{\mathrm{crit}} \approx 7.5$ TRIMP-units per day at the
+truth values of Table~\ref{tab:fsa-truth}. The picture this paints
+is physiologically intuitive: at the canonical baseline
+$\Phi_c = 1$, $\mu(B^*_0,F^*_0) \approx 0.13 > 0$, so the $A=0$
+equilibrium is unstable and the model predicts that an athlete
+training at the default load settles on a non-trivial autonomic
+oscillation. Above the critical training load
+$\Phi_c \approx 7.5$, the quadratic overtraining-collapse term
+$\mu_{FF}(F-F_{\mathrm{typ}})^2$ dominates, $\mu$ falls back through
+zero, and the system loses its oscillation: the autonomic amplitude
+collapses to zero, consistent with empirical observations that very
+large chronic training loads suppress autonomic variability.
 
-\begin{remark}[Physiological reading]
-At the canonical baseline $\Phi_c = 1$, $\mu(B^*_0,F^*_0) \approx 0.13 > 0$,
-so the $A=0$ equilibrium is unstable and the model predicts that an
-athlete training at the default load settles on a non-trivial
-autonomic oscillation. The collapse threshold
-$\Phi_c \approx 7.5$ is roughly seven times the canonical baseline,
-which is consistent with empirical observations that very large
-chronic training loads suppress autonomic variability.
-\end{remark}
-
-\subsection{Stochastic stability: a quadratic Lyapunov function}\label{sec:lyap-stoch}
+\subsection{Stochastic stability and exponential ergodicity}\label{sec:lyap-stoch}
 
 We turn to the full SDE \eqref{eq:fsa-B}--\eqref{eq:fsa-A} on the
 operating domain
-\begin{equation}
-  \Xcal \;=\; [0,1] \times [0,\infty) \times [0,\infty).
-\end{equation}
-The state-dependent diffusions vanish at the boundary
-$\partial \Xcal$, so $\Xcal$ is positively invariant. Let $\Lcal$
-denote the infinitesimal generator of the SDE: for any
-$V \in C^2(\Xcal)$,
-\begin{equation}
-  \Lcal V(x) \;=\;
-    \sum_{i \in \{B,F,A\}} b_i(x)\,\partial_i V(x)
-    \;+\; \tfrac{1}{2}\sum_i a_i(x)\,\partial_{ii}^2 V(x),
-  \label{eq:generator}
-\end{equation}
-with $b_i$ the $i$th drift component and
-$a_B(x) = \sigma_B^2 B(1-B)$,
-$a_F(x) = \sigma_F^2 F$,
-$a_A(x) = \sigma_A^2 A$.
+$\Xcal = [0,1] \times [0,\infty) \times [0,\infty)$. The
+state-dependent diffusions vanish at the boundary $\partial\Xcal$,
+so $\Xcal$ is positively invariant. We seek a single quantitative
+statement that captures the long-time behaviour of the process. The
+Foster--Lyapunov framework supplies the right object.
 
 \begin{definition}[Foster--Lyapunov drift]\label{def:foster-lyap}
 A function $V:\Xcal \to [0,\infty)$ is said to satisfy a
-Foster--Lyapunov drift inequality with rate $\alpha > 0$ and constant
-$C \ge 0$ if
+Foster--Lyapunov drift inequality with rate $\alpha > 0$ and
+constant $C \ge 0$ if the infinitesimal generator $\Lcal$ of the
+SDE satisfies
 \begin{equation}
   \Lcal V(x) \;\le\; -\alpha\,V(x) + C
   \quad\text{for all } x \in \Xcal.
@@ -153,107 +81,44 @@ $C \ge 0$ if
 \end{definition}
 
 Inequality \eqref{eq:foster-lyap} is the standard hypothesis that
-delivers exponential ergodicity (Khasminskii, 1980; Meyn and Tweedie,
-1993). We will exhibit a $V$ that satisfies it. Take
-\begin{equation}
-  V(B,F,A) \;=\; \tfrac{1}{2}\bigl(a B^2 + b F^2 + c A^2\bigr),
-  \qquad a,b,c > 0.
-  \label{eq:V-quadratic}
-\end{equation}
+delivers exponential ergodicity in the sense of total-variation
+convergence to a unique invariant distribution
+(Khasminskii, 1980; Meyn and Tweedie, 1993). We exhibit a $V$ that
+satisfies it.
 
 \begin{theorem}[Stochastic stability of FSA-v2]\label{thm:lyap}
-Under bounded controls $\Phi:\R_+ \to [0,\Phimax]$ with $\Phimax$
-fixed, the FSA-v2 SDE \eqref{eq:fsa-B}--\eqref{eq:fsa-A} satisfies the
-Foster--Lyapunov drift inequality \eqref{eq:foster-lyap} for the
-quadratic $V$ of \eqref{eq:V-quadratic} with
+Under bounded controls $\Phi:\R_+ \to [0,\Phimax]$, the FSA-v2 SDE
+\eqref{eq:fsa-B}--\eqref{eq:fsa-A} satisfies the Foster--Lyapunov
+drift inequality \eqref{eq:foster-lyap} for the quadratic Lyapunov
+function
+\begin{equation}
+  V(B,F,A) \;=\; \tfrac{1}{2}\bigl(a B^2 + b F^2 + c A^2\bigr),
+  \qquad a,b,c > 0,
+  \label{eq:V-quadratic}
+\end{equation}
+with rate
 $\alpha = \min\!\bigl(2/\tau_B,\,1/[\tau_F(1+\lambda_A A_{\mathrm{typ}})]\bigr)$
 and a finite constant $C$ depending on the truth parameters,
 $\Phimax$, and the choice of $a,b,c$.
 \end{theorem}
 
-\begin{proof}[Proof sketch.]
-We compute $\Lcal V$ component by component using \eqref{eq:generator}
-and bound each term. Throughout, $K$ denotes a generic finite constant
-that may change from line to line.
-
-\paragraph{$B$-component.} Using $B \in [0,1]$ and
-$g_B(A) \le g_{B,\max} := (1+\varepsilon_A \Phimax\,/\,\eta_*)/(1+\varepsilon_A A_{\mathrm{typ}})$
-for some bounded $\eta_*$ characterising the operating domain,
-\begin{equation*}
-  a B \cdot \bigl[\kappa_B g_B(A) \Phi - B/\tau_B\bigr]
-   + \tfrac{a}{2} \sigma_B^2 B(1-B)
-   \;\le\;
-   -(a/\tau_B)\,B^2 + K_B,
-\end{equation*}
-where $K_B := a\kappa_B g_{B,\max}\Phimax + a\sigma_B^2/8$ uses the
-elementary bound $B(1-B) \le 1/4$ on $[0,1]$.
-
-\paragraph{$F$-component.} Using $g_F(A) \ge g_F(0) = 1/(1+\lambda_A A_{\mathrm{typ}})$
-for $A \ge 0$ and Young's inequality
-$bF(\kappa_F\Phimax + \sigma_F^2/2) \le bF^2/[2\tau_F^{\mathrm{old}}] + b\tau_F^{\mathrm{old}}(\kappa_F\Phimax + \sigma_F^2/2)^2/2$
-(with $\tau_F^{\mathrm{old}} := \tau_F(1+\lambda_A A_{\mathrm{typ}})$),
-\begin{equation*}
-  bF \cdot \bigl[\kappa_F\Phi - g_F(A)F/\tau_F\bigr]
-   + \tfrac{b}{2}\sigma_F^2 F
-   \;\le\;
-   -\bigl(b/[2\tau_F^{\mathrm{old}}]\bigr) F^2 + K_F,
-\end{equation*}
-with $K_F := (b\tau_F^{\mathrm{old}}/2)(\kappa_F\Phimax + \sigma_F^2/2)^2$.
-
-\paragraph{$A$-component.} The growth rate satisfies
-$\mu(B,F) \le \mu_{\max} := \mu_0 + \mu_B$ for $B \in [0,1]$, $F\ge 0$,
-since the $-\mu_F F$ and $-\mu_{FF}(F-F_{\mathrm{typ}})^2$ contributions
-are non-positive. Therefore
-\begin{equation*}
-  cA\bigl[\mu(B,F)\,A - \eta A^3\bigr] + \tfrac{c}{2}\sigma_A^2 A
-   \;=\; c\mu(B,F) A^2 - c\eta A^4 + \tfrac{c}{2}\sigma_A^2 A
-   \;\le\; -c\eta A^4 + c\mu_{\max} A^2 + \tfrac{c}{2}\sigma_A^2 A.
-\end{equation*}
-Two applications of Young's inequality (with weight $\eta/2$ on the
-$A^4$ vs $A^2$ pair and $\eta/(2\sigma_A^2)$ on the
-$A^2$ vs constant pair) yield
-\begin{equation*}
-  -c\eta A^4 + c\mu_{\max} A^2 + \tfrac{c}{2}\sigma_A^2 A
-   \;\le\; -\tfrac{c\eta}{2}\,A^4 + K_A,
-\end{equation*}
-with $K_A := c\mu_{\max}^2/(2\eta) + c\sigma_A^2/4 + c\sigma_A^4/(8\eta)$.
-
-\paragraph{Combining.} Adding the three component bounds,
-\begin{equation*}
-  \Lcal V(x)
-   \;\le\;
-   -(a/\tau_B)\,B^2
-   - \bigl(b/[2\tau_F^{\mathrm{old}}]\bigr) F^2
-   - (c\eta/2)\,A^4
-   + (K_B + K_F + K_A).
-\end{equation*}
-The first two negative terms already match the form
-$-\alpha V$ with $\alpha = \min(2/\tau_B,\,1/\tau_F^{\mathrm{old}})$.
-For the third we use the elementary bound
-$A^4 \ge (\alpha/\eta)\,A^2 - \alpha^2/(4\eta^2)\cdot\frac{\eta}{2}$
-so that $-(c\eta/2) A^4 \le -(c\alpha/2) A^2 + c\alpha^2/(4\eta)$. The
-result is
-\[
-  \Lcal V(x)
-   \;\le\;
-   -\tfrac{\alpha}{2}\bigl(a B^2 + b F^2 + c A^2\bigr)
-   + (K_B + K_F + K_A + c\alpha^2/(4\eta))
-   \;=\;
-   -\alpha\,V(x) + C,
-\]
-which is the required drift inequality. \qed
-\end{proof}
-
-\subsection{Exponential ergodicity}
-
-Theorem~\ref{thm:lyap} delivers stability in the strong sense.
+The proof is a routine but tedious computation of $\Lcal V$ component
+by component, bounding each term using the boundedness of $B$ on
+$[0,1]$ together with two applications of Young's inequality on the
+$F$ and $A$ components; we record it in
+Appendix~\ref{app:lyap}. The intuitive picture is that the three
+dissipative terms in the drift (linear decay of $B$, linear decay
+of $F$, cubic damping of $A$) overwhelm the linear growth and noise
+contributions outside a bounded region of state space, which is
+exactly what the Foster--Lyapunov inequality formalises.
 
 \begin{theorem}[Khasminskii, 1980; Meyn--Tweedie, 1993]\label{thm:ergodic}
 Let $X_t = (B_t,F_t,A_t)$ be the FSA-v2 process under a fixed bounded
-control $\Phi$. Suppose the conditions of Theorem~\ref{thm:lyap} hold.
-Then $X$ admits a unique invariant probability distribution $\pi^\Phi$
-on $\Xcal$, and there exist constants $K_0 > 0$ and $\rho \in (0,\alpha)$
-such that, for every $x_0 \in \Xcal$,
+control $\Phi$, satisfying the conditions of
+Theorem~\ref{thm:lyap}. Then $X$ admits a unique invariant
+probability distribution $\pi^\Phi$ on $\Xcal$, and there exist
+constants $K_0 > 0$ and $\rho \in (0,\alpha)$ such that, for every
+$x_0 \in \Xcal$,
 \begin{equation}
   \bigl\| \mathrm{Law}(X_t \mid X_0 = x_0) - \pi^\Phi \bigr\|_{\mathrm{TV}}
    \;\le\; K_0\,(1 + V(x_0))\,e^{-\rho t}
@@ -263,26 +128,25 @@ such that, for every $x_0 \in \Xcal$,
 where $\|\cdot\|_{\mathrm{TV}}$ is the total-variation norm.
 \end{theorem}
 
-The exponential rate $\rho$ inherits the slowest dissipative timescale
-of the model. In our case
-$\alpha = \min(2/\tau_B,\,1/\tau_F^{\mathrm{old}})$. With
-$\tau_B = 42$ days and $\tau_F^{\mathrm{old}} = 7$ days,
-$\alpha = 1/7\,\mathrm{d}^{-1}$ and the convergence to invariance has
-half-life roughly $7\log 2 \approx 4.85$ days. This is consistent with
-the rolling-window choice of one-day windows and twelve-hour strides
-in Section~\ref{sec:smc2}: the SMC${}^2$ filter operates on a
-fundamental dynamical scale comparable to the relaxation time of the
-process being filtered.
+The exponential rate $\rho$ inherits the slowest dissipative
+timescale of the model. With $\tau_B = 42$ days and
+$\tau_F^{\mathrm{old}} := \tau_F(1+\lambda_A A_{\mathrm{typ}}) = 7$ days,
+the rate is $\alpha = 1/7\,\mathrm{d}^{-1}$ and convergence to
+invariance has half-life roughly $7\log 2 \approx 4.85$ days. This
+is consistent with the rolling-window choice of one-day windows
+and twelve-hour strides in Section~\ref{sec:smc2}: the
+SMC${}^2$ filter operates on a fundamental dynamical scale
+comparable to the relaxation time of the process being filtered.
 
 \begin{remark}[Limitations of the bound]\label{rem:lyap-limits}
-The proof of Theorem~\ref{thm:lyap} uses the simplest possible
-quadratic Lyapunov function and crude global bounds on the residual
-factors $g_B,g_F$ and on the growth rate $\mu(B,F)$. As a consequence
-the constant $C$ is loose: it scales with $\Phimax^2$ rather than with
-the time-average of $\Phi^2$, and it ignores the cancellations that
-the real dynamics exhibit near the operating point. A sharper
-analysis -- perhaps with a piecewise Lyapunov function that switches
-between the regimes $\mu < 0$ and $\mu > 0$ identified in
-Proposition~\ref{prop:stab-zero} -- would deliver a tighter rate and
-a smaller constant. Such a refinement is left for future work.
+The proof of Theorem~\ref{thm:lyap} in Appendix~\ref{app:lyap} uses
+the simplest possible quadratic Lyapunov function and crude global
+bounds on the residual factors of the drift. The constant $C$ that
+emerges is therefore loose: it scales with $\Phimax^2$ rather than
+with the time-average of $\Phi^2$, and ignores the cancellations
+that the real dynamics exhibit near the operating point. A sharper
+analysis -- perhaps with a piecewise Lyapunov function that
+switches between the regimes $\mu < 0$ and $\mu > 0$ identified in
+Proposition~\ref{prop:stab-zero} -- would deliver a tighter rate
+and a smaller constant. Such a refinement is left for future work.
 \end{remark}

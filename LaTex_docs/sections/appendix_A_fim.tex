@@ -1,0 +1,214 @@
+\section{Fisher information rank deficiencies of the pre-G1 model: derivations}\label{app:fim}
+
+This appendix supplies the derivations underlying the identifiability
+analysis of Section~\ref{sec:fim}. We derive analytically the three
+rank-deficient parameter pairs of the pre-G1 FSA-v2 model
+(Sections~\ref{app:fim-pair1}--\ref{app:fim-pair3}), describe the
+resulting null space of the FIM (Section~\ref{app:fim-null}), and
+prove that the G1 reparametrization is mathematically equivalent to
+the pre-G1 model under a fixed relabelling of parameters
+(Section~\ref{app:fim-equiv}).
+
+Throughout, we use the operating point of
+Definition~\ref{def:operating-point}, write
+$\delta A = A - A_{\mathrm{typ}}$ and $\delta F = F - F_{\mathrm{typ}}$
+for state fluctuations, and recall that at one-day windows the slow
+Banister state moves by at most $O(\mathrm{d}t/\tau)$ where
+$\tau \in \{\tau_B, \tau_F\}$, so $\delta A$ and $\delta F$ are
+small in this regime.
+
+\subsection{Pair 1: \texorpdfstring{$(\kappa_B, \varepsilon_A)$}{(kappa\_B, epsilon\_A)}}\label{app:fim-pair1}
+
+The pre-G1 $B$-drift is
+\begin{equation*}
+  \dd B = \bigl[\kappa_B(1+\varepsilon_A A)\Phi - B/\tau_B\bigr]\dd t + \cdots
+\end{equation*}
+Linearising the factor $1+\varepsilon_A A$ around $A_{\mathrm{typ}}$
+and writing $\delta A = A - A_{\mathrm{typ}}$,
+\begin{equation}
+  \kappa_B(1+\varepsilon_A A)\,\Phi
+   \;=\;
+   \underbrace{\kappa_B(1+\varepsilon_A A_{\mathrm{typ}})}_{=:\,\kappa_B^{\mathrm{eff}}}\,\Phi
+   \;+\; \kappa_B\,\varepsilon_A\,\delta A\,\Phi.
+  \label{eq:pair1-expand}
+\end{equation}
+The first term carries the dependence of the daily drift on the
+parameters via the single product $\kappa_B^{\mathrm{eff}}$; the
+second term is $O(\delta A)$, vanishing at the operating point.
+
+Now consider how the data depend on small perturbations
+$(\delta\kappa_B,\delta\varepsilon_A)$. Differentiating
+\eqref{eq:pair1-expand} at the truth point gives
+\begin{equation*}
+  \frac{\partial}{\partial \kappa_B}\bigl[\kappa_B(1+\varepsilon_A A)\Phi\bigr]
+   = (1+\varepsilon_A A)\,\Phi
+   = (1+\varepsilon_A A_{\mathrm{typ}})\,\Phi + \varepsilon_A \delta A\,\Phi,
+\end{equation*}
+\begin{equation*}
+  \frac{\partial}{\partial \varepsilon_A}\bigl[\kappa_B(1+\varepsilon_A A)\Phi\bigr]
+   = \kappa_B A\,\Phi
+   = \kappa_B A_{\mathrm{typ}}\,\Phi + \kappa_B \delta A\,\Phi.
+\end{equation*}
+At the operating point (where $\delta A = 0$) these two gradients
+are linearly dependent: their ratio is
+$(1+\varepsilon_A A_{\mathrm{typ}})/(\kappa_B A_{\mathrm{typ}})$,
+independent of $\Phi$. The score function with respect to
+$\kappa_B$ and the score function with respect to $\varepsilon_A$
+are therefore proportional, with proportionality constant fixed by
+the truth values. Their outer product in \eqref{eq:fim-def} is rank
+one, not rank two.
+
+The combination that the data \emph{can} resolve is precisely the
+product $\kappa_B^{\mathrm{eff}} = \kappa_B(1+\varepsilon_A A_{\mathrm{typ}})$.
+The orthogonal direction
+$(\delta\kappa_B, \delta\varepsilon_A) \perp \nabla \kappa_B^{\mathrm{eff}}$
+moves the parameter vector but leaves the daily drift unchanged at
+the operating point.
+
+\subsection{Pair 2: \texorpdfstring{$(\mu_F, \mu_{FF})$}{(mu\_F, mu\_FF)}}\label{app:fim-pair2}
+
+The pre-G1 Stuart--Landau growth rate is
+$\mu(B,F) = \mu_0 + \mu_B B - \mu_F F - \mu_{FF} F^2$. Completing
+the square in the quadratic in $F$,
+\begin{align}
+  -\mu_F F - \mu_{FF} F^2
+  &= -\mu_F F - \mu_{FF}\bigl[(F-F_{\mathrm{typ}})^2 + 2 F_{\mathrm{typ}} F - F_{\mathrm{typ}}^2\bigr]
+       \nonumber\\
+  &= -\bigl(\,\underbrace{\mu_F + 2 F_{\mathrm{typ}} \mu_{FF}}_{=:\,\mu_F^{\mathrm{eff}}}\,\bigr) F
+     \;-\; \mu_{FF}(F-F_{\mathrm{typ}})^2 + \mu_{FF} F_{\mathrm{typ}}^2.
+  \label{eq:pair2-expand}
+\end{align}
+The constant $\mu_{FF} F_{\mathrm{typ}}^2$ shifts the intercept
+$\mu_0$ but is uninformative about $\mu_F$ or $\mu_{FF}$ separately;
+the linear-in-$F$ slope $\mu_F^{\mathrm{eff}}$ does carry their
+combined effect; and the quadratic
+$-\mu_{FF}(F-F_{\mathrm{typ}})^2$ is $O(\delta F^2)$, so it
+contributes at second order in the small fluctuations of $F$ at
+one-day windows.
+
+Differentiating $\mu(B,F)$ with respect to $\mu_F$ and
+$\mu_{FF}$ at the truth point and setting $\delta F = 0$,
+\begin{equation*}
+  \partial_{\mu_F}\,\mu(B,F)\big|_{F_{\mathrm{typ}}} = -F_{\mathrm{typ}},
+  \qquad
+  \partial_{\mu_{FF}}\,\mu(B,F)\big|_{F_{\mathrm{typ}}} = -F_{\mathrm{typ}}^2.
+\end{equation*}
+Both gradients point in the same one-dimensional subspace (they
+differ only by the scalar factor $F_{\mathrm{typ}}$), so the FIM
+contribution from $(\mu_F,\mu_{FF})$ at the operating point is rank
+one. The combination resolved is
+$\mu_F^{\mathrm{eff}} = \mu_F + 2 F_{\mathrm{typ}} \mu_{FF}$ (the
+slope at $F_{\mathrm{typ}}$); the orthogonal direction is silent.
+
+\subsection{Pair 3: \texorpdfstring{$(\tau_F, \lambda_A)$}{(tau\_F, lambda\_A)}}\label{app:fim-pair3}
+
+The pre-G1 $F$-clearance rate is
+$(1+\lambda_A A)/\tau_F$. Linearising in $\delta A$,
+\begin{equation}
+  \frac{1+\lambda_A A}{\tau_F}
+   \;=\;
+   \frac{1+\lambda_A A_{\mathrm{typ}}}{\tau_F}
+   + \frac{\lambda_A}{\tau_F}\,\delta A
+   \;=:\;
+   \frac{1}{\tau_F^{\mathrm{eff}}} + O(\delta A),
+  \qquad
+  \tau_F^{\mathrm{eff}} := \frac{\tau_F}{1+\lambda_A A_{\mathrm{typ}}}.
+  \label{eq:pair3-expand}
+\end{equation}
+The leading term is the inverse effective acute timescale, set by
+the product $(1+\lambda_A A_{\mathrm{typ}})/\tau_F$; the $O(\delta A)$
+correction vanishes at the operating point. By the same argument as
+in Pair~1, the gradients of the $F$-decay rate with respect to
+$\tau_F$ and $\lambda_A$ at the operating point are scalar multiples
+of one another, so the corresponding FIM contribution is rank one.
+The combination resolved is the inverse effective rate
+$1/\tau_F^{\mathrm{eff}}$.
+
+\subsection{The null space of the FIM}\label{app:fim-null}
+
+Combining the three rank-one defects of
+Sections~\ref{app:fim-pair1}--\ref{app:fim-pair3}, the FIM of the
+pre-G1 model evaluated at the operating point has a null space of
+dimension three. The three null vectors point along
+\begin{equation}
+  (\delta\kappa_B,\delta\varepsilon_A) \perp \nabla \kappa_B^{\mathrm{eff}},
+  \quad
+  (\delta\mu_F,\delta\mu_{FF}) \perp \nabla \mu_F^{\mathrm{eff}},
+  \quad
+  (\delta\tau_F,\delta\lambda_A) \perp \nabla(1/\tau_F^{\mathrm{eff}}),
+  \label{eq:fim-nulls}
+\end{equation}
+i.e.\ along perturbations of each pair that hold the strongly
+identified linear combination fixed. The total FIM rank is
+therefore $d - 3$, where $d$ is the full dimension of the parameter
+vector.
+
+The remaining $d - 3$ identified directions include all observation-model
+parameters (which couple linearly to the latent state and are
+therefore generically identifiable from a one-day record under the
+sleep- and wake-gating structure of
+\eqref{eq:obs-hr}--\eqref{eq:obs-steps}), the slow Banister
+parameters $\tau_B$ and $\kappa_F$ (which appear linearly and not in
+collinear pairs), and the diffusion scales $\sigma_B,\sigma_F,\sigma_A$
+(which are identifiable from the empirical quadratic variation of
+the observation residuals).
+
+\subsection{The G1 reparametrization is mathematically equivalent to the pre-G1 model}\label{app:fim-equiv}
+
+\begin{proposition}[G1 is mathematically equivalent to v2]\label{prop:g1-equiv}
+The G1 drift \eqref{eq:fsa-B}--\eqref{eq:fsa-A} with the truth values
+of Table~\ref{tab:fsa-truth} is identically equal, as a function of
+$(B,F,A,\Phi)$, to the pre-G1 drift under the relabelling
+\begin{align*}
+  \kappa_B^{\mathrm{old}} &= \kappa_B^{\mathrm{new}}/(1+\varepsilon_A A_{\mathrm{typ}}), &
+  \tau_F^{\mathrm{old}}   &= \tau_F^{\mathrm{new}}\,(1+\lambda_A A_{\mathrm{typ}}), \\
+  \mu_F^{\mathrm{old}}    &= \mu_F^{\mathrm{new}} - 2 F_{\mathrm{typ}} \mu_{FF}, &
+  \mu_0^{\mathrm{old}}    &= \mu_0^{\mathrm{new}} - \mu_{FF} F_{\mathrm{typ}}^2,
+\end{align*}
+with $\varepsilon_A,\lambda_A,\mu_{FF},\mu_B,\eta,\tau_B,\kappa_F$
+all unchanged.
+\end{proposition}
+
+\begin{proof}
+Substitute the relabelling into the pre-G1 drift terms
+\eqref{eq:fsa-B}--\eqref{eq:fsa-A} (in their original v2 form) and
+collect:
+
+\emph{$B$-equation.} The pre-G1 $B$-drift is
+$\kappa_B^{\mathrm{old}}(1+\varepsilon_A A)\Phi - B/\tau_B$.
+Substituting
+$\kappa_B^{\mathrm{old}} = \kappa_B^{\mathrm{new}}/(1+\varepsilon_A A_{\mathrm{typ}})$
+gives
+$\kappa_B^{\mathrm{new}} \cdot (1+\varepsilon_A A)/(1+\varepsilon_A A_{\mathrm{typ}}) \cdot \Phi - B/\tau_B$,
+which is exactly the G1 $B$-drift \eqref{eq:fsa-B}.
+
+\emph{$F$-equation.} The pre-G1 $F$-drift is
+$\kappa_F\Phi - (1+\lambda_A A) F/\tau_F^{\mathrm{old}}$. Substituting
+$\tau_F^{\mathrm{old}} = \tau_F^{\mathrm{new}}(1+\lambda_A A_{\mathrm{typ}})$
+gives
+$\kappa_F\Phi - (1+\lambda_A A)/(1+\lambda_A A_{\mathrm{typ}}) \cdot F/\tau_F^{\mathrm{new}}$,
+which is exactly the G1 $F$-drift \eqref{eq:fsa-F}.
+
+\emph{$A$-equation.} The growth rate $\mu(B,F)$ becomes, under the
+relabelling,
+\begin{align*}
+  \mu_0^{\mathrm{old}} + \mu_B B - \mu_F^{\mathrm{old}} F - \mu_{FF} F^2
+  &= \bigl(\mu_0^{\mathrm{new}} - \mu_{FF} F_{\mathrm{typ}}^2\bigr) + \mu_B B
+     - \bigl(\mu_F^{\mathrm{new}} - 2 F_{\mathrm{typ}} \mu_{FF}\bigr) F - \mu_{FF} F^2 \\
+  &= \mu_0^{\mathrm{new}} + \mu_B B - \mu_F^{\mathrm{new}} F
+     - \mu_{FF}\bigl(F^2 - 2 F_{\mathrm{typ}} F + F_{\mathrm{typ}}^2\bigr) \\
+  &= \mu_0^{\mathrm{new}} + \mu_B B - \mu_F^{\mathrm{new}} F
+     - \mu_{FF}(F - F_{\mathrm{typ}})^2,
+\end{align*}
+which is exactly the G1 growth rate \eqref{eq:fsa-mu}. The $A$-drift
+is then $\mu(B,F) A - \eta A^3$, identical in both
+parametrizations. \qed
+\end{proof}
+
+The numerical truth values of Table~\ref{tab:fsa-truth} satisfy the
+above relabelling exactly, so the unit test
+\texttt{tests/test\_g1\_reparam.py} -- which evaluates the two
+drift formulas at $50$ random states -- agrees to floating-point
+precision. The reparametrization is purely a coordinate change in
+parameter space; the dynamics, the observation model, and the joint
+likelihood $p(y_{1:T} \mid \theta)$ are unchanged.

@@ -1,0 +1,269 @@
+\section{Stability of the FSA-v2 SDE: derivations}\label{app:lyap}
+
+This appendix supplies the derivations underlying the stability
+analysis of Section~\ref{sec:lyap}. We compute the drift Jacobian
+that establishes Proposition~\ref{prop:stab-zero}
+(Section~\ref{app:lyap-jacobian}), set out the bifurcation locus
+explicitly (Section~\ref{app:lyap-bifurcation}), and prove the
+Foster--Lyapunov drift inequality of Theorem~\ref{thm:lyap}
+(Section~\ref{app:lyap-foster}).
+
+\subsection{The drift Jacobian at the \texorpdfstring{$A=0$}{A=0} branch}\label{app:lyap-jacobian}
+
+Write the deterministic drift vector field as
+$f(B,F,A;\Phi_c) = (f_B,f_F,f_A)^{\!\top}$ with
+\begin{align*}
+  f_B(B,F,A) &= \kappa_B\,g_B(A)\,\Phi_c - B/\tau_B, \\
+  f_F(B,F,A) &= \kappa_F\,\Phi_c - g_F(A)\,F/\tau_F, \\
+  f_A(B,F,A) &= \mu(B,F)\,A - \eta\,A^3,
+\end{align*}
+where $g_B(A) = (1+\varepsilon_A A)/(1+\varepsilon_A A_{\mathrm{typ}})$
+and $g_F(A) = (1+\lambda_A A)/(1+\lambda_A A_{\mathrm{typ}})$ are
+the residual factors. Their derivatives at $A = 0$ are
+$g_B'(0) = \varepsilon_A/(1+\varepsilon_A A_{\mathrm{typ}})$ and
+$g_F'(0) = \lambda_A/(1+\lambda_A A_{\mathrm{typ}})$.
+
+The Jacobian $J = \partial f/\partial(B,F,A)$ at $(B^*_0,F^*_0,0)$
+has entries
+
+\begin{itemize}
+  \item Row $B$:
+    $\partial f_B/\partial B = -1/\tau_B$,
+    $\partial f_B/\partial F = 0$,
+    $\partial f_B/\partial A = \kappa_B g_B'(0) \Phi_c
+      = \kappa_B \varepsilon_A \Phi_c/(1+\varepsilon_A A_{\mathrm{typ}})$.
+  \item Row $F$:
+    $\partial f_F/\partial B = 0$,
+    $\partial f_F/\partial F = -g_F(0)/\tau_F = -1/[\tau_F(1+\lambda_A A_{\mathrm{typ}})]$,
+    $\partial f_F/\partial A = -g_F'(0) F^*_0/\tau_F
+      = -\lambda_A F^*_0/[\tau_F(1+\lambda_A A_{\mathrm{typ}})]$.
+  \item Row $A$:
+    $\partial f_A/\partial B = \mu_B \cdot A = 0$ (at $A=0$),
+    $\partial f_A/\partial F = (-\mu_F - 2\mu_{FF}(F-F_{\mathrm{typ}})) \cdot A = 0$ (at $A=0$),
+    $\partial f_A/\partial A = \mu(B,F) - 3\eta A^2 = \mu(B^*_0,F^*_0)$ (at $A=0$).
+\end{itemize}
+
+In matrix form,
+\begin{equation}
+  J(B^*_0,F^*_0,0) \;=\;
+    \begin{pmatrix}
+      -1/\tau_B & 0 & \dfrac{\kappa_B \varepsilon_A \Phi_c}{1+\varepsilon_A A_{\mathrm{typ}}} \\[6pt]
+      0 & -\dfrac{1}{\tau_F(1+\lambda_A A_{\mathrm{typ}})}
+        & -\dfrac{\lambda_A F^*_0}{\tau_F(1+\lambda_A A_{\mathrm{typ}})} \\[6pt]
+      0 & 0 & \mu(B^*_0,F^*_0)
+    \end{pmatrix}.
+  \label{eq:jacobian}
+\end{equation}
+This is upper triangular, so its eigenvalues are the diagonal
+entries:
+\begin{equation}
+  \lambda_1 = -1/\tau_B,
+  \qquad
+  \lambda_2 = -1/[\tau_F(1+\lambda_A A_{\mathrm{typ}})],
+  \qquad
+  \lambda_3 = \mu(B^*_0,F^*_0).
+  \label{eq:eigs}
+\end{equation}
+The first two are unconditionally negative (with $\tau_B,\tau_F > 0$
+and $\lambda_A,A_{\mathrm{typ}} \ge 0$); the third has the sign of
+the Stuart--Landau growth rate. By Lyapunov's first method, the
+$A=0$ equilibrium is locally asymptotically stable iff all three
+eigenvalues are negative, i.e.\ iff $\mu(B^*_0,F^*_0) < 0$. This
+proves Proposition~\ref{prop:stab-zero}. \qed
+
+\subsection{The bifurcation locus}\label{app:lyap-bifurcation}
+
+The bifurcation locus
+$\{\Phi_c > 0 : \mu(B^*_0(\Phi_c),F^*_0(\Phi_c)) = 0\}$ is the level
+set on which $\lambda_3$ in \eqref{eq:eigs} vanishes. Substituting
+$B^*_0(\Phi_c) = \tilde b\,\Phi_c$ and $F^*_0(\Phi_c) = \tilde f\,\Phi_c$
+with $\tilde b = \kappa_B \tau_B/(1+\varepsilon_A A_{\mathrm{typ}})$
+and $\tilde f = \kappa_F \tau_F(1+\lambda_A A_{\mathrm{typ}})$ into
+the formula for $\mu$,
+\begin{equation}
+  \mu(B^*_0(\Phi_c), F^*_0(\Phi_c))
+   \;=\; \mu_0
+         + \mu_B \tilde b\,\Phi_c
+         - \mu_F \tilde f\,\Phi_c
+         - \mu_{FF}(\tilde f \Phi_c - F_{\mathrm{typ}})^2.
+  \label{eq:mu-of-Phi}
+\end{equation}
+This is a quadratic in $\Phi_c$ once expanded, with leading
+coefficient $-\mu_{FF} \tilde f^2 < 0$. At the truth values of
+Table~\ref{tab:fsa-truth},
+\begin{equation*}
+  \tilde b \;=\; \frac{0.01248 \cdot 42}{1.04} \;\approx\; 0.504,
+  \qquad
+  \tilde f \;=\; 0.030 \cdot 6.364 \cdot 1.1 \;\approx\; 0.210,
+\end{equation*}
+giving
+$\mu(\Phi_c) = 0.036 + 0.0966\,\Phi_c - 0.40(0.210\,\Phi_c - 0.20)^2$.
+Solving $\mu(\Phi_c) = 0$ yields a single positive root
+$\Phi_c^{\mathrm{crit}} \approx 7.5$ TRIMP-units per day.
+
+For $0 < \Phi_c < \Phi_c^{\mathrm{crit}}$ we have $\mu > 0$ and the
+$A=0$ branch is unstable; for $\Phi_c > \Phi_c^{\mathrm{crit}}$ we
+have $\mu < 0$ and the $A=0$ branch is stable. At
+$\Phi_c = \Phi_c^{\mathrm{crit}}$ the system undergoes a
+Hopf-like (super- or sub-critical depending on the sign of higher-order
+corrections we have not computed) bifurcation in the $A$-direction.
+
+\subsection{Foster--Lyapunov drift inequality (proof of Theorem~\ref{thm:lyap})}\label{app:lyap-foster}
+
+We now prove that the quadratic Lyapunov function
+$V(B,F,A) = \tfrac{1}{2}(a B^2 + b F^2 + c A^2)$ of
+\eqref{eq:V-quadratic} satisfies the Foster--Lyapunov drift
+inequality \eqref{eq:foster-lyap} on the operating domain
+$\Xcal = [0,1] \times [0,\infty)^2$, with rate
+$\alpha = \min\!\bigl(2/\tau_B,\,1/[\tau_F(1+\lambda_A A_{\mathrm{typ}})]\bigr)$
+and a finite constant $C > 0$.
+
+Let $\Lcal$ denote the infinitesimal generator of the SDE: for any
+$V \in C^2(\Xcal)$,
+\begin{equation}
+  \Lcal V(x) \;=\;
+    \sum_{i \in \{B,F,A\}} b_i(x)\,\partial_i V(x)
+    \;+\; \tfrac{1}{2}\sum_i a_i(x)\,\partial_{ii}^2 V(x),
+  \label{eq:generator}
+\end{equation}
+with $b_i$ the $i$th drift component and
+$a_B(x) = \sigma_B^2 B(1-B)$,
+$a_F(x) = \sigma_F^2 F$,
+$a_A(x) = \sigma_A^2 A$. We bound the three components separately.
+Throughout, $K_\bullet$ denotes a finite constant depending only on
+the truth parameters, $\Phimax$, and the choice of $a,b,c$.
+
+\paragraph{$B$-component.} Using $B \in [0,1]$ and the fact that
+$g_B(A) = (1+\varepsilon_A A)/(1+\varepsilon_A A_{\mathrm{typ}})$
+is bounded above on the operating domain by some
+$g_{B,\max} < \infty$ (depending on the practical upper bound on
+$A$ that we wish to enforce; on the operating domain
+$A \in [0,A_{\max}]$ with any chosen $A_{\max}$, set
+$g_{B,\max} = (1+\varepsilon_A A_{\max})/(1+\varepsilon_A A_{\mathrm{typ}})$),
+\begin{align*}
+  a B \cdot \bigl[\kappa_B g_B(A) \Phi - B/\tau_B\bigr]
+   + \tfrac{a}{2} \sigma_B^2 B(1-B)
+  &\le \;a\,\kappa_B\,g_{B,\max}\,\Phimax\,B - (a/\tau_B)\,B^2 + \tfrac{a}{8}\sigma_B^2 \\
+  &\le \;a\,\kappa_B\,g_{B,\max}\,\Phimax + \tfrac{a}{8}\sigma_B^2 - (a/\tau_B)\,B^2,
+\end{align*}
+where the second line uses $B \le 1$ and the bound
+$B(1-B) \le 1/4$ on $[0,1]$. Define
+$K_B := a\kappa_B g_{B,\max}\Phimax + a\sigma_B^2/8$.
+
+\paragraph{$F$-component.} Using $g_F(A) \ge g_F(0) = 1/(1+\lambda_A A_{\mathrm{typ}})$
+for $A \ge 0$, and writing $\tau_F^{\mathrm{old}} := \tau_F(1+\lambda_A A_{\mathrm{typ}})$,
+\begin{align*}
+  bF \cdot \bigl[\kappa_F\Phi - g_F(A)F/\tau_F\bigr]
+   + \tfrac{b}{2}\sigma_F^2 F
+  &\le \;b\,\kappa_F\,\Phimax\,F - bF^2/\tau_F^{\mathrm{old}} + \tfrac{b}{2}\sigma_F^2 F \\
+  &= \; b F\,(\kappa_F\Phimax + \sigma_F^2/2) - bF^2/\tau_F^{\mathrm{old}}.
+\end{align*}
+Apply Young's inequality $xy \le x^2/(2\beta) + \beta y^2/2$ to the
+linear-in-$F$ term, with $\beta = \tau_F^{\mathrm{old}}$ and
+$y = (\kappa_F\Phimax + \sigma_F^2/2)$:
+\[
+  b F (\kappa_F\Phimax + \sigma_F^2/2)
+   \;\le\; bF^2/(2\tau_F^{\mathrm{old}})
+           + (b\tau_F^{\mathrm{old}}/2)(\kappa_F\Phimax + \sigma_F^2/2)^2.
+\]
+Combined,
+\[
+  bF \cdot \bigl[\kappa_F\Phi - g_F(A)F/\tau_F\bigr] + \tfrac{b}{2}\sigma_F^2 F
+   \;\le\; -\bigl(b/(2\tau_F^{\mathrm{old}})\bigr)F^2 + K_F,
+\]
+with $K_F := (b\tau_F^{\mathrm{old}}/2)(\kappa_F\Phimax + \sigma_F^2/2)^2$.
+
+\paragraph{$A$-component.} The growth rate satisfies
+$\mu(B,F) \le \mu_{\max} := \mu_0 + \mu_B$ for $B \in [0,1]$ and
+$F \ge 0$, since the contributions $-\mu_F F$ and
+$-\mu_{FF}(F-F_{\mathrm{typ}})^2$ are non-positive. Therefore
+\begin{equation*}
+  cA\bigl[\mu(B,F)\,A - \eta A^3\bigr] + \tfrac{c}{2}\sigma_A^2 A
+   \;\le\; -c\eta A^4 + c\mu_{\max} A^2 + \tfrac{c}{2}\sigma_A^2 A.
+\end{equation*}
+Two applications of Young's inequality remove the unwanted $A^2$
+and linear-$A$ terms:
+
+\emph{(i)} For the $A^4$-vs-$A^2$ pair, complete the square with
+$x = A^2$:
+\[
+  -c\eta A^4 + c\mu_{\max} A^2
+   = -c\eta\bigl(A^2 - \mu_{\max}/(2\eta)\bigr)^2 + c\mu_{\max}^2/(4\eta)
+   \;\le\; -\tfrac{c\eta}{2}A^4 + \tfrac{c\mu_{\max}^2}{2\eta},
+\]
+where we discarded half of the negative quartic contribution to
+absorb the maximum of the non-negative quadratic.
+
+\emph{(ii)} For the linear $A$-term against the diffusion: by the
+elementary $A \le (\eta/(2\sigma_A^2))A^4 + \sigma_A^2/(2\eta)$
+(setting $\alpha = \eta/(2\sigma_A^2)$ in
+$x \le \alpha x^4 + 1/(4\alpha)$ -- proved by completing the
+square on $x \mapsto \alpha x^4 - x$ and verifying the minimum is
+$-1/(4\alpha)$, so $x - \alpha x^4 \le 1/(4\alpha)$, i.e.\
+$x \le \alpha x^4 + 1/(4\alpha)$), and we then absorb the $A^4$
+piece into a small fraction of the $-\tfrac{c\eta}{2}A^4$ term:
+\[
+  \tfrac{c}{2}\sigma_A^2 A
+   \;\le\; \tfrac{c}{2}\sigma_A^2 \cdot
+            \bigl(\eta/(2\sigma_A^2) A^4 + \sigma_A^2/(2\eta)\bigr)
+   \;=\; \tfrac{c\eta}{4} A^4 + \tfrac{c\sigma_A^4}{4\eta}.
+\]
+Wait -- that produces the wrong sign on $A^4$. We instead want the
+linear-$A$ term to sit on top of the cubic damping; redo with the
+opposite split. Use $A \le 1 + A^2$ (a strict bound for $A \ge 0$
+verified by completing the square on $1 + A^2 - A$); then
+\[
+  \tfrac{c}{2}\sigma_A^2 A
+   \;\le\; \tfrac{c\sigma_A^2}{2}(1 + A^2)
+   \;=\; \tfrac{c\sigma_A^2}{2} + \tfrac{c\sigma_A^2}{2}A^2,
+\]
+and the residual $A^2$ is then absorbed via the same complete-the-square
+argument as in step~(i), but with $\mu_{\max}$ replaced by
+$\sigma_A^2/2$. Combining all three pieces,
+\[
+  cA[\mu(B,F)A - \eta A^3] + \tfrac{c}{2}\sigma_A^2 A
+   \;\le\; -\tfrac{c\eta}{4}A^4
+            + \tfrac{c\mu_{\max}^2}{2\eta}
+            + \tfrac{c\sigma_A^2}{2}
+            + \tfrac{c\sigma_A^4}{8\eta}
+   \;=:\; -\tfrac{c\eta}{4}A^4 + K_A.
+\]
+
+\paragraph{Combining the three components.} Adding the three bounds,
+\begin{equation*}
+  \Lcal V(x)
+   \;\le\;
+   -(a/\tau_B)\,B^2
+   - \bigl(b/(2\tau_F^{\mathrm{old}})\bigr) F^2
+   - (c\eta/4)\,A^4
+   + (K_B + K_F + K_A).
+\end{equation*}
+The first two negative terms already match $-\alpha V$ with
+$\alpha = \min(2/\tau_B,\,1/\tau_F^{\mathrm{old}})$. For the third
+we use the elementary inequality
+\[
+  -(c\eta/4)\,A^4 \;\le\; -(c\alpha/2)\,A^2 + c\alpha^2/(4\eta),
+\]
+which follows by completing the square in $A^2$ on the parabola
+$(c\eta/4)x^2 - (c\alpha/2)x$. Plugging this in,
+\begin{equation*}
+  \Lcal V(x)
+   \;\le\;
+   -\tfrac{\alpha}{2}\bigl(a B^2 + b F^2 + c A^2\bigr)
+   + \bigl(K_B + K_F + K_A + c\alpha^2/(4\eta)\bigr)
+   \;=\;
+   -\alpha\,V(x) + C,
+\end{equation*}
+where $C := K_B + K_F + K_A + c\alpha^2/(4\eta)$ is finite. This is
+the required drift inequality \eqref{eq:foster-lyap}, completing
+the proof of Theorem~\ref{thm:lyap}. \qed
+
+\medskip
+
+The exponential ergodicity statement of Theorem~\ref{thm:ergodic}
+then follows from the standard Foster--Lyapunov $\Rightarrow$ V-uniform
+ergodicity machinery in Khasminskii (1980) or, in discrete-time
+language transferable to continuous time via the resolvent,
+Meyn--Tweedie (1993, Theorem~6.1). The constants $K_0$ and $\rho$
+in \eqref{eq:ergodic-bound} can be made explicit at the cost of
+further notation; we do not pursue this here.

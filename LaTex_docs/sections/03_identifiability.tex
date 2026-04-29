@@ -1,193 +1,127 @@
 \section{Identifiability via the Fisher information matrix}\label{sec:fim}
 
-This section carries out the Fisher information rank analysis that an
-earlier draft flagged as outstanding. We review the definition of the
-Fisher information matrix and what it tells us about local
-identifiability, derive analytically the three rank-deficient parameter
-pairs of the pre-G1 FSA-v2 model, present the reparametrization that
-absorbs them, and report the post-reparametrization evidence that all
-$30$ parameters of the joint state-space model are now identifiable
-from the four-channel observation record at the one-day window scale.
+A model is no use if its parameters cannot be recovered from the
+observations: an inference procedure may converge confidently to one
+of an infinite family of indistinguishable parameter vectors. This
+section asks whether the FSA-v2 model defined in
+Section~\ref{sec:fsa} suffers from such a pathology, settles the
+matter analytically, and reports the empirical fingerprint of the
+diagnosis. The detailed derivations of the rank-deficient parameter
+pairs and of the G1 reparametrization are deferred to
+Appendix~\ref{app:fim}.
 
-\subsection{Fisher information and local identifiability}
+\subsection{Fisher information and local identifiability}\label{sec:fim-def}
 
 For a parameter vector $\theta \in \R^d$ and an observation record
-$y$ from the model, the score function is
+$y$, the score function is
 $s(\theta;y) = \nabla_\theta \log p(y\mid\theta)$ and the
-\emph{Fisher information matrix} is
+\emph{Fisher information matrix} (FIM) is
 \begin{equation}
   \Ical(\theta) \;=\;
     \E_{y \sim p(\cdot\mid\theta)}\!\bigl[\,s(\theta;y)\,s(\theta;y)^{\!\top}\bigr].
   \label{eq:fim-def}
 \end{equation}
-$\Ical(\theta)$ is symmetric positive semidefinite. Two facts make it
-the right object to look at when asking whether the data can constrain
-$\theta$.
+$\Ical(\theta)$ is symmetric positive semidefinite, and two facts
+about it explain why it is the right diagnostic.
 
 \begin{proposition}[Local identifiability]\label{prop:fim-id}
 Suppose $\theta \mapsto p(y\mid\theta)$ is twice differentiable in a
-neighbourhood of $\theta^*$. Then $\theta^*$ is locally identifiable if
-and only if $\Ical(\theta^*)$ has full rank $d$.
+neighbourhood of $\theta^*$. Then $\theta^*$ is locally identifiable
+if and only if $\Ical(\theta^*)$ has full rank $d$.
 \end{proposition}
 
 \begin{proposition}[Cram\'er--Rao]\label{prop:fim-cr}
 Any unbiased estimator $\hat\theta$ of $\theta$ has covariance bounded
-below in the positive-semidefinite ordering by
-$\Ical(\theta)^{-1}$ (when $\Ical$ is invertible).
+below in the positive-semidefinite ordering by $\Ical(\theta)^{-1}$
+(when $\Ical$ is invertible).
 \end{proposition}
 
-Proposition~\ref{prop:fim-id} says the FIM rank is the diagnostic for
-identifiability; Proposition~\ref{prop:fim-cr} says its inverse sets
-the floor for posterior-variance scaling, so a near-singular FIM
-implies posteriors with very wide spread along the singular directions.
-In this code base we are interested in identifiability at one-day
-windows -- the rolling-window unit of the SMC${}^2$ filter
-(Section~\ref{sec:smc2}) -- and at a representative truth point near
-the operating point of Definition~\ref{def:operating-point}.
+In words: the FIM \emph{rank} tells you whether the data can pin
+$\theta$ down at all, and the FIM \emph{inverse} tells you how
+sharply. A rank-deficient FIM means there is a direction in
+parameter space along which the data are silent -- two distinct
+$\theta$ vectors produce indistinguishable observation distributions
+-- and any procedure trying to estimate $\theta$ in that direction
+will be at the mercy of the prior, not the data.
 
-\subsection{Analytical FIM rank deficiencies of the pre-G1 model}
+\subsection{The pre-G1 model has three rank-deficient pairs}\label{sec:fim-deficient}
 
 The four-channel observation model
-\eqref{eq:obs-hr}--\eqref{eq:obs-steps} is, conditional on the latent
-state, a product of one-dimensional exponential-family likelihoods
-whose score functions are linear in $(B,F,A)$. The state itself is
-driven by the drift \eqref{eq:fsa-B}--\eqref{eq:fsa-A}. At a one-day
-window the slow Banister state moves only marginally, so the
-information about the dynamics parameters is carried by how
-$\partial(B,F,A)/\partial\theta$ couples through the observation model.
+\eqref{eq:obs-hr}--\eqref{eq:obs-steps} probes the latent state
+$(B,F,A)$ through linear-in-state likelihoods, and the latent state
+in turn carries information about the dynamics parameters via the
+drift \eqref{eq:fsa-B}--\eqref{eq:fsa-A}. At a one-day window the
+slow Banister state moves only marginally, so the inferential signal
+about the dynamics parameters is concentrated in how
+$\partial(B,F,A)/\partial\theta$ couples through the observation
+likelihood.
 
-A direct calculation along these lines reveals three pairs of
-parameters whose effects on the one-day data are exactly collinear, and
-hence whose contribution to the FIM is rank-one rather than rank-two
-within each pair. Recall the pre-G1 drift was
-\begin{equation*}
-  \dd B = \bigl[\,\kappa_B(1+\varepsilon_A A)\,\Phi - B/\tau_B\,\bigr]\dd t + \cdots,
-  \quad
-  \dd F = \bigl[\,\kappa_F\,\Phi - (1+\lambda_A A)/\tau_F \cdot F\,\bigr]\dd t + \cdots,
-\end{equation*}
-and $\mu(B,F) = \mu_0 + \mu_B B - \mu_F F - \mu_{FF} F^2$. At constant
-control $\Phi \equiv \Phi_{\mathrm{typ}}$ and near
-$A \equiv A_{\mathrm{typ}}$, $F \equiv F_{\mathrm{typ}}$:
+A direct calculation along these lines (deferred to
+Appendix~\ref{app:fim}) reveals that, near the operating point of
+Definition~\ref{def:operating-point}, three pairs of pre-G1 parameters
+enter the one-day likelihood through a single linear combination
+each, so that the contribution of each pair to the FIM is rank-one
+rather than rank-two. The three pairs and their identifiable
+combinations are summarised in Table~\ref{tab:g1-reparam}.
 
-\paragraph{Pair 1: $(\kappa_B,\varepsilon_A)$.} Linearising
-$1+\varepsilon_A A$ around $A_{\mathrm{typ}}$ and treating fluctuations
-$\delta A = A - A_{\mathrm{typ}}$ as small at one-day windows, the
-$B$-drift is
-\begin{equation}
-  \kappa_B (1+\varepsilon_A A)\,\Phi
-   \;\approx\;
-   \underbrace{\kappa_B(1+\varepsilon_A A_{\mathrm{typ}})}_{=:\,\kappa_B^{\mathrm{eff}}}\,\Phi
-   \;+\; \kappa_B\,\varepsilon_A\,\delta A\,\Phi.
-  \label{eq:pair1-expand}
-\end{equation}
-The first term carries data-relevant information through the product
-$\kappa_B(1+\varepsilon_A A_{\mathrm{typ}})$, and is identifiable. The
-second term is $O(\delta A)$, vanishing at the operating point and
-small in one-day windows; the data therefore see $\kappa_B$ and
-$\varepsilon_A$ only through the combination $\kappa_B^{\mathrm{eff}}$,
-making the pair rank-deficient.
+The intuitive story behind each pair is the same: at one-day windows
+the system rarely strays far from the operating point, so any
+parameter whose effect manifests only via departures from that
+operating point is invisible to the data. For instance, in the pair
+$(\kappa_B, \varepsilon_A)$ the gain $\kappa_B$ multiplies the daily
+training stimulus, while $\varepsilon_A$ multiplies $\kappa_B$ by a
+factor close to one whenever $A \approx A_{\mathrm{typ}}$. Only the
+\emph{product} $\kappa_B(1+\varepsilon_A A_{\mathrm{typ}})$ is felt by
+the data; the individual factors are not.
 
-\paragraph{Pair 2: $(\mu_F,\mu_{FF})$.} Expanding the quadratic
-$\mu_{FF} F^2$ around $F_{\mathrm{typ}}$,
-\begin{align*}
-  -\mu_F F - \mu_{FF} F^2
-  &= -\mu_F F - \mu_{FF}\bigl[(F-F_{\mathrm{typ}})^2 + 2 F_{\mathrm{typ}} F - F_{\mathrm{typ}}^2\bigr]\\
-  &= -\bigl(\,\underbrace{\mu_F + 2 F_{\mathrm{typ}} \mu_{FF}}_{=:\,\mu_F^{\mathrm{eff}}}\,\bigr) F
-     - \mu_{FF}(F-F_{\mathrm{typ}})^2 + \mu_{FF} F_{\mathrm{typ}}^2.
-\end{align*}
-At one-day windows $\delta F = F - F_{\mathrm{typ}}$ is small, so the
-$(F-F_{\mathrm{typ}})^2$ term is second-order and uninformative. The
-data therefore see $\mu_F$ and $\mu_{FF}$ only through the linear slope
-$\mu_F^{\mathrm{eff}}$, giving a second rank-deficient pair.
+\subsection{The G1 reparametrization absorbs the three pairs}\label{sec:fim-g1}
 
-\paragraph{Pair 3: $(\tau_F,\lambda_A)$.} The same linearisation
-applied to the $F$-clearance factor gives
-\begin{equation*}
-  \frac{1+\lambda_A A}{\tau_F}
-  \;\approx\;
-  \frac{1+\lambda_A A_{\mathrm{typ}}}{\tau_F}
-  + \frac{\lambda_A}{\tau_F}\,\delta A
-  \;=:\;
-  \frac{1}{\tau_F^{\mathrm{eff}}} + O(\delta A).
-\end{equation*}
-The data therefore see $\tau_F$ and $\lambda_A$ only through the
-effective rate $1/\tau_F^{\mathrm{eff}} = (1+\lambda_A A_{\mathrm{typ}})/\tau_F$,
-giving the third rank-deficient pair.
-
-\smallskip
-At a one-day truth window centred on the operating point, the
-Fisher information matrix of the pre-G1 model therefore has rank
-$d - 3$. The three null directions correspond exactly to the
-combinations
-\begin{equation}
-  (\delta\kappa_B,\delta\varepsilon_A) \perp \nabla \kappa_B^{\mathrm{eff}},
-  \quad
-  (\delta\mu_F,\delta\mu_{FF}) \perp \nabla \mu_F^{\mathrm{eff}},
-  \quad
-  (\delta\tau_F,\delta\lambda_A) \perp \nabla(1/\tau_F^{\mathrm{eff}}),
-  \label{eq:fim-nulls}
-\end{equation}
-i.e.\ to perturbations along which the strongly identified linear
-combination is held fixed.
-
-\subsection{The G1 reparametrization absorbs the three pairs}
-
-The cure is straightforward: rotate each rank-deficient pair into a
-\emph{strongly identified} linear combination and a
-\emph{weakly identified residual} that vanishes at the operating
-point. The G1 reparametrization, which we already wrote out as
-equations \eqref{eq:fsa-mu}--\eqref{eq:fsa-A}, does exactly this. A
-side-by-side comparison is in Table~\ref{tab:g1-reparam}.
+The cure is a simple coordinate change: rotate each rank-deficient
+pair into a strongly identified linear combination and a residual
+that vanishes at the operating point. The G1 reparametrization,
+already shown in equations \eqref{eq:fsa-mu}--\eqref{eq:fsa-A},
+performs this rotation. Table~\ref{tab:g1-reparam} lists the three
+combinations side by side.
 
 \begin{table}[h]
 \centering
 \small
 \begin{tabular}{@{}llll@{}}
 \toprule
-Pair & Strongly identified & Residual & Comment \\
+Pair & Strongly identified & Residual & Vanishing condition \\
 \midrule
 $(\kappa_B,\varepsilon_A)$  & $\kappa_B^{\mathrm{new}} = \kappa_B(1+\varepsilon_A A_{\mathrm{typ}})$
-                             & $\varepsilon_A$  & residual factor $(1+\varepsilon_A A)/(1+\varepsilon_A A_{\mathrm{typ}}) \to 1$ at $A_{\mathrm{typ}}$ \\
+                             & $\varepsilon_A$  & $A = A_{\mathrm{typ}}$ \\
 $(\mu_F,\mu_{FF})$          & $\mu_F^{\mathrm{new}} = \mu_F + 2 F_{\mathrm{typ}} \mu_{FF}$
-                             & $\mu_{FF}$       & curvature on $(F - F_{\mathrm{typ}})^2 \to 0$ at $F_{\mathrm{typ}}$ \\
+                             & $\mu_{FF}$       & $F = F_{\mathrm{typ}}$ \\
 $(\tau_F,\lambda_A)$        & $\tau_F^{\mathrm{new}} = \tau_F/(1+\lambda_A A_{\mathrm{typ}})$
-                             & $\lambda_A$      & residual factor $(1+\lambda_A A)/(1+\lambda_A A_{\mathrm{typ}}) \to 1$ at $A_{\mathrm{typ}}$ \\
+                             & $\lambda_A$      & $A = A_{\mathrm{typ}}$ \\
 \bottomrule
 \end{tabular}
 \caption{The Stage~G1 reparametrization. Each rank-deficient parameter
 pair of the pre-G1 model is rotated into a strongly identified
-combination (left column) and a residual (middle column) that vanishes
-at the operating point of Definition~\ref{def:operating-point}. The
-parameter \emph{names} are kept; only the meanings and truth values
-change. There is also an implicit shift in $\mu_0$ that absorbs the
-constant from completing the square, $\mu_0 \mapsto \mu_0 + \mu_{FF}
-F_{\mathrm{typ}}^2$.}
+combination (left column) and a residual (middle column) that
+vanishes at the operating point of
+Definition~\ref{def:operating-point}. The parameter \emph{names} are
+kept; only the meanings and truth values change. There is also an
+implicit shift $\mu_0 \mapsto \mu_0 + \mu_{FF} F_{\mathrm{typ}}^2$
+that absorbs the constant from completing the square in
+\eqref{eq:fsa-mu}.}
 \label{tab:g1-reparam}
 \end{table}
 
-\begin{proposition}[G1 is mathematically equivalent to v2]\label{prop:g1-equiv}
-The G1 drift \eqref{eq:fsa-B}--\eqref{eq:fsa-A} with truth values from
-Table~\ref{tab:fsa-truth} is identically equal to the pre-G1 drift
-under the relabelling
-\begin{align*}
-  \kappa_B^{\mathrm{old}} &= \kappa_B/(1+\varepsilon_A A_{\mathrm{typ}}), &
-  \tau_F^{\mathrm{old}}   &= \tau_F\,(1+\lambda_A A_{\mathrm{typ}}), \\
-  \mu_F^{\mathrm{old}}    &= \mu_F - 2 F_{\mathrm{typ}} \mu_{FF}, &
-  \mu_0^{\mathrm{old}}    &= \mu_0 - \mu_{FF} F_{\mathrm{typ}}^2.
-\end{align*}
-\end{proposition}
-
-The equivalence is verified by direct substitution; the project's unit
-test \texttt{tests/test\_g1\_reparam.py} performs the same check
-numerically over $50$ random states and confirms the two drifts agree
-to floating-point precision.
+The reparametrized drift is mathematically equivalent to the pre-G1
+drift under a fixed relabelling of parameters; the equivalence
+(stated as Proposition~\ref{prop:g1-equiv} in
+Appendix~\ref{app:fim}) is verified numerically by a unit test in
+\texttt{tests/test\_g1\_reparam.py} that confirms the two drift
+formulas agree to floating-point precision over $50$ random states.
 
 \subsection{Empirical evidence of identifiability after G1}\label{sec:fim-empirical}
 
-The analytical argument above shows that the G1 form has full FIM rank
-at the operating point. The implementation furnishes empirical
-evidence of the same fact at one-day rolling windows on simulated
-truth data.
+The analytical argument predicts full FIM rank at the operating
+point. The implementation furnishes empirical confirmation at
+one-day rolling windows on simulated truth data.
 
 \begin{table}[h]
 \centering
@@ -197,10 +131,10 @@ truth data.
 Quantity & Pre-G1 & Post-G1 \\
 \midrule
 $\rank \widehat{\Ical}$ at one-day window               & $d-3$            & $d$ \\
-parameters covered by 90\,\% credible interval   & $27/30$          & $\mathbf{30/30}$ \\
-identifiable estimable parameters                & $3/6$            & $\mathbf{6/6}$ \\
-posterior std on $\varepsilon_A$ (lognormal scale) & $0.093$          & $\mathbf{0.016}$ \\
-$90\,\%$ CI for $\varepsilon_A$                  & $[0.275,\,0.550]$ & $\mathbf{[0.373,\,0.423]}$ \\
+parameters covered by 90\,\% credible interval          & $27/30$          & $\mathbf{30/30}$ \\
+identifiable estimable parameters                       & $3/6$            & $\mathbf{6/6}$ \\
+posterior std on $\varepsilon_A$ (lognormal scale)      & $0.093$          & $\mathbf{0.016}$ \\
+$90\,\%$ CI for $\varepsilon_A$                         & $[0.275,\,0.550]$ & $\mathbf{[0.373,\,0.423]}$ \\
 \bottomrule
 \end{tabular}
 \caption{Identifiability before and after the G1 reparametrization,
@@ -208,27 +142,28 @@ measured at one-day rolling-window scale on simulated truth data.
 ``Estimable'' counts the six parameters that the FIM analysis
 identified as candidates for tightening. Numbers from
 \texttt{version\_2/outputs/fsa\_high\_res/} and the Stage~G1 commit
-record. The residual standard deviation on $\varepsilon_A$ tightens by
-roughly a factor of six; analogous tightening is observed on the other
-two residuals $\mu_{FF}$ and $\lambda_A$.}
+record. The residual standard deviation on $\varepsilon_A$ tightens
+by roughly a factor of six; analogous tightening is observed on the
+other two residuals $\mu_{FF}$ and $\lambda_A$.}
 \label{tab:g1-evidence}
 \end{table}
 
-The empirical findings reported in Table~\ref{tab:g1-evidence} support
-the analytical claim of Section~\ref{sec:fim} above: the G1 form is
-identifiable at one-day windows, the strongly identified parameters
-$(\kappa_B,\tau_F,\mu_F)$ retain their original prior widths, and the
-residuals $(\varepsilon_A,\lambda_A,\mu_{FF})$ -- whose posteriors were
-formerly artificially wide because of the rank deficiency -- now
+The numbers in Table~\ref{tab:g1-evidence} confirm the analytical
+prediction. The G1 form is identifiable at one-day windows; the
+strongly identified parameters $(\kappa_B, \tau_F, \mu_F)$ retain
+their original prior widths; and the residuals
+$(\varepsilon_A, \lambda_A, \mu_{FF})$, whose posteriors were
+formerly artificially wide because of the rank deficiency, now
 contract to roughly a sixth of their pre-G1 spread under tightened
 priors that the rank analysis itself motivates.
 
-\begin{remark}[Where the FIM analysis lives]\label{rem:fim-where}
-The analytical FIM derivation summarised here is recorded in the
-project's commit log (Stage~G1) rather than as standalone code. A
-useful follow-up would be to add a numerical FIM module under
-\texttt{smc2fc/diagnostics/fim/} that reproduces these results from the
-JAX dynamics by automatic differentiation, so that any future
+\begin{remark}[Where the FIM analysis lives in the code]\label{rem:fim-where}
+The analytical FIM derivation summarised here -- and developed in
+full in Appendix~\ref{app:fim} -- is recorded in the project's
+commit log (Stage~G1) rather than as standalone code. A useful
+follow-up would be to add a numerical FIM module under
+\texttt{smc2fc/diagnostics/fim/} that reproduces these results from
+the JAX dynamics by automatic differentiation, so that any future
 modification of the model triggers a re-run of the rank check
 automatically.
 \end{remark}
