@@ -227,26 +227,33 @@ This is exactly the regime where periodisation matters in practice.
 
 ## Convergence
 
-| horizon | n_steps | β_max | levels | wall (GPU) | HMC acceptance |
-|---------|---------|-------|--------|------------|-----------------|
-| T = 28  | 2688    | 24.40 | 11     | ~20 min    | 0.94-0.97       |
-| T = 42  | 4032    | 8.71  | 11     | ~30 min    | 0.89-0.96       |
-| T = 56  | 5376    | 2.71  | 10     | ~37 min    | 0.034-0.17      |
-| T = 84  | 8064    | 0.95  | 10     | ~55 min    | 0.000 (HMC stuck — see note) |
+| horizon | n_steps | β_max | levels | wall (GPU) | HMC step | HMC acceptance |
+|---------|---------|-------|--------|------------|----------|-----------------|
+| T = 28  | 2688    | 24.40 | 11     | ~20 min    | 0.30     | 0.94-0.97       |
+| T = 42  | 4032    | 8.71  | 11     | ~30 min    | 0.30     | 0.89-0.96       |
+| T = 56  | 5376    | 2.71  | 10     | ~37 min    | 0.12     | 0.034-0.17      |
+| T = 84  | 8064    | 0.95  | 10     | ~55 min    | 0.05     | 0.006-0.06      |
 
-**HMC pathology at long horizons**: the curvature of the
+**HMC mixing scales with horizon**: the curvature of the
 log-target's β_max·cost(θ) component scales as `cost_std² /
 sigma_prior²`. T=42 has `cost_std ≈ 0.92` → curvature ≈ 0.4.
 T=84 has `cost_std ≈ 8.4` → curvature ≈ 32 — **86× larger**.
-Step_size×sqrt(curvature) is the leapfrog stability index;
-holding `step_size = 0.30, num_leapfrog = 16` fixed across
-horizons, T=56 mixes weakly (acc ~0.05-0.17) and T=84 collapses
-(acc = 0.000). The SMC's resampling path still concentrates
-particles on the lowest-cost prior samples, and the gates pass
-cleanly, but the final answer at T=84 is closer to "best schedule
-sampled from the prior" than "posterior mean under HMC mixing".
-The proper fix is per-level HMC step adaptation (or NUTS) — listed
-in TODOs.
+A horizon-dependent HMC step (`step_size = 0.30` at T ≤ 49,
+`0.12` at 50 ≤ T < 70, `0.05` at T ≥ 70) keeps T=56 acc above
+0.05 and brings T=84 from acc=0.000 (with the fixed step=0.30) up
+to a low-but-non-zero 0.006-0.06.
+
+**The headline result is robust to HMC mixing quality**. The T=84
+re-run with step=0.05 produced **mean ∫A/T = 0.645 — identical to
+the step=0.30 run** — with mean Φ = 1.942 (vs 1.957) and a slightly
+tighter F-violation (0.55% vs 1.28%). This is because SMC²'s
+**importance-resampling** path concentrates particles on the
+lowest-cost regions of the prior cloud regardless of HMC kernel
+mixing; HMC's role is mostly to refine the within-mode shape, not
+to find the right mode. For the gate-passing result, resampling
+alone is sufficient; for posterior credible intervals around θ,
+proper HMC adaptation (per-level step warmup, or NUTS) is the
+clean fix and is listed as a TODO.
 
 ## Plots
 

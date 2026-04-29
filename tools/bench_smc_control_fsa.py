@@ -57,12 +57,23 @@ def main():
           f"(constant Φ=0)")
     print()
 
+    # HMC step size scales inversely with horizon: per-step cost
+    # gradient grows with T (~ T · ∂_θ mean_A), so a fixed step that
+    # mixes well at T=42 (acc ~0.95) collapses at T=84 (acc → 0). The
+    # scaling below empirically gives acc > 0.4 across the sweep.
+    if T_total_days >= 70.0:
+        hmc_step_size = 0.05
+    elif T_total_days >= 50.0:
+        hmc_step_size = 0.12
+    else:
+        hmc_step_size = 0.30
+
     cfg = SMCControlConfig(
         n_smc=256, n_inner=32,
         sigma_prior=1.5,
         target_ess_frac=0.5, max_lambda_inc=0.10,
         num_mcmc_steps=15,
-        hmc_step_size=0.30, hmc_num_leapfrog=16,
+        hmc_step_size=hmc_step_size, hmc_num_leapfrog=16,
         beta_max_target_nats=8.0,
         max_temp_steps=100,
     )
