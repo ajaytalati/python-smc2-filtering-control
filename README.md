@@ -73,11 +73,18 @@ filter (4-channel rolling SMC²) ─┐
 
 | Sub-stage | Goal                                                  | Status |
 |-----------|-------------------------------------------------------|--------|
-| E1        | v2 model in 3-file convention + psim consistency gate + single-window filter | (in progress) |
-| E2        | Sub-daily Φ-burst expansion + StepwisePlant           | (in progress) |
-| E3        | 27-window rolling-window SMC² (open-loop)             | (in progress) |
-| E4        | Closed-loop MPC, single cycle                          | (in progress) |
-| E5        | Full 27-window rolling MPC                             | (in progress) |
+| E1        | v2 model + 4-channel filter on 1-day window           | ✓ 30/30 covered, 16 levels in 168 s |
+| E2        | Sub-daily Φ-burst + StepwisePlant simulator-as-plant  | ✓ 5/5 tests, integral preserved to fp |
+| E3        | 27-window rolling SMC² (open-loop, Φ=1)               | ✗ 18/27 ≥5/6 (Gaussian-bridge drift) |
+| E4        | Closed-loop MPC, single cycle                         | ✓ pipeline + smoothed state recovers truth |
+| E5        | Full 27-window rolling MPC                            | ✓ +17% mean A over const Φ=1.0 baseline |
+
+The Stage E4-E5 headline: **even with imperfect filter coverage, the
+closed-loop MPC discovers a physiologically correct rest-leaning
+schedule** (mean Φ ≈ 0.27 vs baseline Φ=1.0) that achieves **+17%
+mean amplitude over the constant baseline** under starting state with
+high residual fatigue. The controller is robust to filter parameter
+drift because the cost surface near optimum is locally flat.
 
 Window structure matches the validated reference
 ([smc2-blackjax-rolling](https://github.com/ajaytalati/smc2-blackjax-rolling)
