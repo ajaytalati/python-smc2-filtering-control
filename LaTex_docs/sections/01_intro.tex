@@ -62,15 +62,17 @@ particle filter. The SMC${}^2$ outer loop and its rolling-window
 variant are presented in Section~\ref{sec:smc2}.
 Section~\ref{sec:control} formulates the control problem as a
 posterior-inference problem. Section~\ref{sec:mpc} is the extended
-core of the document: it develops the receding-horizon principle,
+core of the document: it develops the receding-horizon principle and
 describes the FSA-v2 model-predictive controller in both mathematical
-and implementation terms, and sketches a linear--quadratic--Gaussian
-approximation that could be added as a cheap baseline.
+and implementation terms.
 Section~\ref{sec:results} reports the two headline empirical results
 of the code base: an open-loop gain of $+28\%$ in mean autonomic
 amplitude over a constant-stimulus baseline on an $84$-day horizon,
 and a closed-loop gain of $+17\%$ in a fourteen-day rolling
-controller. Section~\ref{sec:discussion} closes by reviewing the
-identifiability and stability analyses just completed, and by
-identifying the LQG / Riccati alternative as the principal piece of
-remaining theoretical work.
+controller; Stage~I's $1$-hour outer step is also reported.
+Section~\ref{sec:discussion} closes by reviewing the identifiability
+and stability analyses, and by collecting the remaining open
+questions. Appendix~\ref{app:lqg} records, for completeness only, a
+linear-quadratic-Gaussian baseline whose poor performance on this
+plant is taken as evidence that the cubic Stuart--Landau
+non-linearity is essential.

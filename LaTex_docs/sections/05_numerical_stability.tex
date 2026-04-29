@@ -158,13 +158,10 @@ SDE simulation in the code base.
 
 A more aggressive enlargement to $\Delta t = 1\,\mathrm{h}$ has been
 implemented as Stage~I (Section~\ref{sec:results-stage-i}), behind
-the \texttt{FSA\_STEP\_MINUTES} environment variable. Cross-grid
-sanity checks pass and the LQG controller of
-Section~\ref{sec:mpc-lqg} agrees to within $0.5\%$ of its
-$15$-minute reference (Table~\ref{tab:lqg-horizons}); the
-end-to-end speedup is roughly $4\times$. The corresponding
-$1$-hour SMC${}^2$ MPC validation run at $T = 14$ d closes the
-remaining gate. We do not
+the \texttt{FSA\_STEP\_MINUTES} environment variable. The cross-grid
+sanity checks pass; the end-to-end speedup is roughly $4\times$.
+The corresponding $1$-hour SMC${}^2$ MPC validation run at $T = 14$ d
+closes the remaining gate. We do not
 recommend going beyond $1\,\mathrm{h}$ without changing the solver:
 the substepped explicit scheme would remain stable, but the strong
 $\sqrt{\Delta t}$ pathwise-error growth would visibly degrade the

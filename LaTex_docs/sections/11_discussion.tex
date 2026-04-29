@@ -6,14 +6,14 @@ produce a closed-loop policy that improves mean autonomic amplitude by
 $+17\%$ over a sensible constant baseline on the FSA-v2 model, with no
 fatigue-ceiling violations.
 
-Earlier drafts of these notes flagged three analyses as outstanding:
-Fisher information rank identifiability, Lyapunov stability, and a
-linear--quadratic--Gaussian (LQG) approximation. The first two have
-since been carried out and now form Sections~\ref{sec:fim}
-and~\ref{sec:lyap}. The third remains as the principal open piece of
-analytical work and is described in
-Section~\ref{sec:discussion-lqg} below. Three smaller open questions
-are then collected in Section~\ref{sec:discussion-other}.
+Earlier drafts of these notes flagged two analyses as outstanding:
+Fisher information rank identifiability and Lyapunov stability. Both
+have since been carried out and now form Sections~\ref{sec:fim}
+and~\ref{sec:lyap}. A linear-quadratic-Gaussian baseline against
+which the SMC${}^2$ MPC was benchmarked is recorded in
+Appendix~\ref{app:lqg}; we summarise its disposition in
+Section~\ref{sec:discussion-lqg-pointer} below. The remaining open
+questions are collected in Section~\ref{sec:discussion-other}.
 
 \subsection{Resolved: Fisher information rank
 identifiability}\label{sec:discussion-fim}
@@ -70,51 +70,19 @@ that switches between the $\mu < 0$ and $\mu > 0$ regimes identified
 in Proposition~\ref{prop:stab-zero}, or from a non-quadratic Lyapunov
 function tuned to the geometry of the Stuart--Landau cubic.
 
-\subsection{Outstanding: LQG / Riccati
-exact-approximate alternative}\label{sec:discussion-lqg}
+\subsection{LQG / Riccati: examined and discarded}\label{sec:discussion-lqg-pointer}
 
-An earlier draft of these notes flagged the
-linear--quadratic--Gaussian (LQG) / Riccati controller of
-Section~\ref{sec:mpc-lqg} as the principal piece of remaining
-analytical work. Stage~H of the project has since implemented it in
-\texttt{smc2fc/control/lqg/} (linearisation by JAX-autodiff, backward
-Runge--Kutta Riccati solver, \texttt{LQGController} emitting both
-open-loop and feedback gains) and benchmarked it across the same
-horizons as the SMC${}^2$ MPC. The empirical verdict reported in
-Section~\ref{sec:results-lqg} is unambiguous, and we record it here
-as the headline finding of this section.
-
-\paragraph{The cubic Stuart--Landau non-linearity is essential.} No
-choice of cost weights $(Q,R,Q_T,x_{\mathrm{ref}})$ within the LQG
-family lets a Riccati-based controller match the SMC${}^2$ MPC on
-the FSA-v2 plant. At the only horizon where both controllers
-currently have committed checkpoints ($T = 14$ d), the SMC${}^2$ MPC
-beats the tuned LQG by $15$ percentage points of the constant
-baseline (ratio $1.157$ vs $1.008$); see
-Figure~\ref{fig:t14}. The reason is structural and was diagnosed
-in Section~\ref{sec:mpc-lqg}: the linearisation
-\eqref{eq:lqg-numbers} has $B_{\mathrm{lin}}^{(A)} = 0$ (no direct
-linear path from $\Phi$ to $A$), one positive eigenvalue ($+0.003$,
-the cubic damping at $A_{\mathrm{typ}}$ is too weak to stabilise the
-linearisation), and an inverted sign on the F$\to$A coupling
-($A_{\mathrm{lin}}^{(A,F)} = -0.026$, opposite to the true plant).
-At long horizons the slowly unstable eigenvalue dominates the
-cost-to-go and the LQG schedule pushes $\Phi$ to bang-bang, breaking
-the soft fatigue barrier (Table~\ref{tab:lqg-horizons}).
-
-\paragraph{LQG is still useful as a baseline and as a warm-start
-candidate.} Up to $T = 56$ d the tuned LQG outperforms the
-constant-$\Phi=1$ baseline by $0$--$18\%$ with no fatigue-barrier
-violation. It costs roughly five orders of magnitude less compute
-than the SMC${}^2$ MPC (Section~\ref{sec:results-comparison}), so
-it is a defensible cheap baseline against which any future SMC${}^2$
-result should be measured. A natural follow-up -- still outstanding --
-is to use the tuned LQG schedule as the prior mean for the
-SMC${}^2$ controller's Gaussian prior over $\thetactrl$, with a
-tightened standard deviation around it. Whether this meaningfully
-reduces SMC${}^2$ compute at intermediate horizons
-$T \in [28,56]$ d is an experimental question for a future
-iteration.
+An earlier draft of these notes flagged a linear-quadratic-Gaussian
+alternative to the SMC${}^2$ MPC as outstanding analytical work. It
+has since been implemented and benchmarked across horizons; the full
+account is in Appendix~\ref{app:lqg}. The headline finding is one
+sentence: any LQG controller must linearise the FSA-v2 drift, the
+linearisation discards the cubic Stuart--Landau term and exhibits
+structural defects (no direct $\Phi\!\to\!A$ path, an unstable
+$A$-eigenvalue, an inverted $F\!\to\!A$ sign), and on this plant the
+LQG controller does not match the SMC${}^2$ MPC. The cubic
+non-linearity is essential to the model and the SMC${}^2$ machinery
+is what captures it.
 
 \subsection{Other open questions}\label{sec:discussion-other}
 
@@ -122,17 +90,14 @@ A few smaller points deserve mention.
 
 \begin{itemize}
   \item \emph{Horizon length and the SMC${}^2$ MPC sweep.} Stage~I has
-        implemented the $1$-hour outer step (Section~\ref{sec:results-stage-i})
-        recommended in Section~\ref{sec:num-stab-recommend} and run the
-        full LQG sweep across
-        $T \in \{14, 28, 42, 56, 84\}$ d. The corresponding SMC${}^2$
-        MPC sweep is in progress on the math laptop. Once both controllers
-        have committed checkpoints at every horizon, the
-        SMC${}^2$-vs-LQG gap of Figure~\ref{fig:t14} will be measurable
-        across the regime where LQG remains competitive ($T \le 56$ d)
-        and the regime where it fails ($T = 84$ d), giving a clean
-        quantification of the value added by the cubic Stuart--Landau
-        non-linearity as a function of horizon.
+        implemented the $1$-hour outer step
+        (Section~\ref{sec:results-stage-i}) recommended in
+        Section~\ref{sec:num-stab-recommend}. The corresponding
+        multi-horizon SMC${}^2$ MPC sweep across
+        $T \in \{14,28,42,56,84\}$ d is in progress on the math
+        laptop; the additional checkpoints will let the closed-loop
+        gain over the constant baseline be characterised as a
+        function of horizon.
   \item \emph{Posterior shape vs.\ posterior mean.} The controller of
         Section~\ref{sec:mpc-pipeline} uses only the posterior mean
         $\bar\theta_{\mathrm{ctrl}}$. The flat-cost-surface argument of
@@ -153,13 +118,12 @@ A few smaller points deserve mention.
 
 \medskip
 \noindent
-With the FIM, Lyapunov, and LQG / Riccati analyses now all in place
--- and the empirical finding that no LQG variant matches the
-SMC${}^2$ MPC on this plant -- the project has answered the three
-analytical questions earlier drafts of these notes flagged as
-outstanding. The model has empirical validation through the Stage~D,
-E5 and H results, analytical guarantees on identifiability and
-stability, and a quantitative case for the value added by the cubic
-Stuart--Landau non-linearity. The remaining work is empirical: a
-multi-horizon SMC${}^2$ MPC sweep against the LQG baseline, and the
-LQG-warm-start variant of Section~\ref{sec:discussion-lqg}.
+With the identifiability and stability analyses both in place, the
+project has answered the two analytical questions earlier drafts of
+these notes flagged as outstanding. The headline empirical results
+of Stage~D and Stage~E5 stand, and the project's central finding --
+that the cubic Stuart--Landau non-linearity is essential to the
+controlled dynamics, and the SMC${}^2$ machinery is what captures it
+-- is supported by the linearised baseline of Appendix~\ref{app:lqg}.
+The remaining work is empirical: completing the multi-horizon
+SMC${}^2$ MPC sweep on the math laptop.
