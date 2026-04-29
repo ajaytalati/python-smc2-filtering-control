@@ -1,0 +1,90 @@
+\section{Results}\label{sec:results}
+
+The two headline empirical results of the project are an open-loop
+benchmark on the canonical $84$-day horizon (one chronic time constant
+of $42$ days, doubled) and the closed-loop fourteen-day rolling
+controller. Both compare the SMC${}^2$ schedule to the canonical
+constant baseline $\Phi \equiv 1.0$. Headline numbers are summarised in
+Table~\ref{tab:results}.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+Benchmark & Horizon & $\bar A$ (SMC${}^2$) & $\bar A$ (baseline) & gain & F-violation \\
+\midrule
+Open-loop, Stage D     & $84$ d & $0.645$  & $0.503$  & $+28\%$ & $1.28\%$ \\
+Closed-loop MPC, Stage E5 & $14$ d & $0.0964$ & $0.0823$ & $+17\%$ & $0.00\%$ \\
+\bottomrule
+\end{tabular}
+\caption{Headline empirical results. $\bar A$ denotes the mean
+autonomic amplitude $\frac{1}{T}\int_0^T A(t)\,\dd t$ averaged over Monte
+Carlo trajectories. Sources:
+\texttt{version\_1/outputs/fsa\_high\_res/RESULT.md} (Stage D),
+\texttt{version\_2/outputs/fsa\_high\_res/RESULT.md} (Stage E5).}
+\label{tab:results}
+\end{table}
+
+\subsection{Stage D: open-loop schedule on the $84$-day horizon}
+
+In the open-loop benchmark, the dynamics parameters $\thetadyn$ are
+treated as known at their truth values, the initial state is fixed at
+$(B_0,F_0,A_0) = (0.05,0.30,0.10)$ (a de-trained athlete with high
+residual fatigue), and the SMC${}^2$ control of Section~\ref{sec:control}
+is run \emph{once} over the full $84$-day horizon. The output is a single
+posterior-mean schedule $\Phi(\,\cdot\,;\bar\theta)$.
+
+The optimised schedule has mean $\Phi \approx 1.96$ over the horizon and
+a front-loaded periodisation profile (heavy training for the first
+$\sim 60$ days, taper thereafter). Mean amplitude
+$\bar A = 0.645$ exceeds the constant baseline $\bar A = 0.503$ by
+$28\%$, exceeds the sedentary reference $\bar A = 0.209$ by a factor of
+$3.08$, and the soft fatigue barrier is violated only $1.28\%$ of the
+time --- well within the $5\%$ acceptance gate of
+Section~\ref{sec:mpc-feasibility}. All four acceptance gates (mean-A
+matches baseline within $3\%$, mean-A $\ge 1.40\times$ sedentary, mean-$\Phi
+\in [0.5,2.5]$, F-violation $\le 5\%$) pass.
+
+\subsection{Stage E5: closed-loop MPC on the $14$-day macrocycle}
+
+In the closed-loop benchmark the dynamics parameters are no longer known
+to the controller. Algorithm~\ref{alg:fsa-mpc} is run on a
+$14$-day record of four-channel observations, with a one-day filter
+window, twelve-hour stride, and $27$ replans. The plant is the
+\texttt{StepwisePlant} of Section~\ref{sec:mpc-code}.
+
+Mean amplitude under the closed-loop policy is $\bar A = 0.0964$, against
+$\bar A = 0.0823$ for the constant baseline $\Phi \equiv 1.0$ on the same
+$14$-day horizon. (The shorter horizon explains the smaller absolute
+numbers compared to Stage D: the integral $\int_0^T A(t)\,\dd t$ has not
+yet converged to the asymptotic mean.) The $+17\%$ gain is achieved with
+a remarkable schedule shape: the controller commits a
+\emph{rest-leaning} $\Phi$ in the range $0.25$--$0.31$ across all $27$
+strides, against the canonical baseline of $1.0$. Physiologically, this
+is the controller exploiting the fact that the simulated athlete starts
+with high residual fatigue ($F_0 = 0.30$): the optimal short-horizon
+strategy is to clear fatigue rather than to add training stimulus, which
+unlocks the Stuart--Landau growth-rate $\mu(B,F)$ and lets $A$ rise from
+$0.10$ to $\sim 0.20$ over the macrocycle.
+
+The fatigue ceiling is never violated ($0.00\%$). Wall-clock cost on a
+single GPU is $41$ minutes for the full closed loop. The closed-loop
+policy is robust despite imperfect filter coverage --- on this record
+only $3$ of $26$ estimable parameters meet a strict $\ge 5/6$ coverage
+gate at the window level --- consistent with the flat-cost-surface
+argument of Section~\ref{sec:mpc-robustness}.
+
+\medskip
+A trajectory plot of $A(t)$ under both policies, and a plot of the
+SMC${}^2$ posterior-mean schedule, are included as Figure
+placeholders here; they can be regenerated from the artefacts in
+\texttt{version\_2/outputs/fsa\_high\_res/} by re-running
+\texttt{tools/bench\_smc\_full\_mpc\_fsa.py}.
+
+\begin{center}
+\fbox{\parbox{0.85\textwidth}{\centering
+\textit{Figure placeholder: $A(t)$ trajectory under closed-loop MPC
+(blue) and constant baseline $\Phi \equiv 1$ (grey), with the
+discovered rest-leaning $\Phi$ schedule overlaid.}}}
+\end{center}

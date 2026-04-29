@@ -1,0 +1,110 @@
+\section{The bootstrap particle filter}\label{sec:pf}
+
+\subsection{Bayesian filtering recursion}
+
+Let $X_n \in \R^3$ denote the latent state $(B,F,A)$ at the $n$th
+fifteen-minute time step, and let $Y_n$ denote the corresponding
+multi-channel observation. For a fixed value of the static parameter
+$\thetadyn$, the FSA-v2 model defines a hidden Markov model with
+transition density
+\begin{equation}
+  X_n \mid X_{n-1} \sim p(\,\cdot\mid X_{n-1},\,\Phi_n,\,\thetadyn)
+\end{equation}
+implicitly through the Euler--Maruyama discretisation of
+\eqref{eq:fsa-B}--\eqref{eq:fsa-A}, and observation density
+\begin{equation}
+  Y_n \mid X_n \sim p(\,\cdot\mid X_n,\,C(t_n),\,\thetadyn)
+\end{equation}
+given by the four-channel model \eqref{eq:obs-hr}--\eqref{eq:obs-steps}.
+Bayesian filtering is the recursive computation of the conditional
+distribution $\pi_n(\dd x_n) := p(\dd x_n \mid Y_{1:n},\,\thetadyn)$. It
+factorises into a one-step prediction and a Bayes update:
+\begin{align}
+  \pi_{n\mid n-1}(\dd x_n)
+    &= \int p(\dd x_n \mid x_{n-1},\,\Phi_n,\,\thetadyn)\,
+            \pi_{n-1}(\dd x_{n-1}), \label{eq:filter-predict}\\
+  \pi_n(\dd x_n)
+    &\propto p(Y_n \mid x_n,\,C(t_n),\,\thetadyn)\;\pi_{n\mid n-1}(\dd x_n).
+    \label{eq:filter-update}
+\end{align}
+Equations \eqref{eq:filter-predict}--\eqref{eq:filter-update} have closed
+form only when both densities are linear-Gaussian (the Kalman case).
+For FSA-v2 they do not, and a Monte Carlo approximation is required.
+
+\subsection{Sequential importance resampling}
+
+The bootstrap particle filter (Gordon, Salmond and Smith, 1993; Doucet
+and Johansen, 2011) approximates $\pi_n$ by a weighted empirical measure
+\begin{equation}
+  \pi_n^N(\dd x_n) \;=\; \sum_{i=1}^{N} W_n^{(i)}\,\delta_{X_n^{(i)}}(\dd x_n),
+  \qquad \sum_{i=1}^{N} W_n^{(i)} = 1,
+\end{equation}
+on a population of $N$ \emph{state particles} $\{X_n^{(i)}\}$. The
+recursion has three substeps: (i) propagate each particle through the
+dynamics, (ii) reweight by the observation likelihood, (iii) resample to
+prevent weight degeneracy. This is sequential importance resampling
+(SIR), summarised in Algorithm~\ref{alg:sir}. Resampling is performed
+\emph{systematically}: with $u_0 \sim \Ucal[0,1)$, the resampled indices
+are obtained by walking the cumulative weight $C(j) = \sum_{i \le j} W_n^{(i)}$
+at the offsets $u_k = (k+u_0)/N$ for $k=0,\dots,N-1$. Systematic
+resampling is $O(N)$, has lower Monte Carlo variance than multinomial
+resampling, and is deterministic given $u_0$.
+
+\begin{algorithm}[H]
+\caption{Bootstrap SIR for the FSA-v2 filter, given $\thetadyn$}
+\label{alg:sir}
+\begin{algorithmic}[1]
+\State Sample $X_0^{(i)} \sim p(\dd x_0 \mid \thetadyn)$ for $i=1,\dots,N$;
+       set $W_0^{(i)} = 1/N$.
+\For{$n = 1,2,\ldots$}
+  \State \textbf{Propagate.} For each $i$, draw
+         $X_n^{(i)} \sim p(\,\cdot\mid X_{n-1}^{(i)},\,\Phi_n,\,\thetadyn)$
+         by one Euler--Maruyama step of \eqref{eq:fsa-B}--\eqref{eq:fsa-A}.
+  \State \textbf{Reweight.} Set
+         $\tilde W_n^{(i)} = W_{n-1}^{(i)}\,p(Y_n \mid X_n^{(i)},\,C(t_n),\,\thetadyn)$
+         and $W_n^{(i)} = \tilde W_n^{(i)}/\sum_j \tilde W_n^{(j)}$.
+  \State \textbf{ESS check.} Compute
+         $N_{\mathrm{eff}} = 1/\sum_i (W_n^{(i)})^2$. If
+         $N_{\mathrm{eff}} < N_{\mathrm{thr}}$, resample
+         $\{X_n^{(i)}\}$ systematically by $\{W_n^{(i)}\}$ and reset
+         $W_n^{(i)} \leftarrow 1/N$.
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
+The implementation in
+\href{run:../smc2fc/filtering/gk_dpf_v3_lite.py}{\texttt{smc2fc/filtering/gk\_dpf\_v3\_lite.py}}
+adds two refinements that we mention but do not develop here. First, when
+parameter particles are coupled to the state particles in the SMC${}^2$
+outer layer of Section~\ref{sec:smc2}, a Liu--West shrinkage move is
+applied with an effective-sample-size dependent bandwidth, slowing
+parameter-cloud collapse. Second, when the effective sample size
+collapses despite resampling, an optional low-rank Sinkhorn optimal
+transport step blends a transport plan into the systematic resample.
+Both are diagnostic / numerical safeguards rather than changes to the
+mathematical statement of Algorithm~\ref{alg:sir}.
+
+\subsection{The unbiased marginal likelihood}\label{sec:pf-likelihood}
+
+A key property of the bootstrap filter, which makes the SMC${}^2$
+algorithm of the next section possible, is that it produces an unbiased
+estimator of the marginal likelihood. With the unnormalised weights
+$\tilde W_n^{(i)}$ from line~4 of Algorithm~\ref{alg:sir}, define
+\begin{equation}
+  \Lhat_N(\thetadyn) \;:=\; \prod_{n=1}^{T}
+    \biggl(\frac{1}{N}\sum_{i=1}^{N} \tilde W_n^{(i)}\biggr).
+  \label{eq:unbiased-likelihood}
+\end{equation}
+\begin{proposition}[Unbiasedness; Del Moral, 2004]\label{prop:unbiased}
+For any $N \ge 1$ and any $T \ge 1$,
+\(
+   \E\!\bigl[\,\Lhat_N(\thetadyn)\,\bigr]
+   = p(Y_{1:T} \mid \thetadyn).
+\)
+\end{proposition}
+A proof is in Del Moral (2004, Thm.~7.4.2). For the present notes the
+significance of Proposition~\ref{prop:unbiased} is operational: it allows
+us to plug $\Lhat_N(\thetadyn)$ in place of the (intractable) exact
+likelihood $p(Y_{1:T}\mid\thetadyn)$ inside any sampler over $\thetadyn$
+and obtain a procedure that targets exactly the right posterior. This is
+precisely what SMC${}^2$ does.

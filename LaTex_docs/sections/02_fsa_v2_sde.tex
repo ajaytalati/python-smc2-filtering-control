@@ -1,0 +1,209 @@
+\section{The FSA-v2 SDE model}\label{sec:fsa}
+
+\subsection{State, drift, and diffusion}
+
+Let $(B(t),\,F(t),\,A(t))$ denote the latent state of a single individual
+at time $t \ge 0$, measured in days. The three components are interpreted as
+\begin{itemize}
+  \item $B(t) \in [0,1]$ -- a normalised \emph{fitness} variable; the
+        Banister chronic compartment;
+  \item $F(t) \in [0,\infty)$ -- an unnormalised \emph{fatigue} variable;
+        the Banister acute compartment;
+  \item $A(t) \in [0,\infty)$ -- the \emph{amplitude} of an autonomic /
+        circadian Stuart--Landau oscillator.
+\end{itemize}
+The single exogenous control input is the (non-negative) training-stimulus
+rate $\Phi(t) \in [0,\Phimax]$, expressed in arbitrary daily TRIMP-like
+units. Throughout we work in It\^o form. The drift coefficients are
+\begin{align}
+  \mu(B,F) &= \mu_0 + \mu_B B - \mu_F F - \mu_{FF} F^2, \label{eq:fsa-mu} \\
+  \dd B &= \bigl[\,\kappa_B(1+\varepsilon_A A)\,\Phi(t) - B/\tau_B\,\bigr]\,\dd t
+            + \sigma_B \sqrt{B(1-B)}\,\dd W_B, \label{eq:fsa-B} \\
+  \dd F &= \bigl[\,\kappa_F\,\Phi(t) - (1+\lambda_A A)/\tau_F \cdot F\,\bigr]\,\dd t
+            + \sigma_F \sqrt{F}\,\dd W_F, \label{eq:fsa-F} \\
+  \dd A &= \bigl[\,\mu(B,F)\,A - \eta\,A^3\,\bigr]\,\dd t
+            + \sigma_A \sqrt{A}\,\dd W_A, \label{eq:fsa-A}
+\end{align}
+where $W_B,W_F,W_A$ are independent scalar Brownian motions. The diffusion
+in \eqref{eq:fsa-B} is the Jacobi diffusion on $[0,1]$ (Forman and S\o rensen,
+2008): the volatility vanishes at both boundaries $B=0$ and $B=1$, so the
+state never leaves the unit interval. The diffusions in \eqref{eq:fsa-F}
+and \eqref{eq:fsa-A} are square-root (CIR-type, after Cox, Ingersoll and
+Ross, 1985): the volatility vanishes at the lower boundary, so $F$ and $A$
+remain non-negative.
+
+The drift terms have a natural physiological reading. Equation
+\eqref{eq:fsa-B} is the standard Banister chronic equation
+$\dot B = \kappa_B \Phi - B/\tau_B$, augmented by an autonomic-coupling
+factor $(1+\varepsilon_A A)$: when the autonomic amplitude is high the
+body adapts more efficiently from the same training stimulus. Equation
+\eqref{eq:fsa-F} is the Banister acute equation, with the clearance rate
+multiplied by $(1+\lambda_A A)$: a high autonomic amplitude clears fatigue
+faster. Equation \eqref{eq:fsa-A} is a Stuart--Landau cubic, in which the
+linear growth rate $\mu(B,F)$ depends on the slow Banister state. As
+$\mu$ crosses zero the deterministic skeleton undergoes a Hopf-type
+bifurcation: for $\mu<0$ the origin is stable, and for $\mu>0$ a stable
+limit cycle of radius $\sqrt{\mu/\eta}$ appears. The quadratic
+$-\mu_{FF} F^2$ term in \eqref{eq:fsa-mu} encodes \emph{overtraining
+collapse}: when fatigue is excessive, the autonomic system loses its
+ability to oscillate.
+
+\subsection{Truth parameters}
+
+Table~\ref{tab:fsa-truth} lists the truth parameters used throughout
+these notes. They correspond to the canonical Banister time constants
+$\tau_B = 42\,\mathrm{d}$, $\tau_F = 7\,\mathrm{d}$ and to a Stuart--Landau
+amplitude with deterministic equilibrium $A^* \approx 1$ when
+$\mu \approx 0.2$.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}llrl@{}}
+\toprule
+Group & Symbol & Value & Meaning \\
+\midrule
+Banister timescales       & $\tau_B$              & $42$       & chronic time constant (d) \\
+                          & $\tau_F$              & $7$        & acute time constant (d) \\
+Banister gains            & $\kappa_B$            & $0.012$    & $B$-gain per unit $\Phi$ \\
+                          & $\kappa_F$            & $0.030$    & $F$-gain per unit $\Phi$ \\
+$A$-coupling              & $\varepsilon_A$       & $0.40$     & boost to $B$-gain at $A=1$ \\
+                          & $\lambda_A$           & $1.00$     & boost to $F$-clearance at $A=1$ \\
+Stuart--Landau            & $\mu_0$               & $0.02$     & baseline growth rate \\
+                          & $\mu_B$               & $0.30$     & fitness raises $\mu$ \\
+                          & $\mu_F$               & $0.10$     & linear fatigue suppression \\
+                          & $\mu_{FF}$            & $0.40$     & quadratic fatigue collapse \\
+                          & $\eta$                & $0.20$     & cubic damping \\
+Diffusion                 & $\sigma_B$            & $0.010$    & Jacobi noise scale \\
+                          & $\sigma_F$            & $0.012$    & CIR noise scale on $F$ \\
+                          & $\sigma_A$            & $0.020$    & CIR noise scale on $A$ \\
+\bottomrule
+\end{tabular}
+\caption{Truth parameters of the FSA-v2 dynamics. Source:
+\texttt{version\_2/models/fsa\_high\_res/\_dynamics.py}.}
+\label{tab:fsa-truth}
+\end{table}
+
+\subsection{The training-stimulus envelope}
+
+The control variable in the SDE is the instantaneous training-stimulus
+rate $\Phi(t)$. In practice training is delivered in discrete daily
+sessions concentrated in the morning, and the simulator expands a daily
+schedule $(\Phi_d)_{d=1,\dots,N}$ into a high-resolution envelope at
+fifteen-minute resolution as follows. Let $\tau_{\mathrm{burst}}=3\,\mathrm{h}$ be a
+shape parameter, and let $[t_{\mathrm{wake}},t_{\mathrm{sleep}}] = [7,23]$ be the
+daily wake window (in hours). The within-day envelope is
+\begin{equation}
+  e(t) \;\propto\;
+    \begin{cases}
+      (t-t_{\mathrm{wake}})\,\exp\!\bigl(-(t-t_{\mathrm{wake}})/\tau_{\mathrm{burst}}\bigr)
+        & t_{\mathrm{wake}} \le t < t_{\mathrm{sleep}}, \\
+      0  & \text{otherwise},
+    \end{cases}
+  \label{eq:phi-envelope}
+\end{equation}
+which is the standard Gamma$(k=2)$ shape, peaking at
+$t-t_{\mathrm{wake}} = \tau_{\mathrm{burst}}$. The constant of proportionality
+is fixed so that
+\begin{equation}
+  \int_{\text{day}} \Phi(t)\,\dd t \;=\; 24\,\Phi_d,
+\end{equation}
+i.e.~the daily integral of the within-day envelope is preserved. The slow
+Banister equations \eqref{eq:fsa-B}--\eqref{eq:fsa-F} therefore see the
+same daily load whether $\Phi$ is delivered as a constant or as a
+morning-loaded burst, and the fast Stuart--Landau dynamics in $A$ pick up
+the within-day shape.
+
+\subsection{Four-channel observation model}
+
+The state $(B,F,A)$ is not directly observed. Instead we receive four
+discrete-time channels at the fifteen-minute grid:
+\begin{align}
+  \mathrm{HR}(t) &\sim
+    \Ncal\!\bigl(\,\mathrm{HR}_{\mathrm{base}}
+                  - \kappa_B^{\mathrm{HR}}\,B
+                  + \alpha_A^{\mathrm{HR}}\,A
+                  + \beta_C^{\mathrm{HR}}\,C(t),\;
+                  \sigma_{\mathrm{HR}}^2\bigr),
+    && \text{(sleep-gated)} \label{eq:obs-hr}\\
+  P(\mathrm{sleep}(t)=1\mid A,C) &=
+    \sigmoid\!\bigl(\,k_C\,C(t) + k_A\,A - \tilde c\,\bigr),
+    && \text{(always observed)} \label{eq:obs-sleep}\\
+  S(t) &\sim
+    \Ncal\!\bigl(\,S_{\mathrm{base}} + k_F\,F - k_A^S\,A
+                  + \beta_C^S\,C(t),\;
+                  \sigma_S^2\bigr),
+    && \text{(wake-gated)} \label{eq:obs-stress}\\
+  \log(\mathrm{steps}(t)+1) &\sim
+    \Ncal\!\bigl(\,\mu_0^{\mathrm{step}} + \beta_B^{\mathrm{step}}\,B
+                  - \beta_F^{\mathrm{step}}\,F + \beta_A^{\mathrm{step}}\,A
+                  + \beta_C^{\mathrm{step}}\,C(t),\;
+                  \sigma_{\mathrm{step}}^2\bigr),
+    && \text{(wake-gated)} \label{eq:obs-steps}
+\end{align}
+where $C(t) = \cos(2\pi t + \phi)$ is a fixed deterministic circadian
+covariate (not a latent variable). ``Sleep-gated'' channels are emitted
+only when the sleep label of \eqref{eq:obs-sleep} is one; ``wake-gated''
+channels only when it is zero. The collection of observation-model
+parameters $(\mathrm{HR}_{\mathrm{base}},\kappa_B^{\mathrm{HR}},\dots,\sigma_{\mathrm{step}})$
+brings the full static parameter vector $\thetadyn$ for the joint
+state-space model to roughly $30$ scalar entries. We will write
+$y_{1:n}$ for the multi-channel observation record up to time $t_n$ and
+$p(y_{1:n}\mid \thetadyn)$ for its marginal likelihood under the model.
+
+\subsection{Two outstanding analyses}\label{sec:fsa-remarks}
+
+The model defined by
+\eqref{eq:fsa-mu}--\eqref{eq:fsa-A} and
+\eqref{eq:obs-hr}--\eqref{eq:obs-steps} has been validated empirically by
+the experiments reported in Section~\ref{sec:results}, but two analyses
+that we would expect to be present in a complete treatment are
+\emph{not yet} part of the project. We flag them here, before any of the
+inference machinery is built, so that the reader does not mistake their
+absence for completeness.
+
+\begin{remark}[Fisher information rank identifiability --- outstanding]\label{rem:fim}
+For a parameter vector $\theta \in \R^d$ and observations $y$ from the
+model, recall that the Fisher information matrix is
+\begin{equation}
+  \Ical(\theta) \;=\;
+    \E_{y\sim p(\cdot\mid\theta)}
+    \!\Bigl[\,\nabla_\theta \log p(y\mid\theta)\,
+              \nabla_\theta \log p(y\mid\theta)^{\!\top}\Bigr]. \label{eq:fim}
+\end{equation}
+Local identifiability of $\theta$ at a point $\theta^*$ requires that
+$\Ical(\theta^*)$ have full rank $d$; rank-deficient directions
+correspond to one-parameter families of models that produce
+indistinguishable observation distributions. For FSA-v2 with $d \approx
+30$, this rank check has \emph{not been carried out}. A future revision
+of these notes should evaluate $\Ical(\theta^*)$ numerically -- for
+instance via the score function obtained by automatic differentiation of
+the model code -- at one or more representative truth points, and either
+verify $\rank \Ical(\theta^*)=d$ or enumerate the rank-deficient
+directions and their physical interpretation. Practical consequences are
+discussed in Section~\ref{sec:discussion-fim}.
+\end{remark}
+
+\begin{remark}[Lyapunov stability of the FSA-v2 SDE --- outstanding]\label{rem:lyap}
+A stability analysis for FSA-v2 would proceed in two stages, neither of
+which has yet been carried out:
+\begin{enumerate}
+  \item[(a)] \emph{Deterministic skeleton.} For the zero-noise system
+    under a constant control $\Phi \equiv \Phi_{\mathrm{const}}$, identify
+    the equilibria $(B^*,F^*,A^*)(\Phi_{\mathrm{const}})$, compute the drift
+    Jacobian, and check the eigenvalue signs (Lyapunov's first method).
+    The case $A=0$ is always an equilibrium of \eqref{eq:fsa-A}; whether
+    it is stable depends on the sign of $\mu(B^*,F^*)$. The Stuart--Landau
+    bifurcation in $A$ implies that for some
+    $\Phi_{\mathrm{const}}$ the deterministic skeleton has an additional
+    stable limit cycle of radius $\sqrt{\mu(B^*,F^*)/\eta}$.
+  \item[(b)] \emph{Stochastic stability.} Find a Lyapunov function
+    $V:\R^3_+ \to \R_+$ for the full SDE such that the infinitesimal
+    generator $\Lcal$ satisfies a Foster--Lyapunov drift condition
+    $\Lcal V(x) \le -\alpha V(x) + c$ on the operating domain. Such an
+    inequality would imply exponential ergodicity and the existence of a
+    unique invariant distribution.
+\end{enumerate}
+Neither analysis has yet been carried out for FSA-v2; both are flagged
+as required next steps in Section~\ref{sec:discussion-lyap}.
+\end{remark}

@@ -1,0 +1,55 @@
+\documentclass[11pt,a4paper]{article}
+
+\input{preamble.tex}
+
+\title{Sequential Monte Carlo${}^2$ for Bayesian Filtering and Stochastic
+Optimal Control of a Physiological SDE\\[2pt]
+\large Lecture notes on the FSA-v2 model}
+\author{}
+\date{Generated 29 April 2026 \\[2pt]
+\small Source: \texttt{python-smc2-filtering-control} at commit
+\texttt{93f93bc} \\
+(\href{https://github.com/ajaytalati/python-smc2-filtering-control}{github.com/ajaytalati/python-smc2-filtering-control})}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+These notes present the mathematical theory underlying a research code base
+that combines particle filtering and stochastic optimal control on a
+three-dimensional physiological stochastic differential equation. We define
+the FSA-v2 model, develop the bootstrap particle filter and the SMC${}^2$
+algorithm of Chopin, Jacob and Papaspiliopoulos, recast optimal scheduling
+of training stimulus as posterior inference under a tempered cost likelihood,
+and close the loop in a model-predictive controller that interleaves a
+rolling SMC${}^2$ filter with a posterior-mean control SMC${}^2$ over an
+RBF schedule. We end by describing how the abstract receding-horizon loop
+is realised in code, by setting out a linear--quadratic--Gaussian
+approximation that could be added as a cheap baseline, and by flagging
+two outstanding analyses (Fisher information rank and Lyapunov stability)
+that have not yet been carried out for the model.
+
+\medskip
+\noindent
+The audience is graduate students in applied mathematics, mathematical
+engineering, applied stochastics, or process engineering. Familiarity with
+It\^o stochastic differential equations, Bayesian filtering, and basic
+optimal control at the level of a one-semester course is assumed; the
+particle-filtering and tempered-SMC machinery is built up from first
+principles.
+\end{abstract}
+
+\tableofcontents
+\medskip
+
+\input{sections/01_intro.tex}
+\input{sections/02_fsa_v2_sde.tex}
+\input{sections/03_particle_filter.tex}
+\input{sections/04_smc2.tex}
+\input{sections/05_control_inference.tex}
+\input{sections/06_mpc.tex}
+\input{sections/07_results.tex}
+\input{sections/08_discussion.tex}
+
+\end{document}

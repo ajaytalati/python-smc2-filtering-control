@@ -1,0 +1,103 @@
+\section{SMC${}^2$ over parameters}\label{sec:smc2}
+
+\subsection{The tempered posterior over $\thetadyn$}
+
+The bootstrap filter of Section~\ref{sec:pf} assumes the static parameter
+$\thetadyn$ is known. In practice $\thetadyn$ is itself the principal object
+of inference, with a prior $p(\thetadyn)$ and posterior
+\begin{equation}
+  p(\thetadyn \mid Y_{1:T})
+    \;\propto\; p(\thetadyn)\;p(Y_{1:T}\mid\thetadyn).
+\end{equation}
+A direct sampler is unavailable because $p(Y_{1:T}\mid\thetadyn)$ has no
+closed form. The SMC${}^2$ algorithm of Chopin, Jacob and Papaspiliopoulos
+(2013) replaces this likelihood by the unbiased estimator
+$\Lhat_N(\thetadyn)$ from \eqref{eq:unbiased-likelihood} and, for a fixed
+schedule $0 = \lambda_0 < \lambda_1 < \cdots < \lambda_K = 1$, defines a
+sequence of tempered targets
+\begin{equation}
+  \pi_\lambda(\thetadyn) \;\propto\;
+    p(\thetadyn)^{1-\lambda}\,\Lhat_N(\thetadyn)^{\lambda},
+    \qquad \lambda \in [0,1].
+  \label{eq:tempered-target}
+\end{equation}
+At $\lambda=0$ the target is the prior; at $\lambda=1$ it is, in
+expectation, the posterior. The interpolation in between bridges the two
+in a way that keeps the importance weights well-behaved.
+
+\subsection{Adaptive tempering and the move step}
+
+A population of $M$ \emph{parameter particles}
+$\{\thetadyn^{(m)}\}_{m=1,\dots,M}$ is propagated through the schedule
+$\{\lambda_k\}$. At each step the unnormalised tempering weight
+\begin{equation}
+  \omega_k^{(m)} \;=\;
+    \biggl(\frac{\Lhat_N(\thetadyn^{(m)})}{p(\thetadyn^{(m)})^{-1}}\biggr)
+    ^{\lambda_k - \lambda_{k-1}}
+\end{equation}
+is computed, and an effective sample size
+$M_{\mathrm{eff}} = (\sum_m \omega_k^{(m)})^2 / \sum_m (\omega_k^{(m)})^2$
+is monitored. The interval $\lambda_k - \lambda_{k-1}$ is chosen
+\emph{adaptively}, by bisection, to drive $M_{\mathrm{eff}}/M$ to a
+prescribed target (typically $0.5$); this avoids both unnecessarily
+short bridges and weight collapse. After resampling, each parameter
+particle is moved by a Hamiltonian Monte Carlo (HMC) kernel that targets
+$\pi_{\lambda_k}$, with the mass matrix re-estimated from the current
+particle cloud. Algorithm~\ref{alg:smc2} summarises the procedure.
+
+\begin{algorithm}[H]
+\caption{Adaptive-tempered SMC${}^2$ over $\thetadyn$}
+\label{alg:smc2}
+\begin{algorithmic}[1]
+\State Sample $\thetadyn^{(m)} \sim p(\thetadyn)$ for $m=1,\dots,M$;
+       set $\lambda_0 = 0$.
+\State For each $m$, run Algorithm~\ref{alg:sir} with $\thetadyn^{(m)}$
+       to obtain $\Lhat_N(\thetadyn^{(m)})$.
+\While{$\lambda_k < 1$}
+  \State Solve for the smallest increment $\delta \in (0,1-\lambda_k]$
+         such that the tempering ESS ratio with weights
+         $\omega^{(m)} \propto \Lhat_N(\thetadyn^{(m)})^{\delta}$
+         equals the target (e.g.\ $0.5$).
+         Set $\lambda_{k+1} = \lambda_k + \delta$.
+  \State Resample $\{\thetadyn^{(m)}\}$ systematically by
+         $\{\omega^{(m)}\}$.
+  \State \textbf{Move.} Run a small number of HMC steps targeting
+         $\pi_{\lambda_{k+1}}$ on each $\thetadyn^{(m)}$, re-running
+         Algorithm~\ref{alg:sir} as needed to evaluate the unbiased
+         likelihood at proposed values.
+  \State $k \leftarrow k+1$.
+\EndWhile
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Rolling-window SMC${}^2$ and the Schr\"odinger--F\"ollmer bridge}
+
+When data arrive sequentially, running Algorithm~\ref{alg:smc2} from
+scratch over the full record at every new arrival is wasteful. The
+implementation in this code base instead operates over a sliding sequence
+of \emph{windows}: with a fifteen-minute time grid, each window is one
+day long ($96$ bins), the stride between consecutive windows is twelve
+hours ($48$ bins), and the macrocycle of fourteen days yields
+$(14 \cdot 96 - 96)/48 + 1 = 27$ windows.
+
+For window $w \ge 2$ the parameter cloud is \emph{warm-started} from the
+posterior of window $w-1$. The transition is mediated by a
+Schr\"odinger--F\"ollmer bridge between two Gaussian fits, parameterised
+along the Bures--Wasserstein geodesic in the manifold of positive-definite
+covariance matrices. Concretely, let $(m_0,\Sigma_0)$ denote a Gaussian
+moment match to the previous window's posterior, and let
+$(m_1,\Sigma_1)$ denote an importance-weighted moment match obtained by
+a single particle-filter evaluation per particle on the new window's data.
+For a blend parameter $\rho \in [0,1]$ the bridge measure has mean and
+covariance
+\begin{align}
+  m_\rho &= (1-\rho)\,m_0 + \rho\,m_1, \\
+  \Sigma_\rho &= \bigl((1-\rho)I + \rho\,T\bigr)\,\Sigma_0\,
+                 \bigl((1-\rho)I + \rho\,T\bigr)^{\!\top},
+\end{align}
+where $T = \Sigma_0^{-1/2}\bigl(\Sigma_0^{1/2}\Sigma_1\Sigma_0^{1/2}\bigr)^{1/2}\Sigma_0^{-1/2}$
+is the Bures--Wasserstein optimal-transport map. The default
+implementation uses $\rho = 0.7$, biasing the warm-start toward the new
+window's evidence. We do not develop the geometry here; the reader
+unfamiliar with it can treat the bridge as a black box that produces a
+sensible Gaussian initialisation for the next window's tempering schedule.

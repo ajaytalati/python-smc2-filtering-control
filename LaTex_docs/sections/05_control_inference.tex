@@ -1,0 +1,92 @@
+\section{Control as inference}\label{sec:control}
+
+\subsection{The cost functional}
+
+Sections~\ref{sec:pf} and~\ref{sec:smc2} treat the dynamics parameters
+$\thetadyn$ and the latent state $X$ as the things to be inferred from a
+fixed schedule $\Phi$. We now reverse the perspective: the dynamics
+parameters and the initial state are taken as given, and the schedule
+itself becomes the unknown.
+
+For a fixed truth $\thetadyn$, an initial state $x_0$, and a candidate
+schedule $\Phi:[0,T]\to[0,\Phimax]$, define the trajectory cost
+\begin{equation}
+  J(\Phi) \;=\; \E_{X\mid \Phi}\!\left[\,
+       -\!\int_0^T A(t)\,\dd t
+       \;+\; \lambda_F\!\int_0^T \max\!\bigl(F(t)-\Fmax,\,0\bigr)^2\,\dd t
+       \,\right],
+  \label{eq:cost}
+\end{equation}
+where the expectation is over the law of $X = (B,F,A)$ under the SDE
+\eqref{eq:fsa-B}--\eqref{eq:fsa-A} driven by $\Phi$. The first term
+rewards mean autonomic amplitude; the second is a soft barrier
+penalising trajectories that exceed the fatigue ceiling
+$\Fmax = 0.40$. The barrier weight is $\lambda_F = 1$ in the reference
+implementation; no $\Phi^2$ control penalty is included.
+
+\subsection{Schedule decoder}
+
+The schedule $\Phi$ is parameterised in finite dimensions by a vector
+$\thetactrl \in \R^8$ of Gaussian-RBF anchor coefficients. With a fixed
+basis $\{\varphi_a(t)\}_{a=1}^{8}$ (eight evenly spaced Gaussians on
+$[0,T]$ at the discretisation grid) and a logit bias
+$c_\Phi := \log\!\bigl(\Phi_{\mathrm{def}}/(\Phimax-\Phi_{\mathrm{def}})\bigr)$
+chosen so that $\thetactrl=0$ produces the canonical-Banister default
+$\Phi \equiv \Phi_{\mathrm{def}} = 1.0$, the decoder is
+\begin{equation}
+  \Phi(t;\,\thetactrl) \;=\;
+    \Phimax \cdot \sigmoid\!\Biggl(\,c_\Phi
+       + \sum_{a=1}^{8} (\thetactrl)_a\,\varphi_a(t)\Biggr).
+  \label{eq:schedule-decoder}
+\end{equation}
+The sigmoid envelope keeps $\Phi(t;\,\thetactrl) \in [0,\Phimax]$ for
+every $\thetactrl$; the search is unconstrained in $\R^8$.
+
+\subsection{Tempered control posterior}
+
+Following the control-as-inference tradition (Kappen, 2005; Toussaint,
+2009; Levine, 2018), we define a probability measure on $\thetactrl$ by
+treating the negative cost as an unnormalised log-likelihood. With
+inverse temperature $\beta>0$ and a Gaussian prior
+$\thetactrl \sim \Ncal(0,\,\sigma_{\mathrm{prior}}^2 I_8)$, the
+\emph{control posterior} is
+\begin{equation}
+  q_\beta(\thetactrl) \;\propto\;
+    \exp\!\bigl(-\beta\,J(\thetactrl)\bigr)\;
+    \Ncal(\thetactrl;\,0,\,\sigma_{\mathrm{prior}}^2 I_8),
+  \label{eq:control-posterior}
+\end{equation}
+where we now write $J(\thetactrl) := J(\Phi(\,\cdot\,;\thetactrl))$.
+Sampling from $q_\beta$ is performed by exactly the SMC${}^2$ machinery
+of Section~\ref{sec:smc2}, but with the unbiased filter likelihood
+$\Lhat_N(\thetadyn)$ replaced by the cost-likelihood
+$\exp(-\beta\,J(\thetactrl))$. The inverse temperature $\beta$ is
+calibrated automatically from the cost spread of the prior cloud, and the
+tempered schedule $\lambda \in [0,1]$ smoothly interpolates from prior to
+control posterior.
+
+\subsection{Posterior mean as the controller output}
+
+\begin{proposition}[Posterior mean as a regularised cost minimiser]\label{prop:control-mean}
+Let $q_\beta$ be the control posterior \eqref{eq:control-posterior} and
+write $\bar\theta := \E_{q_\beta}[\thetactrl]$. Then
+\begin{equation}
+  \bar\theta \;=\; \argmin_{\theta \in \R^8}
+    \Bigl\{\,\E_{q_\beta}\!\bigl[\,\|\theta - \thetactrl\|_2^2\,\bigr]\,\Bigr\},
+  \label{eq:posterior-mean-l2}
+\end{equation}
+i.e.\ the posterior mean is the $L^2$ minimiser of squared distance under
+the tempered measure. In particular, when $J$ is approximately
+quadratic near its minimum and the prior variance is large enough that
+the prior contribution to $\nabla \log q_\beta$ is small, $\bar\theta$
+sits in a neighbourhood of the unregularised minimiser
+$\argmin_\theta J(\theta)$ of size $O(\beta^{-1/2})$.
+\end{proposition}
+
+The implementation uses $\bar\theta$, computed as the equally-weighted
+mean of the SMC${}^2$ parameter cloud at $\lambda=1$, as the controller
+output. The corresponding schedule is then
+$\Phi(\,\cdot\,;\,\bar\theta)$ via \eqref{eq:schedule-decoder}. We will
+see in Section~\ref{sec:results} that this point output is sufficient in
+practice, despite throwing away the higher-order moments of $q_\beta$;
+Section~\ref{sec:mpc-robustness} discusses why.

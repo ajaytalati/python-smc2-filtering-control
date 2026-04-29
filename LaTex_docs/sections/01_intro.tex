@@ -1,0 +1,58 @@
+\section{Introduction}\label{sec:intro}
+
+A human athlete is, from the point of view of an applied mathematician,
+a non-linear stochastic dynamical system whose state is only ever observed
+through a handful of noisy proxies. Heart rate, sleep duration, perceived
+stress, and step counts are all loosely informative about the latent
+fitness, fatigue, and autonomic condition of the body, but none of them
+directly measures any of these quantities. The classical Banister model of
+training response (Banister, 1991) treats the athlete as a deterministic
+two-compartment system; the present notes work with a stochastic
+three-compartment refinement, denoted FSA-v2, in which fitness, fatigue,
+and an autonomic amplitude evolve as a coupled It\^o stochastic differential
+equation driven by a single exogenous control --- the daily training
+stimulus $\Phi(t)$.
+
+Two questions follow naturally:
+
+\begin{enumerate}
+  \item \emph{Filtering.} Given a stream of multi-channel daily
+        observations, what is the joint posterior distribution over the
+        latent state $(B,F,A)$ and the static parameters $\theta$ of the
+        SDE?
+  \item \emph{Control.} Given the same posterior, what schedule
+        $\Phi:[0,T]\to[0,\Phimax]$ maximises a chosen functional of the
+        latent trajectory, subject to a soft constraint that fatigue
+        $F(t)$ should not exceed a physiological ceiling $\Fmax$?
+\end{enumerate}
+
+Both questions sit at the intersection of Bayesian inference and stochastic
+optimal control. They are usually treated as separate disciplines; one of
+the contributions of the underlying code base is to express both within a
+single sequential Monte Carlo framework. The filter is built from a
+bootstrap particle filter, lifted to a sampler over static parameters by
+the SMC${}^2$ algorithm (Chopin, Jacob and Papaspiliopoulos, 2013) and
+operated in a rolling-window mode. The controller is built by recasting
+the cost-minimisation problem as posterior inference under a tempered cost
+likelihood, in the spirit of Toussaint (2009) and the more general
+control-as-inference literature (Kappen, 2005; Levine, 2018). The two
+machines are then composed in a model-predictive controller that re-plans
+the next twelve hours of training stimulus from the most recent posterior.
+
+These notes are organised so that the mathematical content can be read
+linearly. Section~\ref{sec:fsa} defines the FSA-v2 SDE and observation
+model. Section~\ref{sec:pf} develops the bootstrap particle filter. The
+SMC${}^2$ outer loop and its rolling-window variant are presented in
+Section~\ref{sec:smc2}. Section~\ref{sec:control} formulates the control
+problem as a posterior-inference problem. Section~\ref{sec:mpc} is the
+extended core of the document: it develops the receding-horizon principle,
+describes the FSA-v2 model-predictive controller in both mathematical and
+implementation terms, and discusses a linear--quadratic--Gaussian
+approximation that could be added as a cheap baseline. Section~\ref{sec:results}
+reports the two headline empirical results of the code base: an open-loop
+gain of $+28\%$ in mean autonomic amplitude over a constant-stimulus baseline
+on an $84$-day horizon, and a closed-loop gain of $+17\%$ in a fourteen-day
+rolling controller. Section~\ref{sec:discussion} closes by flagging three
+analyses that have \emph{not} yet been carried out on this model and that we
+identify as the principal open work: Fisher information rank identifiability,
+Lyapunov stability, and the LQG / Riccati alternative.

@@ -1,0 +1,180 @@
+\section{Discussion and open questions}\label{sec:discussion}
+
+The empirical results of Section~\ref{sec:results} show that the
+SMC${}^2$ filter and controller, composed in receding-horizon form,
+produce a closed-loop policy that improves mean autonomic amplitude by
+$+17\%$ over a sensible constant baseline on the FSA-v2 model, with no
+fatigue-ceiling violations. This is encouraging, but the present
+treatment is incomplete in three specific and important ways. Each of
+the three subsections below identifies one outstanding analysis that
+should be carried out before the model is used in a setting where its
+properties matter --- for instance, in a real-time clinical setting
+where mis-identification of a parameter could mean prescribing the wrong
+training load.
+
+\subsection{Outstanding analysis: Fisher information rank
+identifiability}\label{sec:discussion-fim}
+
+Remark~\ref{rem:fim} of Section~\ref{sec:fsa-remarks} introduced the
+Fisher information matrix \eqref{eq:fim} and pointed out that the rank
+check on $\Ical(\theta^*)$ has not been carried out for FSA-v2. We now
+sketch what such an analysis would look like and what its consequences
+might be.
+
+\paragraph{Procedure.} Pick a representative truth point $\theta^*$ (the
+parameter vector of Table~\ref{tab:fsa-truth} extended with the
+observation-model coefficients). Generate $L$ independent simulated
+trajectories of the model at $\theta^*$, each producing a record
+$y^{(\ell)}_{1:T}$ of four-channel observations on the project's
+fifteen-minute time grid. For each trajectory, evaluate the score
+$s^{(\ell)}(\theta) = \nabla_\theta \log p(y^{(\ell)}_{1:T} \mid \theta)$
+at $\theta = \theta^*$ by automatic differentiation through the
+generative code (the JAX dynamics solver of
+\texttt{version\_2/models/fsa\_high\_res/\_dynamics.py} together with the
+observation model in \texttt{simulation.py}). Approximate the Fisher
+information by the empirical second moment
+\(
+  \widehat\Ical(\theta^*) = L^{-1} \sum_\ell s^{(\ell)}(\theta^*)\,s^{(\ell)}(\theta^*)^{\!\top}
+\)
+and read off its singular-value decomposition. Repeat for several truth
+points to check that the conclusions are not parameter-specific.
+
+\paragraph{Possible findings.} If $\rank \widehat\Ical(\theta^*) = d$ and
+the smallest singular value is bounded away from zero, the model is
+locally identifiable at $\theta^*$ and inference is well-posed. If
+instead the rank is deficient by $r$, the right-singular vectors
+corresponding to the smallest $r$ singular values give the directions in
+parameter space along which the likelihood is flat. Each such direction
+should then be examined physically: it might indicate (i) a
+collinearity between two physiological parameters that no four-channel
+observation set could resolve, in which case one of them must be fixed
+or tightly priored; (ii) a redundancy in the observation model itself
+(for instance, that HR and stress carry overlapping information about
+$B$ and $F$); or (iii) a genuine modelling ambiguity that should be
+removed by reparameterisation. Consequences for the SMC${}^2$ filter
+include the possibility of multimodal posteriors, slower mixing of the
+HMC moves of Section~\ref{sec:smc2}, and degraded robustness of the
+closed-loop policy in the directions that the filter cannot constrain.
+
+\subsection{Outstanding analysis: Lyapunov stability}\label{sec:discussion-lyap}
+
+Remark~\ref{rem:lyap} flagged the Lyapunov analysis as an outstanding
+piece of work in two parts: stability of the deterministic skeleton, and
+stochastic stability of the full SDE.
+
+\paragraph{Deterministic skeleton.} For a constant control
+$\Phi = \Phi_{\mathrm{const}}$, the steady-state $A^*=0$ branch satisfies
+\(
+  B^*  = \kappa_B(1+\varepsilon_A \cdot 0)\Phi_{\mathrm{const}}\,\tau_B = \kappa_B \tau_B \Phi_{\mathrm{const}}
+\)
+and
+\(
+  F^* = \kappa_F\,\tau_F\,\Phi_{\mathrm{const}}.
+\)
+At this branch the Stuart--Landau growth rate is
+$\mu(B^*,F^*) = \mu_0 + \mu_B B^* - \mu_F F^* - \mu_{FF} (F^*)^2$, and
+the deterministic $A$-equation is locally $\dot A = \mu(B^*,F^*)\,A$.
+The $A=0$ branch is therefore stable when $\mu(B^*,F^*) < 0$ and unstable
+when $\mu(B^*,F^*) > 0$. In the latter regime an additional stable
+limit cycle of radius $\sqrt{\mu(B^*,F^*)/\eta}$ appears. The complete
+analysis would chart the bifurcation locus
+$\{\Phi_{\mathrm{const}} : \mu(B^*(\Phi_{\mathrm{const}}),F^*(\Phi_{\mathrm{const}})) = 0\}$
+and identify the critical training stimulus at which the autonomic
+amplitude switches from quiescent to oscillatory.
+
+\paragraph{Stochastic stability.} The natural candidate Lyapunov function
+on $\R^3_+$ is the quadratic
+\(
+  V(B,F,A) = a B^2 + b F^2 + c A^2,
+\)
+with $a,b,c > 0$ to be chosen. Under It\^o calculus,
+\begin{align*}
+  \Lcal V(B,F,A)
+    &= 2a B \bigl[\kappa_B(1+\varepsilon_A A)\Phi - B/\tau_B\bigr]
+       + a\,\sigma_B^2\,B(1-B) \\
+    &\quad
+       + 2b F \bigl[\kappa_F \Phi - (1+\lambda_A A)/\tau_F \cdot F\bigr]
+       + b\,\sigma_F^2\,F \\
+    &\quad
+       + 2c A \bigl[\mu(B,F)\,A - \eta A^3\bigr]
+       + c\,\sigma_A^2\,A.
+\end{align*}
+The terms $-2a B^2/\tau_B$, $-2b F^2 (1+\lambda_A A)/\tau_F$ and
+$-2c \eta A^4$ are dissipative; the remaining terms grow at most
+linearly or quadratically in the state. For sufficiently large $a,b,c$
+and appropriate operating range one would hope to establish a
+Foster--Lyapunov drift inequality $\Lcal V \le -\alpha V + c'$ on
+$\{V \le R\}$ for some $R$, which would imply exponential ergodicity and
+the existence of a unique invariant distribution. The argument is
+delicate near the Stuart--Landau bifurcation, where the $A$-direction is
+weakly stabilising or weakly unstabilising; a piecewise Lyapunov function
+that switches between regimes may be required. None of this has yet been
+carried out.
+
+\subsection{Outstanding analysis: LQG / Riccati exact-approximate
+alternative}\label{sec:discussion-lqg}
+
+Section~\ref{sec:mpc-lqg} sketched a linear--quadratic--Gaussian
+controller for FSA-v2 under Assumptions~\ref{ass:lqg-A1}--\ref{ass:lqg-A3}.
+None of the corresponding code is currently in the repository. We
+identify three concrete pieces of work that together would deliver the
+LQG companion to the SMC${}^2$ controller:
+\begin{enumerate}
+  \item Implement automatic linearisation of the drift around a
+        user-supplied operating point, using the existing JAX dynamics in
+        \texttt{version\_2/models/fsa\_high\_res/\_dynamics.py}; expose
+        the time-varying $A_{\mathrm{lin}}(t),B_{\mathrm{lin}}(t)$ of
+        \eqref{eq:lqg-AB} on the same fifteen-minute time grid used by
+        the rest of the project.
+  \item Implement a backward-integration solver for the differential
+        Riccati equation \eqref{eq:riccati} on the same time grid.
+  \item Build an \texttt{LQGController} class that emits the feedback
+        gain $K(t)$ of \eqref{eq:lqg-feedback} and a corresponding
+        $\Phi$ schedule on the time grid.
+\end{enumerate}
+Two scientific questions then become accessible. \emph{Does the LQG
+schedule, evaluated as an open-loop control on the FSA-v2 model, achieve
+mean amplitude comparable to the SMC${}^2$ schedule on the $84$-day
+benchmark of Section~\ref{sec:results}?} If yes, the non-linear
+SMC${}^2$ machinery may be unnecessary in steady-state regimes; if no,
+the gap quantifies the value of capturing the cubic Stuart--Landau
+non-linearity. \emph{Does using the LQG schedule as a warm-start for the
+SMC${}^2$ control of Section~\ref{sec:control} reduce wall-clock time to
+solution?} A reasonable hypothesis is that LQG provides an excellent
+initial $\thetactrl$ in the linear regime and only marginal benefit
+where the non-linearity matters; experimentally testing this is the
+natural next step.
+
+\subsection{Other open questions}\label{sec:discussion-other}
+
+A few smaller points deserve mention but are not, in the authors' view,
+on the same level of importance as the three analyses above.
+
+\begin{itemize}
+  \item \emph{Horizon length.} The Stage~E5 result uses a fourteen-day
+        macrocycle. The Stage~D open-loop result uses eighty-four days.
+        It is not yet known how the closed-loop gain scales with horizon
+        length; a horizon sweep is straightforward to set up.
+  \item \emph{Posterior shape vs.\ posterior mean.} The controller of
+        Section~\ref{sec:mpc-pipeline} uses only the posterior mean
+        $\bar\theta_{\mathrm{ctrl}}$. The flat-cost-surface argument of
+        Section~\ref{sec:mpc-robustness} explains why this is sometimes
+        sufficient, but in regimes where the cost surface is curved the
+        full posterior carries useful information. A risk-sensitive
+        variant that minimises a quantile of the cost rather than the
+        mean would be the natural extension.
+  \item \emph{Parameter drift across windows.} The Bures--Wasserstein
+        bridge of Section~\ref{sec:smc2} produces a sensible
+        Gaussian-fit warm-start, but does not protect against
+        \emph{slow} parameter drift in the truth (e.g.\ the athlete's
+        time constants change with training age). A more principled
+        approach would augment the static parameters with a slow
+        random-walk component and let the filter track the drift
+        explicitly.
+\end{itemize}
+
+\medskip
+\noindent
+The empirical successes reported in Section~\ref{sec:results} should be
+read alongside the three outstanding analyses above. The model is
+empirically useful; it is not yet mathematically complete.
