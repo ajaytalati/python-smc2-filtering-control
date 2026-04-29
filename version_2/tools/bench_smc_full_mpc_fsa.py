@@ -97,12 +97,15 @@ def extract_window(obs_data, start: int, end: int):
 
 
 def main():
-    # Parse CLI: T_total_days as positional (default 14)
+    # Parse CLI:
+    #   sys.argv[1] : T_total_days (default 14)
+    #   sys.argv[2] : run_name override (default auto-derived from settings)
     T_total_days = int(sys.argv[1]) if len(sys.argv) > 1 else 14
+    run_name_override = sys.argv[2] if len(sys.argv) > 2 else None
     REPLAN_EVERY_K = _replan_K_for_horizon(T_total_days)
 
     print("=" * 76)
-    print(f"  Stage E5/F — closed-loop MPC on FSA-v2 (T = {T_total_days} d)")
+    print(f"  Stage E5/F/G4 — closed-loop MPC on FSA-v2 (T = {T_total_days} d)")
     print("=" * 76)
 
     from models.fsa_high_res._plant import StepwisePlant
@@ -153,6 +156,9 @@ def main():
     }
     full_traj = []
     daily_phi_per_stride = []
+    # G4 checkpointing: track per-replan plans + per-replan tempering levels.
+    # `replan_history` is appended every time a fresh plan is computed.
+    replan_history = []    # list of {'stride': int, 'plan_per_day': np.ndarray, 'n_temp': int}
 
     # F1+F2: SF Path B-fixed bridge — fixes Gaussian-bridge mid-period
     # drift that caused E3 18/27 and E5 3/26 coverage. Reference:
@@ -328,6 +334,12 @@ def main():
                             f"day_last={sched_per_day[-1]:.3f}")
             print(f"plan: {res_ctrl['n_temp_levels']}lvl, "
                    f"Φ̄={sched_per_day.mean():.3f}  ({phi_summary})", flush=True)
+            # G4 checkpoint: record the full plan from this replan
+            replan_history.append({
+                'stride': int(s),
+                'plan_per_day': sched_per_day.astype(np.float64).copy(),
+                'n_temp': int(res_ctrl['n_temp_levels']),
+            })
         else:
             print(f"reuse plan day={day_in_plan}, Φ={daily_phi_planned:.3f}", flush=True)
 
@@ -381,8 +393,142 @@ def main():
     all_pass = gate1 and gate2 and gate3 and gate4
     print(f"  {'✓ all gates pass' if all_pass else '✗ one or more gates fail'}")
 
-    # ── Diagnostic plot ──
-    out_dir = "outputs/fsa_high_res"
+    # ── G4 checkpointing: per-run folder with manifest.json + data.npz ──
+    bridge_tag = ('infoaware' if smc_cfg.sf_info_aware else 'no_infoaware')
+    auto_run_name = f"T{T_total_days}d_replanK{REPLAN_EVERY_K}_{bridge_tag}"
+    run_name = run_name_override if run_name_override else auto_run_name
+    run_dir = f"outputs/fsa_high_res/g4_runs/{run_name}"
+    os.makedirs(run_dir, exist_ok=True)
+
+    # Build manifest
+    manifest = {
+        'schema_version': '1.0',
+        'T_total_days': int(T_total_days),
+        'replan_K': int(REPLAN_EVERY_K),
+        'n_strides': int(n_strides),
+        'n_replans': int(len(replan_history)),
+        'WINDOW_BINS': int(WINDOW_BINS),
+        'STRIDE_BINS': int(STRIDE_BINS),
+        'DT': float(DT),
+        'smc_cfg': {
+            'n_smc_particles': smc_cfg.n_smc_particles,
+            'n_pf_particles': smc_cfg.n_pf_particles,
+            'target_ess_frac': smc_cfg.target_ess_frac,
+            'max_lambda_inc': smc_cfg.max_lambda_inc,
+            'bridge_type': smc_cfg.bridge_type,
+            'sf_q1_mode': smc_cfg.sf_q1_mode,
+            'sf_use_q0_cov': smc_cfg.sf_use_q0_cov,
+            'sf_blend': smc_cfg.sf_blend,
+            'sf_annealed_n_stages': smc_cfg.sf_annealed_n_stages,
+            'sf_annealed_n_mh_steps': smc_cfg.sf_annealed_n_mh_steps,
+            'sf_info_aware': smc_cfg.sf_info_aware,
+            'num_mcmc_steps': smc_cfg.num_mcmc_steps,
+            'hmc_step_size': smc_cfg.hmc_step_size,
+            'hmc_num_leapfrog': smc_cfg.hmc_num_leapfrog,
+        },
+        'ctrl_cfg': {
+            'n_smc': ctrl_cfg.n_smc,
+            'n_inner': ctrl_cfg.n_inner,
+            'sigma_prior': ctrl_cfg.sigma_prior,
+            'num_mcmc_steps': ctrl_cfg.num_mcmc_steps,
+            'hmc_step_size': ctrl_cfg.hmc_step_size,
+            'hmc_num_leapfrog': ctrl_cfg.hmc_num_leapfrog,
+            'beta_max_target_nats': ctrl_cfg.beta_max_target_nats,
+            'max_temp_steps': ctrl_cfg.max_temp_steps,
+        },
+        'truth_params': {k: float(v) for k, v in truth.items()},
+        'reparam_constants': {
+            'A_typ': 0.10,
+            'F_typ': 0.20,
+            'note': "Stage G1 reparametrization — see _dynamics.py docstring",
+        },
+        'init_state': {'B': 0.05, 'F': 0.30, 'A': 0.10},
+        'seeds': {'plant': 42, 'filter_base': 42, 'ctrl_base': 42},
+        'param_names': list(em.all_names),
+        'identifiable_subset': sorted(identifiable_subset),
+        'summary': {
+            'mean_A_mpc': mean_A_mpc,
+            'mean_A_baseline': mean_A_baseline,
+            'F_violation_frac_mpc': F_viol_mpc,
+            'total_compute_s': float(total_elapsed),
+            'n_windows_pass_id_cov_5_of_6': int(n_pass_id),
+            'gates': {
+                'mean_A_geq_0.95x_baseline': bool(gate1),
+                'n_pass_id_geq_24': bool(gate2),
+                'F_violation_leq_5pct': bool(gate3),
+                'compute_leq_4h': bool(gate4),
+            },
+        },
+    }
+    import json
+    with open(f"{run_dir}/manifest.json", "w") as f:
+        json.dump(manifest, f, indent=2)
+
+    # Build data.npz (one bundled archive)
+    n_params = len(em.all_names)
+    n_smc = smc_cfg.n_smc_particles
+    posterior_particles_all = np.zeros(
+        (n_strides, n_smc, n_params), dtype=np.float32,
+    )
+    posterior_window_mask = np.zeros(n_strides, dtype=np.bool_)
+    n_temp_per_window = np.zeros(n_strides, dtype=np.int32)
+    elapsed_per_window_s = np.zeros(n_strides, dtype=np.float32)
+    id_cov_per_window = np.zeros(n_strides, dtype=np.int32)
+    for r in all_results:
+        s_idx = r['stride']
+        posterior_particles_all[s_idx] = r['particles_constrained'].astype(np.float32)
+        posterior_window_mask[s_idx] = True
+        n_temp_per_window[s_idx] = r['n_temp_filter']
+        elapsed_per_window_s[s_idx] = r['elapsed_filter_s']
+        id_cov_per_window[s_idx] = r['id_covered']
+
+    # Per-replan plan as a (n_replans, T_total_days) array
+    daily_phi_plan_per_replan = np.array(
+        [r['plan_per_day'] for r in replan_history], dtype=np.float32,
+    )
+    replan_strides = np.array([r['stride'] for r in replan_history], dtype=np.int32)
+    replan_n_temp = np.array([r['n_temp'] for r in replan_history], dtype=np.int32)
+
+    # Concatenate accumulated obs
+    obs_HR_t_idx     = np.concatenate(accumulated_obs['obs_HR']['t_idx']).astype(np.int32)
+    obs_HR_value     = np.concatenate(accumulated_obs['obs_HR']['obs_value']).astype(np.float32)
+    obs_sleep_label  = np.concatenate(accumulated_obs['obs_sleep']['sleep_label']).astype(np.int32)
+    obs_stress_t_idx = np.concatenate(accumulated_obs['obs_stress']['t_idx']).astype(np.int32)
+    obs_stress_value = np.concatenate(accumulated_obs['obs_stress']['obs_value']).astype(np.float32)
+    obs_steps_t_idx  = np.concatenate(accumulated_obs['obs_steps']['t_idx']).astype(np.int32)
+    obs_steps_value  = np.concatenate(accumulated_obs['obs_steps']['obs_value']).astype(np.float32)
+    Phi_per_bin      = np.concatenate(accumulated_obs['Phi']['Phi_value']).astype(np.float32)
+    C_per_bin        = np.concatenate(accumulated_obs['C']['C_value']).astype(np.float32)
+
+    np.savez_compressed(
+        f"{run_dir}/data.npz",
+        # plant trajectories
+        trajectory_mpc=traj_full.astype(np.float32),
+        trajectory_baseline=traj_baseline.astype(np.float32),
+        Phi_per_bin=Phi_per_bin,
+        C_per_bin=C_per_bin,
+        # 4 obs channels (sparse t_idx + value) for the MPC plant
+        obs_HR_t_idx=obs_HR_t_idx, obs_HR_value=obs_HR_value,
+        obs_sleep_label=obs_sleep_label,
+        obs_stress_t_idx=obs_stress_t_idx, obs_stress_value=obs_stress_value,
+        obs_steps_t_idx=obs_steps_t_idx, obs_steps_value=obs_steps_value,
+        # Per-stride applied Φ + per-replan plans
+        daily_phi_per_stride=np.array(daily_phi_per_stride, dtype=np.float32),
+        daily_phi_plan_per_replan=daily_phi_plan_per_replan,
+        replan_strides=replan_strides,
+        replan_n_temp=replan_n_temp,
+        # Per-window posterior particle clouds (constrained)
+        posterior_particles=posterior_particles_all,
+        posterior_window_mask=posterior_window_mask,
+        n_temp_per_window=n_temp_per_window,
+        elapsed_per_window_s=elapsed_per_window_s,
+        id_cov_per_window=id_cov_per_window,
+    )
+    print(f"  Checkpoint: {run_dir}/manifest.json + data.npz", flush=True)
+    print()
+
+    # ── Diagnostic plot (also dumped into the run folder) ──
+    out_dir = run_dir
     out_path = f"{out_dir}/E5_full_mpc_T{T_total_days}d_traces.png"
     os.makedirs(out_dir, exist_ok=True)
     fig, axes = plt.subplots(2, 2, figsize=(14, 9))
