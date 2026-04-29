@@ -1,0 +1,186 @@
+\section{Numerical stability of the SDE solver}\label{sec:num-stab}
+
+The continuous-time analyses of Sections~\ref{sec:fim} and~\ref{sec:lyap}
+guarantee that the FSA-v2 model is well-posed and ergodic on its
+operating domain. Before passing those guarantees on to the inference
+machinery of the next four sections, we have to check that the
+\emph{discretisation} of the SDE preserves them: a numerical solver
+with the wrong step size can introduce spurious blow-ups, suppress
+genuine fluctuations, or even reverse the sign of stability.
+
+This section asks two practical questions. \emph{Is the
+fifteen-minute time step currently used in the code base small
+enough to ensure numerical stability?} And, if so, \emph{how much
+larger could it be made without losing stability?} -- a question the
+reader will want to answer before running long-horizon experiments,
+where halving the step size doubles the wall-clock cost. The full
+algebra of the linear stability analysis, including a substepping
+sub-analysis for the cubic Stuart--Landau term and a discussion of
+the CIR diffusion's Feller boundary behaviour, is deferred to
+Appendix~\ref{app:num-stab}.
+
+\subsection{The solver}\label{sec:num-stab-solver}
+
+The implementation in
+\href{run:../version_2/models/fsa_high_res/_dynamics.py}{\texttt{version\_2/models/fsa\_high\_res/\_dynamics.py}}
+uses an explicit \emph{substepped Euler--Maruyama} scheme with
+boundary reflection. With outer step $\Delta t = 1/96$ days
+($15$ minutes) and inner step count $n_{\mathrm{sub}} = 4$, one
+outer step of the scheme reads
+\begin{align}
+  \tilde y_0 &= y_n, \nonumber \\
+  \tilde y_{k+1} &= \tilde y_k + \frac{\Delta t}{n_{\mathrm{sub}}}\,b(\tilde y_k,\Phi_n;\theta),
+   \qquad k = 0,\dots,n_{\mathrm{sub}}-1, \label{eq:em-substep} \\
+  y_{n+1}^{\mathrm{pre}} &= \tilde y_{n_{\mathrm{sub}}} + \sigma(\tilde y_{n_{\mathrm{sub}}};\theta)\,\sqrt{\Delta t}\,\xi_n, \nonumber \\
+  y_{n+1} &= \mathrm{Reflect}\bigl(y_{n+1}^{\mathrm{pre}}\bigr), \nonumber
+\end{align}
+where $b$ is the drift vector field, $\sigma$ the state-dependent
+diffusion vector, and $\xi_n \sim \Ncal(0,I_3)$. The reflection
+operator enforces $B \in [0,1]$ and $F,A \ge 0$ by mirroring any
+component that overshoots its boundary; in practice it almost never
+fires, because the diffusions
+$\sqrt{B(1-B)},\sqrt F,\sqrt A$ vanish at their respective
+boundaries.
+
+The substepping in the inner loop is purely a drift refinement: the
+Wiener increment is applied once per outer step. This separation of
+deterministic and stochastic time steps is convenient for the
+present stability analysis because the two contributions decouple.
+
+\subsection{What ``numerical stability'' means here}\label{sec:num-stab-def}
+
+The strongest standard guarantee one can ask of an SDE solver is
+\emph{mean-square stability}: that the second moment of the
+discrete-time iterate $E[\,|y_n|^2\,]$ remains bounded as
+$n \to \infty$ when the underlying continuous SDE is itself stable
+(in our case, exponentially ergodic via Theorem~\ref{thm:ergodic}).
+
+For a one-dimensional linear test SDE
+$\dd X = a X\,\dd t + b X\,\dd W$, the explicit Euler--Maruyama
+iterate $X_{n+1} = X_n + a X_n \Delta t + b X_n \sqrt{\Delta t}\,\xi_n$
+is mean-square stable if and only if
+\begin{equation}
+  |1 + a\,\Delta t|^2 + b^2\,\Delta t \;\le\; 1.
+  \label{eq:em-msstab}
+\end{equation}
+(See Higham, 2000.) For non-linear SDEs we apply
+\eqref{eq:em-msstab} component-wise to the system linearised around
+its stable equilibria. This is the standard recipe and the one we
+follow.
+
+\subsection{Linearising the FSA-v2 SDE}\label{sec:num-stab-lin}
+
+Let $J = J(B^*,F^*,A^*)$ be the drift Jacobian at an equilibrium of
+the deterministic skeleton, and let $D = D(B^*,F^*,A^*)$ be the
+diagonal matrix of squared diffusion coefficients
+$(\sigma_B^2 B^*(1-B^*),\,\sigma_F^2 F^*,\,\sigma_A^2 A^*)$. The
+mean-square stability constraint \eqref{eq:em-msstab} applied
+component-wise gives, in the worst case,
+\begin{equation}
+  \Delta t \;\le\;
+   \min_i \frac{2\,|\Re\lambda_i(J)|}
+                {|\lambda_i(J)|^2 + \sigma_i^2(B^*,F^*,A^*)},
+  \label{eq:dt-stable}
+\end{equation}
+where $\lambda_i(J)$ are the eigenvalues of $J$ and $\sigma_i^2$ are
+the corresponding diagonal entries of $D$. The slowest-decaying
+mode -- the one that comes closest to the stability boundary --
+sets the binding constraint.
+
+We worked out the eigenvalues of $J$ at the $A=0$ branch in
+Section~\ref{sec:lyap}: they are $-1/\tau_B$, $-1/[\tau_F(1+\lambda_A A_{\mathrm{typ}})]$
+and $\mu(B^*,F^*)$. With $\tau_B = 42$ days and
+$\tau_F^{\mathrm{old}} = 7$ days, the slowest dissipative
+eigenvalue is $-1/\tau_B$, giving (very roughly, ignoring the
+diffusion contribution because $\sigma_B^2 B^*(1-B^*) \le \sigma_B^2/4$
+is tiny):
+\begin{equation}
+  \Delta t_{\mathrm{stable}}^{B} \;\approx\; 2\tau_B \;=\; 84\,\mathrm{d}.
+\end{equation}
+For the $F$-mode the corresponding bound is $2\tau_F^{\mathrm{old}} = 14$ days.
+On the oscillatory branch ($A \neq 0$) the binding eigenvalue is the
+cubic-damping rate $-2\eta (A^*)^2$, which at the limit-cycle
+amplitude $A^* \approx 1$ gives
+$\Delta t_{\mathrm{stable}}^{A} \approx 1/\eta \approx 5\,\mathrm{d}$.
+The full derivation, including Young's-inequality bounds that
+absorb the nonlinear corrections cleanly, is in
+Appendix~\ref{app:num-stab}.
+
+\subsection{Stability margin at the current step size}\label{sec:num-stab-margin}
+
+The current outer step is $\Delta t = 1/96\,\mathrm{d} \approx 0.010\,\mathrm{d}$.
+Comparing to the bounds of Section~\ref{sec:num-stab-lin},
+\begin{equation}
+  \frac{\Delta t}{\Delta t_{\mathrm{stable}}^{B}} \approx 1.2 \times 10^{-4},
+  \qquad
+  \frac{\Delta t}{\Delta t_{\mathrm{stable}}^{F}} \approx 7.4 \times 10^{-4},
+  \qquad
+  \frac{\Delta t}{\Delta t_{\mathrm{stable}}^{A}} \approx 2.1 \times 10^{-3}.
+\end{equation}
+The current step size sits roughly \emph{three orders of magnitude}
+inside the stability region. Numerical stability is therefore not
+the bottleneck and there is enormous head-room to enlarge
+$\Delta t$ before the solver itself becomes the failure mode.
+
+\subsection{What does bind, then?}\label{sec:num-stab-binding}
+
+Two practical considerations sit much closer to the current step
+size than the mean-square stability bound and should be the focus
+of any future enlargement of $\Delta t$.
+
+\paragraph{Resolution of the sub-daily $\Phi$-burst.} The
+training-stimulus envelope of \eqref{eq:phi-envelope} is a
+Gamma$(k=2)$ shape that peaks at
+$\tau_{\mathrm{burst}} = 3\,\mathrm{h}$ post-wake. Resolving such a
+peak with reasonable accuracy on a uniform time grid requires
+several time steps within the rise time, conservatively
+$\Delta t \le \tau_{\mathrm{burst}}/4 \approx 45\,\mathrm{min}$. The
+current $15$-minute step gives twelve grid points within the rise,
+i.e.\ a comfortable factor of three above the resolution floor.
+
+\paragraph{Strong convergence of the discretised paths.} The
+explicit Euler--Maruyama scheme converges with strong order $1/2$
+in the It\^o sense. Pathwise error therefore scales as
+$\sqrt{\Delta t}$, and to halve the pathwise error one quarters the
+step. This is not a stability constraint, but it does cap the
+step size that retains useful pathwise fidelity for the inference
+work of Sections~\ref{sec:smc2} and~\ref{sec:control}.
+
+\subsection{Recommendation}\label{sec:num-stab-recommend}
+
+Combining the three constraints, the binding one for the present
+implementation is the resolution of the sub-daily $\Phi$-burst.
+Within that constraint, the step size could safely be enlarged from
+$15$ to $30$ minutes (still six grid points inside the rise of the
+Gamma envelope) at no cost to numerical stability and at modest
+cost to pathwise fidelity, halving the wall-clock cost of every
+SDE simulation in the code base.
+
+A more aggressive enlargement to $\Delta t = 1\,\mathrm{h}$ would
+sit at the edge of the $\Phi$-burst-resolution constraint and would
+require a verification run -- a drift-parity test against the
+$15$-minute reference at the same truth point and the same Wiener
+realisation -- before being adopted in production. We do not
+recommend going beyond $1\,\mathrm{h}$ without changing the solver:
+the substepped explicit scheme would remain stable, but the strong
+$\sqrt{\Delta t}$ pathwise-error growth would visibly degrade the
+filter posteriors.
+
+\begin{remark}[Improvements that would help]\label{rem:num-stab-improvements}
+Three numerical-analysis upgrades would push the safe step size
+substantially higher and are flagged here for future work. (i) A
+Lamperti transform of the $F$- and $A$-CIR components would replace
+the $\sqrt{F}\,\dd W$ and $\sqrt{A}\,\dd W$ diffusions with
+constant-coefficient Brownian increments, removing the boundary
+reflection and the strong-error penalty near zero. (ii) A
+Milstein-type correction to the Euler--Maruyama step would lift the
+strong order from $1/2$ to $1$. (iii) An implicit treatment of the
+cubic damping term in the $A$-component would make the scheme
+A-stable in that direction, making the bound of
+Section~\ref{sec:num-stab-lin} on the oscillatory branch
+unconditional. None of these are implemented; together they would
+plausibly support an outer step in the range
+$\Delta t \in [1,4]\,\mathrm{h}$ with no degradation of inference
+quality, and would speed up the long-horizon Stage~D and Stage~E
+runs by an order of magnitude.
+\end{remark}

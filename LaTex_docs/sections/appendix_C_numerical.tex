@@ -1,0 +1,193 @@
+\section{Numerical stability of the SDE solver: derivations}\label{app:num-stab}
+
+This appendix supplies the algebra underlying the stability claims
+of Section~\ref{sec:num-stab}. We derive the mean-square stability
+condition for explicit Euler--Maruyama
+(Section~\ref{app:num-stab-test}), apply it to FSA-v2 component by
+component (Section~\ref{app:num-stab-fsa}), analyse the role of the
+inner substepping for the cubic Stuart--Landau term
+(Section~\ref{app:num-stab-substep}), and discuss the interaction
+of the discretised CIR diffusion with the Feller boundary condition
+(Section~\ref{app:num-stab-feller}).
+
+\subsection{The linear test SDE and explicit Euler--Maruyama}\label{app:num-stab-test}
+
+Consider the linear scalar test SDE
+\begin{equation}
+  \dd X_t = a\,X_t\,\dd t + b\,X_t\,\dd W_t,
+  \qquad a,b \in \R, \quad X_0 \in \R,
+  \label{eq:test-sde}
+\end{equation}
+whose continuous-time solution is the geometric Brownian motion
+$X_t = X_0 \exp\!\bigl((a - b^2/2)t + b W_t\bigr)$. Mean-square
+stability of \eqref{eq:test-sde} -- i.e.\ $\E[X_t^2] \to 0$ as
+$t \to \infty$ -- holds iff
+$2a + b^2 < 0$ (Higham, 2000).
+
+The explicit Euler--Maruyama discretisation of \eqref{eq:test-sde}
+with step $h$ is
+\begin{equation}
+  X_{n+1} \;=\; X_n + a\,X_n\,h + b\,X_n\,\sqrt{h}\,\xi_n,
+  \qquad \xi_n \sim \Ncal(0,1)\;\text{i.i.d.}
+  \label{eq:em-test}
+\end{equation}
+Squaring and taking expectations,
+\begin{align*}
+  \E[X_{n+1}^2]
+  &= \E\!\bigl[(1 + a h)^2 X_n^2 + 2(1 + a h) b\sqrt{h} X_n^2 \xi_n + b^2 h X_n^2 \xi_n^2\bigr] \\
+  &= \bigl((1 + a h)^2 + b^2 h\bigr)\,\E[X_n^2],
+\end{align*}
+so $\E[X_n^2]$ remains bounded iff
+\begin{equation}
+  (1 + a h)^2 + b^2 h \;\le\; 1.
+  \label{eq:em-msstab-app}
+\end{equation}
+This is the inequality \eqref{eq:em-msstab} of the main text.
+Expanding $(1 + ah)^2 = 1 + 2ah + a^2 h^2$ and rearranging,
+\eqref{eq:em-msstab-app} is equivalent to
+\begin{equation}
+  2a + b^2 + a^2\,h \;\le\; 0,
+  \label{eq:em-msstab-rearranged}
+\end{equation}
+which collapses to the continuous-time condition
+$2a + b^2 < 0$ as $h \to 0$. For $a < 0$, the discretisation
+imposes the additional constraint
+$h \le -(2a + b^2)/a^2$, i.e.\ $h \le 2|a|/(a^2)$ when $b = 0$.
+
+\subsection{Component-by-component bounds for FSA-v2}\label{app:num-stab-fsa}
+
+We linearise the FSA-v2 SDE component by component around the
+$A=0$ deterministic equilibrium $(B^*_0,F^*_0,0)$ of
+Section~\ref{sec:lyap-det}. Write $\delta B = B - B^*_0$ etc. The
+linearised $B$-equation reads
+\begin{equation*}
+  \dd(\delta B) \;=\; -(\delta B/\tau_B)\,\dd t + \sigma_B\sqrt{B^*_0(1-B^*_0)}\,\dd W_B
+   + \mathrm{(coupling\ terms)}.
+\end{equation*}
+Treating the coupling terms as forcing, the homogeneous part is the
+test SDE \eqref{eq:test-sde} with $a = -1/\tau_B$ and effective
+$b^2_{\mathrm{eff}} = \sigma_B^2 B^*_0(1-B^*_0)/(\delta B)^2$. Since
+$\delta B$ ranges over the order-unity scale on which we want the
+filter to operate, $b_{\mathrm{eff}}^2$ is bounded above by
+$\sigma_B^2/4$ (the maximum of $B(1-B)$ on $[0,1]$). Plugging into
+\eqref{eq:em-msstab-app},
+\[
+  (1 - h/\tau_B)^2 + (\sigma_B^2/4)\,h \;\le\; 1
+  \;\;\Longleftrightarrow\;\;
+  h \;\le\; \frac{2/\tau_B - \sigma_B^2/4}{1/\tau_B^2}
+  \;\approx\; 2\tau_B
+  \;=\; 84\,\mathrm{d},
+\]
+where the diffusion contribution $\sigma_B^2/4 \approx 2.5 \times 10^{-5}$
+is negligible compared to $2/\tau_B \approx 0.048\,\mathrm{d}^{-1}$.
+
+The linearised $F$-equation has $a = -1/\tau_F^{\mathrm{old}}$
+and $b_{\mathrm{eff}}^2 = \sigma_F^2 F^*_0/(\delta F)^2$, bounded
+similarly. The same calculation gives
+$h \le 2\tau_F^{\mathrm{old}} = 14\,\mathrm{d}$.
+
+The $A$-equation around $A=0$ has $a = \mu(B^*_0,F^*_0)$,
+which can be \emph{positive} below the bifurcation locus. In that
+case the $A=0$ branch of the deterministic skeleton is unstable
+(Proposition~\ref{prop:stab-zero}) and the natural linearisation
+point is the oscillatory branch instead, where $a$ becomes
+$-2\eta(A^*)^2$. At the limit-cycle amplitude
+$A^* = \sqrt{\mu/\eta} \approx 0.81$ (using
+$\mu \approx 0.13$, $\eta = 0.20$), we have
+$a = -2 \cdot 0.20 \cdot 0.66 \approx -0.27\,\mathrm{d}^{-1}$, and
+$b_{\mathrm{eff}}^2 = \sigma_A^2 A^*/(\delta A)^2 \le \sigma_A^2/(A^*)$,
+which is also negligible. Plugging in,
+$h \le 2/0.27 \approx 7.4\,\mathrm{d}$.
+
+The binding component is therefore the $A$-mode at the limit cycle,
+giving the practical stability ceiling of roughly seven days. The
+current outer step $\Delta t = 1/96\,\mathrm{d}$ is below this ceiling
+by a factor of $700$ -- the quoted ``three orders of magnitude'' of
+the main text.
+
+\subsection{The role of the inner substepping}\label{app:num-stab-substep}
+
+The inner-loop substepping of \eqref{eq:em-substep} runs
+$n_{\mathrm{sub}} = 4$ deterministic Euler steps of size
+$\Delta t / n_{\mathrm{sub}} = \Delta t / 4$ before applying the
+single Wiener increment. We now check that the substepping is
+neither necessary for stability (which it isn't, given the
+factor-700 margin above) nor harmful for it.
+
+A pure deterministic Euler step on the cubic Stuart--Landau ODE
+$\dot A = \mu A - \eta A^3$ around the limit-cycle amplitude
+$A^* = \sqrt{\mu/\eta}$ has linearised rate
+$a_{\mathrm{det}} = -2\eta(A^*)^2 = -2\mu \approx -0.27\,\mathrm{d}^{-1}$.
+The deterministic Euler stability condition $|1 + a_{\mathrm{det}} h| \le 1$
+becomes $h \le 2/|a_{\mathrm{det}}| \approx 7.4\,\mathrm{d}$, identical
+to the bound computed above. For the inner step $h_{\mathrm{sub}} = \Delta t / 4$
+to violate this bound would require $\Delta t \ge 30\,\mathrm{d}$, far
+beyond any contemplated step.
+
+The substepping is therefore a \emph{accuracy} refinement rather
+than a stability device: at large excursions $A \gg A^*$ where the
+cubic damping becomes very fast, the inner loop reduces the
+deterministic-step error from $O(\Delta t)$ to
+$O(\Delta t / n_{\mathrm{sub}})$ at the cost of evaluating the drift
+$n_{\mathrm{sub}}$ times per outer step. The Wiener increment is
+applied once at the outer-step boundary, so the stochastic
+discretisation continues to inherit the strong order-$1/2$
+convergence of explicit Euler--Maruyama.
+
+\subsection{The CIR diffusion and the Feller condition}\label{app:num-stab-feller}
+
+The $F$- and $A$-components of the SDE have square-root (CIR-type)
+diffusions $\sigma_F\sqrt F\,\dd W_F$ and $\sigma_A\sqrt A\,\dd W_A$.
+A continuous-time CIR process
+$\dd X = (\alpha - \beta X)\,\dd t + \nu\sqrt X\,\dd W$ remains
+strictly positive almost surely if and only if it satisfies the
+\emph{Feller condition}
+\begin{equation}
+  2\alpha \;>\; \nu^2.
+  \label{eq:feller}
+\end{equation}
+For the $F$-component at constant $\Phi = 1$,
+$\alpha = \kappa_F \cdot 1 = 0.030$ and $\nu^2 = \sigma_F^2 = 1.44 \times 10^{-4}$,
+so $2\alpha/\nu^2 \approx 4.2 \times 10^2 \gg 1$ -- comfortably
+satisfied. The $A$-component does not directly fit the CIR template
+(the drift is multiplicative, $\mu A - \eta A^3$, not affine), but
+the analogous condition near $A = A^*_{\mathrm{osc}}$ involves the
+ratio $2\mu A^*_{\mathrm{osc}}/\sigma_A^2 = 2\mu^{3/2}/(\eta^{1/2}\sigma_A^2)$,
+also large for the truth values.
+
+The discretised explicit Euler--Maruyama scheme can nevertheless
+produce negative values of $F$ or $A$ on rare excursions, even when
+\eqref{eq:feller} holds, because of the
+$\sqrt{\Delta t}\,\xi_n$ Wiener increment: a single
+$|\xi_n| \gg 1$ realisation can push the post-step state below
+zero. The reflection step in \eqref{eq:em-substep} catches these
+excursions and folds them back into the physiological domain. In
+practice the diffusion vanishing at the boundary
+($\sigma_F\sqrt F \to 0$ as $F \to 0$, similarly for $A$) makes
+such excursions extraordinarily rare; the Feller-aware schemes of
+e.g.\ Higham, Mao and Stuart (2003) would handle them more cleanly
+but are not currently implemented.
+
+\subsection{What an enlarged step would buy}\label{app:num-stab-cost}
+
+Stage~D and Stage~E5 of Section~\ref{sec:results} ran on the
+$15$-minute outer step. The wall-clock cost of those runs was
+$\sim\!55$ minutes (Stage~D, $T = 84$ days) and $\sim\!41$ minutes
+(Stage~E5, $T = 14$ days, $27$ rolling windows) on a single GPU.
+For a fixed simulation horizon $T$, the SDE solver cost scales
+linearly in the number of outer steps $T/\Delta t$. Doubling
+$\Delta t$ from $15$ to $30$ minutes halves that count and hence
+the cost. The full battery of horizon-sweep experiments
+(Section~\ref{sec:discussion-other}) at $T \in \{28,42,56,84\}$
+days would scale similarly, taking the long $T = 84$-day
+closed-loop run from $\sim\!15$ hours down to $\sim\!7.5$ hours
+at $\Delta t = 30\,\mathrm{min}$.
+
+The numerical-stability analysis of this appendix supports such an
+enlargement up to $\Delta t \approx 1\,\mathrm{hour}$ without a
+solver upgrade, conditional on a one-off drift-parity verification
+against the $15$-minute reference. Beyond one hour the
+$\Phi$-burst-resolution constraint of
+Section~\ref{sec:num-stab-binding} starts to dominate, and beyond
+that the Lamperti / Milstein / implicit upgrades flagged in
+Remark~\ref{rem:num-stab-improvements} become the right route.

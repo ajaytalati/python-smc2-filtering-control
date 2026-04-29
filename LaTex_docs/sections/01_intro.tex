@@ -50,7 +50,14 @@ one-day windows. Section~\ref{sec:lyap} establishes stability of the
 SDE: Jacobian-based local analysis of the deterministic skeleton, the
 Stuart--Landau bifurcation locus, and a quadratic Lyapunov function
 satisfying a Foster--Lyapunov drift inequality, from which exponential
-ergodicity follows. Section~\ref{sec:pf} develops the bootstrap
+ergodicity follows. Section~\ref{sec:num-stab} bridges from continuous-time
+theory to numerical practice: it asks whether the fifteen-minute outer
+step of the explicit Euler--Maruyama solver actually used in the code
+base is small enough for mean-square stability, finds the answer to be
+``yes, with three orders of magnitude of safety margin'', and identifies
+the resolution of the sub-daily $\Phi$-burst as the binding constraint
+should one wish to enlarge the step to speed up long-horizon experiments.
+Section~\ref{sec:pf} develops the bootstrap
 particle filter. The SMC${}^2$ outer loop and its rolling-window
 variant are presented in Section~\ref{sec:smc2}.
 Section~\ref{sec:control} formulates the control problem as a
