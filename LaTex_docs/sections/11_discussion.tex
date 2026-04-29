@@ -42,12 +42,17 @@ SDE}\label{sec:discussion-lyap}
 
 Section~\ref{sec:lyap} carried out the stability analysis in two
 parts. The deterministic skeleton, under a constant control
-$\Phi \equiv \Phi_c$, has an explicit $A=0$ equilibrium whose local
-stability is determined entirely by the sign of the Stuart--Landau
-growth rate $\mu(B^*_0,F^*_0)$
-(Proposition~\ref{prop:stab-zero}); the bifurcation locus
-of Section~\ref{sec:lyap-det} crosses zero at $\Phi_c \approx 7.5$, above which
-overtraining-collapse renders the $A=0$ branch stable. For the full
+$\Phi \equiv \Phi_c$, has two branches: a sedentary $A=0$ branch and
+an oscillatory $A^*_{\mathrm{osc}}(\Phi_c)$ branch. Local stability of
+each is determined by the sign of the Stuart--Landau growth rate
+$\mu(B^*_0,F^*_0)$. The Goldilocks profile of
+Section~\ref{sec:lyap-goldilocks} -- $A^*_{\mathrm{osc}}$ rising
+from a non-zero rest value at $\Phi=0$, peaking at the constant-load
+optimum $\Phi_{\mathrm{opt}} \approx 1.99$, and collapsing at the
+bifurcation locus $\Phi_c^{\mathrm{crit}} \approx 3.71$ as
+overtraining suppresses $\mu$ -- explains both why the canonical
+$\Phi=1$ baseline is suboptimal and why the SMC${}^2$ controller's
+mean schedule clusters near $\Phi \approx 2$. For the full
 SDE we exhibited a quadratic Lyapunov function
 $V = \tfrac12(aB^2+bF^2+cA^2)$ that satisfies a Foster--Lyapunov drift
 inequality (Theorem~\ref{thm:lyap}), and concluded exponential

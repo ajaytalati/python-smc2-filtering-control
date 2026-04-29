@@ -1,72 +1,246 @@
 \section{Stability of the FSA-v2 SDE: a Lyapunov analysis}\label{sec:lyap}
 
-Identifiability tells us that the inference problem for $\theta$ is
-well-posed; stability tells us that the dynamical system itself is
-well-behaved. This section asks two stability questions about the
-FSA-v2 SDE in its G1-reparametrized form: where are the equilibria
-of its deterministic skeleton, and is the full stochastic process
-ergodic on its physiological operating domain? The first question
-admits a clean answer in terms of the Stuart--Landau growth rate;
-the second is settled affirmatively via a quadratic Lyapunov
-function. Detailed Jacobian computations, the Foster--Lyapunov drift
-calculation, and bounds on constants are deferred to
-Appendix~\ref{app:lyap}.
+The point of the controller built in Section~\ref{sec:control} is to
+maximise the time-averaged autonomic amplitude
+$\frac{1}{T}\int_0^T A(t)\,\dd t$. The stability analysis below
+should therefore not be read as ``where do trajectories settle?'' in
+the abstract -- it should be read as ``where would training take
+the athlete if the schedule $\Phi$ were held constant, and how does
+that depend on the chosen training load?''. The honest answer is
+that the FSA-v2 model exhibits a \emph{Goldilocks} structure: there
+is an interior optimal training load $\Phi_{\mathrm{opt}}$ at which
+the autonomic amplitude is largest; below it the body is
+under-stimulated and $A$ is small; above it the body is
+over-trained, fatigue rises quadratically through the
+$\mu_{FF}(F-F_{\mathrm{typ}})^2$ term, and the autonomic oscillation
+collapses. The job of the SMC${}^2$ controller is to find a
+\emph{schedule} that beats the best constant-load policy on
+finite-horizon objectives.
 
-\subsection{Deterministic skeleton: equilibria and the Stuart--Landau bifurcation}\label{sec:lyap-det}
+This section makes those statements precise. We first locate the
+oscillatory equilibrium of the deterministic skeleton as a function
+of the constant control $\Phi_c$, identify the optimal load
+$\Phi_{\mathrm{opt}}$ and the overtraining-collapse threshold
+$\Phi_c^{\mathrm{crit}}$, and demonstrate the Goldilocks shape. We
+then return to the full SDE and exhibit a Foster--Lyapunov drift
+inequality, ensuring that the controlled stochastic process is
+exponentially ergodic for any bounded $\Phi$ schedule. Detailed
+Jacobian computations and the Foster--Lyapunov drift calculation
+are deferred to Appendix~\ref{app:lyap}.
+
+\subsection{The two branches of the deterministic skeleton}\label{sec:lyap-branches}
 
 Set $\sigma_B = \sigma_F = \sigma_A = 0$ in
 \eqref{eq:fsa-B}--\eqref{eq:fsa-A} and a constant control
-$\Phi(t) \equiv \Phi_c$. The deterministic skeleton has an explicit
-$A=0$ branch
+$\Phi(t) \equiv \Phi_c$. The deterministic skeleton has two
+qualitatively distinct equilibrium branches.
+
+\paragraph{The sedentary branch ($A=0$).} An explicit equilibrium
 \begin{equation}
-  B^*_0(\Phi_c) = \frac{\kappa_B \tau_B \Phi_c}{1+\varepsilon_A A_{\mathrm{typ}}},
+  B^*_0(\Phi_c) = \min\!\Bigl(\frac{\kappa_B \tau_B \Phi_c}{1+\varepsilon_A A_{\mathrm{typ}}},\,1\Bigr),
   \quad
   F^*_0(\Phi_c) = \kappa_F \tau_F (1+\lambda_A A_{\mathrm{typ}})\,\Phi_c,
   \quad
   A^*_0 = 0,
   \label{eq:eq-zero}
 \end{equation}
-together with an implicit oscillatory branch where $A^2 = \mu(B,F)/\eta$.
-Local stability of the $A=0$ branch is determined entirely by the
-sign of the Stuart--Landau growth rate at the equilibrium, as the
-following result records.
+exists for every $\Phi_c \ge 0$. (The clipping in $B^*_0$ reflects
+the natural bound $B \le 1$; in practice $B$ saturates at unity for
+$\Phi_c \gtrsim 2$.) This is the deterministic ``sedentary'' or
+``de-trained'' state -- an athlete with whatever long-run
+fitness/fatigue level the chosen training load supports, but with no
+autonomic oscillation at all.
 
-\begin{proposition}[Local stability of the $A=0$ branch]\label{prop:stab-zero}
-The deterministic equilibrium \eqref{eq:eq-zero} is locally
+\paragraph{The oscillatory branch ($A > 0$).} A second equilibrium
+exists wherever the Stuart--Landau growth rate at the
+sedentary branch is positive, $\mu(B^*_0,F^*_0) > 0$, and is given
+by the implicit relations
+\begin{equation}
+  A^*_{\mathrm{osc}}(\Phi_c) = \sqrt{\mu(B^*,F^*)/\eta},
+  \qquad
+  (B^*,F^*) = (B,F)\text{-equilibrium given } A^*_{\mathrm{osc}}.
+  \label{eq:eq-osc}
+\end{equation}
+This is the physiologically interesting branch: a non-trivial
+autonomic oscillation, sustained against the cubic damping by the
+positive growth rate that the slow Banister state generates.
+
+A short Jacobian computation (Appendix~\ref{app:lyap-jacobian})
+proves the following.
+
+\begin{proposition}[Local stability of the sedentary branch]\label{prop:stab-zero}
+The sedentary equilibrium \eqref{eq:eq-zero} is locally
 asymptotically stable if and only if
-$\mu(B^*_0(\Phi_c), F^*_0(\Phi_c)) < 0$.
+$\mu(B^*_0(\Phi_c),F^*_0(\Phi_c)) < 0$.
 \end{proposition}
 
-The proof is short: the drift Jacobian at \eqref{eq:eq-zero} turns
-out to be upper triangular, with two unconditionally negative
-eigenvalues coming from the slow Banister directions and a third
-eigenvalue equal to $\mu(B^*_0,F^*_0)$ controlling the autonomic
-amplitude. Details are in Appendix~\ref{app:lyap}.
+The two regions of $\Phi_c$-space are separated by the bifurcation
+locus
+$\{\Phi_c \!:\! \mu(B^*_0(\Phi_c), F^*_0(\Phi_c)) = 0\}$. The
+oscillatory branch exists, and is locally stable, exactly on the
+side where $\mu > 0$, i.e.\ \emph{below} the bifurcation threshold.
 
-The bifurcation locus $\{\Phi_c \!:\! \mu(B^*_0(\Phi_c),F^*_0(\Phi_c)) = 0\}$
-turns out to be a single positive root
-$\Phi_c^{\mathrm{crit}} \approx 7.5$ TRIMP-units per day at the
-truth values of Table~\ref{tab:fsa-truth}. The picture this paints
-is physiologically intuitive: at the canonical baseline
-$\Phi_c = 1$, $\mu(B^*_0,F^*_0) \approx 0.13 > 0$, so the $A=0$
-equilibrium is unstable and the model predicts that an athlete
-training at the default load settles on a non-trivial autonomic
-oscillation. Above the critical training load
-$\Phi_c \approx 7.5$, the quadratic overtraining-collapse term
-$\mu_{FF}(F-F_{\mathrm{typ}})^2$ dominates, $\mu$ falls back through
-zero, and the system loses its oscillation: the autonomic amplitude
-collapses to zero, consistent with empirical observations that very
-large chronic training loads suppress autonomic variability.
+\subsection{The Goldilocks profile of \texorpdfstring{$A^*_{\mathrm{osc}}(\Phi_c)$}{A*\_osc(Phi\_c)}}\label{sec:lyap-goldilocks}
+
+We can already extract the qualitative shape of the oscillatory
+branch by linearising at $A = A_{\mathrm{typ}}$ (where the residual
+factors of the drift equal one) and reading off
+$\mu(B^*_0,F^*_0)(\Phi_c)$. At the truth values of
+Table~\ref{tab:fsa-truth} this gives the function plotted by direct
+substitution in Table~\ref{tab:goldilocks}.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}rrrrr@{}}
+\toprule
+$\Phi_c$ & $B^*_0$ & $F^*_0$ & $\mu(B^*_0,F^*_0)$ & $A^*_{\mathrm{osc}}=\sqrt{\mu/\eta}$ \\
+\midrule
+$0.0$  & $0.000$ & $0.000$ & $+0.020$ & $0.32$ \\
+$0.5$  & $0.252$ & $0.105$ & $+0.081$ & $0.64$ \\
+$1.0$  & $0.504$ & $0.210$ & $+0.133$ & $0.81$ \\
+$1.5$  & $0.756$ & $0.315$ & $+0.176$ & $0.94$ \\
+$\mathbf{1.96}$ & $\mathbf{0.988}$ & $\mathbf{0.412}$ & $\mathbf{+0.207}$ & $\mathbf{1.02}$ \\
+$2.0$  & $1.000$ & $0.420$ & $+0.207$ & $1.02$ \\
+$3.0$  & $1.000$ & $0.630$ & $+0.098$ & $0.70$ \\
+$3.71$ & $1.000$ & $0.779$ & $\;\;\,0.000$ & $0.00$ \\
+$5.0$  & $1.000$ & $1.050$ & $-0.226$ & --- \\
+\bottomrule
+\end{tabular}
+\caption{Sedentary-branch values $(B^*_0,F^*_0)$, the Stuart--Landau
+growth rate $\mu$, and the resulting oscillatory amplitude
+$A^*_{\mathrm{osc}}$ as a function of constant training load
+$\Phi_c$. The amplitude rises from a non-zero rest value at
+$\Phi_c=0$, peaks near $\Phi_c \approx 2$, and collapses to zero at
+the bifurcation threshold $\Phi_c^{\mathrm{crit}} \approx 3.71$.
+Bold row: the constant-load optimum.}
+\label{tab:goldilocks}
+\end{table}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\linewidth]{figures/fig_goldilocks.pdf}
+\caption{The Goldilocks profile of FSA-v2 at the truth values of
+Table~\ref{tab:fsa-truth}. \textbf{(a)} Stuart--Landau growth rate
+$\mu(B^*_0(\Phi_c),F^*_0(\Phi_c))$ as a function of constant
+training load $\Phi_c$. The shaded region is where $\mu > 0$ and
+the oscillatory branch exists. \textbf{(b)} Resulting oscillatory
+amplitude $A^*_{\mathrm{osc}}(\Phi_c) = \sqrt{\mu/\eta}$. The
+amplitude is non-zero at rest, peaks at the constant-load optimum
+$\Phi_{\mathrm{opt}} \approx 1.99$ where $A^* \approx 1.02$, and
+collapses to zero (overtraining) at
+$\Phi_c^{\mathrm{crit}} \approx 3.71$. The canonical Banister
+baseline $\Phi \equiv 1.0$ used in Stage~D
+(Section~\ref{sec:results}) gives $A^* \approx 0.81$, only
+$0.81/1.02 \approx 79\%$ of what the constant-load optimum would
+deliver -- which already accounts for most of the $+28\%$ gain
+the SMC${}^2$ controller reports.}
+\label{fig:goldilocks}
+\end{figure}
+
+Three features stand out.
+
+\paragraph{Persistent activity at rest.} At $\Phi_c = 0$, the
+deterministic equilibrium of the slow Banister states is
+$B^*_0 = F^*_0 = 0$, and the Stuart--Landau growth rate evaluates
+to
+\begin{equation}
+  \mu(0,0) \;=\; \mu_0 - \mu_{FF}\,F_{\mathrm{typ}}^2
+   \;=\; 0.036 - 0.40 \cdot 0.04 \;=\; 0.020 \;>\; 0,
+\end{equation}
+so the sedentary branch is \emph{unstable even at full rest}. The
+model captures, correctly, that an athlete sitting at zero training
+load still has a non-trivial autonomic amplitude --
+$A^*_{\mathrm{osc}}(0) \approx 0.32$ -- driven by intrinsic
+physiology rather than by exogenous stimulus.
+
+\paragraph{An interior optimum near $\Phi_c \approx 2$.} The growth
+rate $\mu(\Phi_c)$ rises with training load through the increase in
+fitness $B$ (which lifts $\mu$) until $B$ saturates at unity around
+$\Phi_c \approx 2$, and then falls as fatigue $F$ accumulates and
+the quadratic suppression $-\mu_{FF}(F-F_{\mathrm{typ}})^2$
+dominates. The maximum of $\mu$, and hence of
+$A^*_{\mathrm{osc}}$, sits at the saturation point
+\begin{equation}
+  \Phi_{\mathrm{opt}} \;\approx\; 2.0,
+  \qquad
+  \mu_{\max} \;\approx\; 0.21,
+  \qquad
+  A^*_{\mathrm{osc}}(\Phi_{\mathrm{opt}}) \;\approx\; 1.02.
+\end{equation}
+This is the best a constant-load policy can do.
+
+\paragraph{Overtraining collapse at $\Phi_c \approx 3.71$.} Above
+the bifurcation threshold $\Phi_c^{\mathrm{crit}}$ the quadratic
+fatigue-suppression term wins outright, $\mu$ drops through zero,
+and the oscillatory branch coalesces with the sedentary branch
+(now stable). At the truth values of Table~\ref{tab:fsa-truth} the
+threshold is
+\begin{equation}
+  \Phi_c^{\mathrm{crit}} \;\approx\; 3.71
+  \quad \text{(TRIMP-units / day)}.
+  \label{eq:Phi-crit}
+\end{equation}
+Loads above this drive the system back to $A=0$ -- the autonomic
+collapse that the Banister fitness/fatigue tradition documents
+empirically and that motivated the introduction of the cubic
+$\mu_{FF}$ term in the first place.
+
+\subsection{Implication for the controller}\label{sec:lyap-implication}
+
+Section~\ref{sec:lyap-goldilocks} establishes a baseline against
+which the SMC${}^2$ controller's performance can be judged.
+
+\begin{itemize}
+  \item The best \emph{constant} schedule keeps $\Phi(t) \equiv \Phi_{\mathrm{opt}} \approx 2$,
+        delivering an asymptotic time-average
+        $\frac{1}{T}\int_0^T A(t)\,\dd t \to A^*_{\mathrm{osc}}(\Phi_{\mathrm{opt}}) \approx 1.0$
+        once the slow Banister state has equilibrated. The
+        finite-horizon canonical baseline used in Stage~D
+        (Section~\ref{sec:results}) is the suboptimal
+        $\Phi \equiv 1.0$, which delivers
+        $A^*_{\mathrm{osc}}(1) \approx 0.81$.
+  \item Any \emph{schedule} that beats the constant-$\Phi_{\mathrm{opt}}$
+        average must do so by exploiting the transient dynamics of
+        $B$ and $F$ over a finite horizon: front-loading training
+        early to build $B$, then tapering to let $F$ recover before
+        the horizon ends, etc. The Stage~D SMC${}^2$ result
+        reports exactly such a front-loaded periodisation, with
+        mean $\Phi \approx 1.96$, essentially recovering
+        $\Phi_{\mathrm{opt}}$ as the time-average.
+\end{itemize}
+
+The $+28\%$ gain reported in Section~\ref{sec:results} over the
+$\Phi \equiv 1$ baseline therefore decomposes, roughly, into a
+``constant-load'' component (the optimal constant load $\Phi \approx 2$
+already beats $\Phi=1$) and a ``schedule-shape'' component (the
+non-constant front-loaded profile beats the constant
+$\Phi = \Phi_{\mathrm{opt}}$ on the finite horizon by exploiting
+transients). The first component is what the analysis in this
+section accounts for; the second is what the SMC${}^2$ machinery
+adds.
+
+\paragraph{The sedentary saddle.} The $A=0$ branch enters the story
+only as the saddle that the controlled trajectory has to push away
+from when starting from a de-trained initial condition such as the
+Stage~E5 starting state $(B_0,F_0,A_0) = (0.05,0.30,0.10)$. Because
+$\mu(B^*_0,F^*_0)(\Phi_c) > 0$ for $\Phi_c \in [0,\Phi_c^{\mathrm{crit}})$,
+the sedentary branch is repelling for any non-collapse training
+load, and even small perturbations send the system toward the
+oscillatory branch. The deterministic ``time-to-leave'' the
+sedentary saddle scales as $1/\mu(B^*_0,F^*_0)$ -- another reason
+to favour higher $\Phi$ early in a horizon when $B$ is small and
+$F$ has yet to build.
 
 \subsection{Stochastic stability and exponential ergodicity}\label{sec:lyap-stoch}
 
-We turn to the full SDE \eqref{eq:fsa-B}--\eqref{eq:fsa-A} on the
-operating domain
+We turn from the deterministic skeleton to the full SDE
+\eqref{eq:fsa-B}--\eqref{eq:fsa-A} on the operating domain
 $\Xcal = [0,1] \times [0,\infty) \times [0,\infty)$. The
-state-dependent diffusions vanish at the boundary $\partial\Xcal$,
-so $\Xcal$ is positively invariant. We seek a single quantitative
-statement that captures the long-time behaviour of the process. The
-Foster--Lyapunov framework supplies the right object.
+state-dependent diffusions vanish at the boundary, so $\Xcal$ is
+positively invariant. We seek a single quantitative statement that
+captures the long-time behaviour of the controlled stochastic
+process. The Foster--Lyapunov framework supplies the right object.
 
 \begin{definition}[Foster--Lyapunov drift]\label{def:foster-lyap}
 A function $V:\Xcal \to [0,\infty)$ is said to satisfy a
@@ -83,8 +257,7 @@ SDE satisfies
 Inequality \eqref{eq:foster-lyap} is the standard hypothesis that
 delivers exponential ergodicity in the sense of total-variation
 convergence to a unique invariant distribution
-(Khasminskii, 1980; Meyn and Tweedie, 1993). We exhibit a $V$ that
-satisfies it.
+(Khasminskii, 1980; Meyn and Tweedie, 1993).
 
 \begin{theorem}[Stochastic stability of FSA-v2]\label{thm:lyap}
 Under bounded controls $\Phi:\R_+ \to [0,\Phimax]$, the FSA-v2 SDE
@@ -102,19 +275,15 @@ and a finite constant $C$ depending on the truth parameters,
 $\Phimax$, and the choice of $a,b,c$.
 \end{theorem}
 
-The proof is a routine but tedious computation of $\Lcal V$ component
-by component, bounding each term using the boundedness of $B$ on
-$[0,1]$ together with two applications of Young's inequality on the
-$F$ and $A$ components; we record it in
-Appendix~\ref{app:lyap}. The intuitive picture is that the three
-dissipative terms in the drift (linear decay of $B$, linear decay
-of $F$, cubic damping of $A$) overwhelm the linear growth and noise
-contributions outside a bounded region of state space, which is
-exactly what the Foster--Lyapunov inequality formalises.
+The proof is a routine but tedious computation of $\Lcal V$
+component by component, bounding each term using the boundedness of
+$B$ on $[0,1]$ together with two applications of Young's
+inequality on the $F$ and $A$ components; we record it in
+Appendix~\ref{app:lyap}.
 
 \begin{theorem}[Khasminskii, 1980; Meyn--Tweedie, 1993]\label{thm:ergodic}
-Let $X_t = (B_t,F_t,A_t)$ be the FSA-v2 process under a fixed bounded
-control $\Phi$, satisfying the conditions of
+Let $X_t = (B_t,F_t,A_t)$ be the FSA-v2 process under a fixed
+bounded control $\Phi$, satisfying the conditions of
 Theorem~\ref{thm:lyap}. Then $X$ admits a unique invariant
 probability distribution $\pi^\Phi$ on $\Xcal$, and there exist
 constants $K_0 > 0$ and $\rho \in (0,\alpha)$ such that, for every
@@ -128,15 +297,21 @@ $x_0 \in \Xcal$,
 where $\|\cdot\|_{\mathrm{TV}}$ is the total-variation norm.
 \end{theorem}
 
-The exponential rate $\rho$ inherits the slowest dissipative
-timescale of the model. With $\tau_B = 42$ days and
-$\tau_F^{\mathrm{old}} := \tau_F(1+\lambda_A A_{\mathrm{typ}}) = 7$ days,
-the rate is $\alpha = 1/7\,\mathrm{d}^{-1}$ and convergence to
-invariance has half-life roughly $7\log 2 \approx 4.85$ days. This
-is consistent with the rolling-window choice of one-day windows
-and twelve-hour strides in Section~\ref{sec:smc2}: the
-SMC${}^2$ filter operates on a fundamental dynamical scale
-comparable to the relaxation time of the process being filtered.
+The geometric content of Theorem~\ref{thm:ergodic} is that the
+controlled stochastic process forgets its initial condition
+exponentially fast, on a timescale $\rho^{-1}$ comparable to the
+longest dissipative scale of the model. The invariant distribution
+$\pi^\Phi$ depends on $\Phi$: under a constant load
+$\Phi \equiv \Phi_c$, $\pi^\Phi$ is concentrated near the
+oscillatory branch $A^*_{\mathrm{osc}}(\Phi_c)$ when $\Phi_c < \Phi_c^{\mathrm{crit}}$
+and near the sedentary branch when $\Phi_c > \Phi_c^{\mathrm{crit}}$.
+The control cost $\E\!\int_0^T A\,\dd t$ of \eqref{eq:cost} is
+therefore, for long $T$ at constant load, well approximated by
+$T \cdot \E_{\pi^\Phi}[A]$, which by the Goldilocks profile of
+Section~\ref{sec:lyap-goldilocks} is maximised near
+$\Phi_c \approx \Phi_{\mathrm{opt}}$. Beating that maximum requires
+non-constant scheduling, which is exactly what the controller of
+Section~\ref{sec:control} is designed to provide.
 
 \begin{remark}[Limitations of the bound]\label{rem:lyap-limits}
 The proof of Theorem~\ref{thm:lyap} in Appendix~\ref{app:lyap} uses
@@ -144,9 +319,9 @@ the simplest possible quadratic Lyapunov function and crude global
 bounds on the residual factors of the drift. The constant $C$ that
 emerges is therefore loose: it scales with $\Phimax^2$ rather than
 with the time-average of $\Phi^2$, and ignores the cancellations
-that the real dynamics exhibit near the operating point. A sharper
-analysis -- perhaps with a piecewise Lyapunov function that
-switches between the regimes $\mu < 0$ and $\mu > 0$ identified in
-Proposition~\ref{prop:stab-zero} -- would deliver a tighter rate
-and a smaller constant. Such a refinement is left for future work.
+that the real dynamics exhibit near the operating point. A
+sharper analysis -- perhaps with a piecewise Lyapunov function that
+switches between the regimes $\mu < 0$ (overtraining) and
+$\mu > 0$ (Goldilocks) -- would deliver a tighter rate and a
+smaller constant. We do not pursue this here.
 \end{remark}

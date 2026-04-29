@@ -2,9 +2,11 @@
 
 This appendix supplies the derivations underlying the stability
 analysis of Section~\ref{sec:lyap}. We compute the drift Jacobian
-that establishes Proposition~\ref{prop:stab-zero}
-(Section~\ref{app:lyap-jacobian}), set out the bifurcation locus
-explicitly (Section~\ref{app:lyap-bifurcation}), and prove the
+at the sedentary branch (Section~\ref{app:lyap-jacobian}), derive
+the existence and local stability of the oscillatory branch
+(Section~\ref{app:lyap-osc}), set out the bifurcation locus
+$\Phi_c^{\mathrm{crit}}$ explicitly
+(Section~\ref{app:lyap-bifurcation}), and prove the
 Foster--Lyapunov drift inequality of Theorem~\ref{thm:lyap}
 (Section~\ref{app:lyap-foster}).
 
@@ -71,42 +73,114 @@ $A=0$ equilibrium is locally asymptotically stable iff all three
 eigenvalues are negative, i.e.\ iff $\mu(B^*_0,F^*_0) < 0$. This
 proves Proposition~\ref{prop:stab-zero}. \qed
 
+\subsection{The oscillatory branch: existence and local stability}\label{app:lyap-osc}
+
+The oscillatory equilibrium of the deterministic skeleton sits at
+$A^*_{\mathrm{osc}} = \sqrt{\mu(B^*,F^*)/\eta} > 0$ with
+$(B^*,F^*)$ given implicitly by setting
+$\dot B = \dot F = 0$ in
+\eqref{eq:fsa-B}--\eqref{eq:fsa-F} at the equilibrium amplitude
+$A = A^*_{\mathrm{osc}}$. The implicit dependence on $A$ enters
+through the residual factors $g_B(A),g_F(A)$ of
+Section~\ref{app:lyap-jacobian}.
+
+To leading order, and consistent with the
+operating-point linearisation of Definition~\ref{def:operating-point},
+we evaluate the residual factors at $A = A_{\mathrm{typ}}$, where
+$g_B(A_{\mathrm{typ}}) = g_F(A_{\mathrm{typ}}) = 1$. Then
+$(B^*,F^*) \approx (B^*_0,F^*_0)$ as in \eqref{eq:eq-zero}, and
+\begin{equation}
+  A^*_{\mathrm{osc}}(\Phi_c)
+   \;\approx\; \sqrt{\,\mu(B^*_0(\Phi_c),F^*_0(\Phi_c))\,/\,\eta\,},
+  \label{eq:A-osc-approx}
+\end{equation}
+defined wherever $\mu(B^*_0,F^*_0) > 0$. This is the formula used
+to populate Table~\ref{tab:goldilocks} of the main text and the
+right-hand panel of Figure~\ref{fig:goldilocks}.
+
+\paragraph{Local stability.} A short Jacobian computation -- entirely
+analogous to that of Section~\ref{app:lyap-jacobian} but evaluated at
+$(B^*,F^*,A^*_{\mathrm{osc}})$ -- shows that the eigenvalue along
+the $A$-direction at the oscillatory branch is
+\begin{equation*}
+  \partial_A\bigl[\mu(B,F)\,A - \eta A^3\bigr]\Big|_{A=A^*_{\mathrm{osc}}}
+  \;=\; \mu(B^*,F^*) - 3\eta\,(A^*_{\mathrm{osc}})^2
+  \;=\; \mu(B^*,F^*) - 3\mu(B^*,F^*) \;=\; -2\,\mu(B^*,F^*).
+\end{equation*}
+Since the oscillatory branch exists only when $\mu(B^*,F^*) > 0$,
+the $A$-direction eigenvalue is strictly negative there. The other
+two eigenvalues remain $-1/\tau_B$ and
+$-1/[\tau_F(1+\lambda_A A_{\mathrm{typ}})]$ (with corrections
+$O(\varepsilon_A,\lambda_A)$ from the residual factors at
+$A^*_{\mathrm{osc}} \neq A_{\mathrm{typ}}$). All three eigenvalues
+are negative, so the oscillatory branch is locally asymptotically
+stable wherever it exists.
+
+\paragraph{Maximum of $A^*_{\mathrm{osc}}$.} Differentiating
+\eqref{eq:A-osc-approx} with respect to $\Phi_c$ and using
+$B^*_0(\Phi_c)$ saturating at unity for $\Phi_c \ge 1/\tilde b
+\approx 1.98$,
+\begin{equation*}
+  \frac{\dd \mu}{\dd \Phi_c}
+   = \begin{cases}
+     \mu_B\,\tilde b - \mu_F\,\tilde f - 2\mu_{FF}\,\tilde f\,(\tilde f\Phi_c - F_{\mathrm{typ}})
+        & 0 \le \Phi_c < 1/\tilde b \\[4pt]
+     -\mu_F\,\tilde f - 2\mu_{FF}\,\tilde f\,(\tilde f\Phi_c - F_{\mathrm{typ}})
+        & \Phi_c \ge 1/\tilde b.
+   \end{cases}
+\end{equation*}
+For the truth values of Table~\ref{tab:fsa-truth}, the first branch
+gives a positive derivative throughout $[0, 1/\tilde b)$ -- i.e.\
+$\mu$ is monotone increasing in this range -- and the second
+branch is negative for all $\Phi_c \ge 1/\tilde b$. The maximum
+therefore occurs exactly at the saturation point
+\begin{equation}
+  \Phi_{\mathrm{opt}} \;=\; 1/\tilde b
+   \;=\; \frac{1+\varepsilon_A A_{\mathrm{typ}}}{\kappa_B \tau_B}
+   \;\approx\; 1.99,
+  \label{eq:Phi-opt}
+\end{equation}
+giving $\mu_{\max} \approx 0.207$ and
+$A^*_{\mathrm{osc}}(\Phi_{\mathrm{opt}}) \approx 1.02$.
+
 \subsection{The bifurcation locus}\label{app:lyap-bifurcation}
 
-The bifurcation locus
-$\{\Phi_c > 0 : \mu(B^*_0(\Phi_c),F^*_0(\Phi_c)) = 0\}$ is the level
-set on which $\lambda_3$ in \eqref{eq:eigs} vanishes. Substituting
-$B^*_0(\Phi_c) = \tilde b\,\Phi_c$ and $F^*_0(\Phi_c) = \tilde f\,\Phi_c$
-with $\tilde b = \kappa_B \tau_B/(1+\varepsilon_A A_{\mathrm{typ}})$
-and $\tilde f = \kappa_F \tau_F(1+\lambda_A A_{\mathrm{typ}})$ into
-the formula for $\mu$,
+Above $\Phi_{\mathrm{opt}}$, $B$ remains saturated at unity and
+$\mu$ depends only on $F = \tilde f \Phi_c$:
 \begin{equation}
-  \mu(B^*_0(\Phi_c), F^*_0(\Phi_c))
-   \;=\; \mu_0
-         + \mu_B \tilde b\,\Phi_c
-         - \mu_F \tilde f\,\Phi_c
-         - \mu_{FF}(\tilde f \Phi_c - F_{\mathrm{typ}})^2.
+  \mu(\Phi_c) \;=\; \mu_0 + \mu_B - \mu_F\,\tilde f\,\Phi_c - \mu_{FF}(\tilde f\Phi_c - F_{\mathrm{typ}})^2,
+  \quad \Phi_c \ge \Phi_{\mathrm{opt}}.
   \label{eq:mu-of-Phi}
 \end{equation}
-This is a quadratic in $\Phi_c$ once expanded, with leading
-coefficient $-\mu_{FF} \tilde f^2 < 0$. At the truth values of
+This is a downward-opening quadratic in $\Phi_c$ with leading
+coefficient $-\mu_{FF}\tilde f^2$. At the truth values of
 Table~\ref{tab:fsa-truth},
 \begin{equation*}
   \tilde b \;=\; \frac{0.01248 \cdot 42}{1.04} \;\approx\; 0.504,
   \qquad
-  \tilde f \;=\; 0.030 \cdot 6.364 \cdot 1.1 \;\approx\; 0.210,
+  \tilde f \;=\; 0.030 \cdot 6.364 \cdot 1.1 \;\approx\; 0.210.
 \end{equation*}
-giving
-$\mu(\Phi_c) = 0.036 + 0.0966\,\Phi_c - 0.40(0.210\,\Phi_c - 0.20)^2$.
-Solving $\mu(\Phi_c) = 0$ yields a single positive root
-$\Phi_c^{\mathrm{crit}} \approx 7.5$ TRIMP-units per day.
+Setting \eqref{eq:mu-of-Phi} to zero and solving yields a unique
+positive root in the saturated regime:
+\begin{equation}
+  \Phi_c^{\mathrm{crit}} \;\approx\; 3.71\quad\text{(TRIMP-units per day)}.
+\end{equation}
+For $\Phi_{\mathrm{opt}} < \Phi_c < \Phi_c^{\mathrm{crit}}$ we have
+$\mu > 0$ and the oscillatory branch persists (with decreasing
+amplitude); for $\Phi_c > \Phi_c^{\mathrm{crit}}$ we have $\mu < 0$
+and the oscillatory branch ceases to exist, leaving the sedentary
+branch as the unique stable equilibrium. The bifurcation at
+$\Phi_c^{\mathrm{crit}}$ is a Hopf-like merger of the oscillatory
+and sedentary branches.
 
-For $0 < \Phi_c < \Phi_c^{\mathrm{crit}}$ we have $\mu > 0$ and the
-$A=0$ branch is unstable; for $\Phi_c > \Phi_c^{\mathrm{crit}}$ we
-have $\mu < 0$ and the $A=0$ branch is stable. At
-$\Phi_c = \Phi_c^{\mathrm{crit}}$ the system undergoes a
-Hopf-like (super- or sub-critical depending on the sign of higher-order
-corrections we have not computed) bifurcation in the $A$-direction.
+In the under-trained regime $0 \le \Phi_c < \Phi_{\mathrm{opt}}$,
+$\mu(B^*_0,F^*_0)$ is given by the unsaturated formula
+$\mu_0 + \mu_B \tilde b\,\Phi_c - \mu_F\,\tilde f\,\Phi_c
+       - \mu_{FF}(\tilde f\Phi_c - F_{\mathrm{typ}})^2$
+which we have already used to compute
+Table~\ref{tab:goldilocks}; this remains positive throughout
+$[0,\Phi_{\mathrm{opt}}]$, so the oscillatory branch exists and is
+stable for every constant load below the bifurcation threshold.
 
 \subsection{Foster--Lyapunov drift inequality (proof of Theorem~\ref{thm:lyap})}\label{app:lyap-foster}
 
