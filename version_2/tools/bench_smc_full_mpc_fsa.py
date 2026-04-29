@@ -166,7 +166,9 @@ def main():
         sf_blend=0.7,
         sf_annealed_n_stages=3,
         sf_annealed_n_mh_steps=5,
-        sf_info_aware=False,
+        sf_info_aware=False,                  # G2 tested True on E3, regressed 23/27→17/27;
+                                              # the G1 reparametrization is enough on its own.
+                                              # See PROGRESS_F_G.md for the empirical rationale.
         num_mcmc_steps=5, hmc_step_size=0.025, hmc_num_leapfrog=8,
         num_mcmc_steps_bridge=3, max_lambda_inc_bridge=0.15,
     )

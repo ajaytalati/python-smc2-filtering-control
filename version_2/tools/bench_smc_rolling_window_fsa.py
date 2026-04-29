@@ -30,6 +30,7 @@ import os
 os.environ.setdefault('JAX_ENABLE_X64', 'True')
 
 import math
+import sys
 import time
 
 import jax
@@ -110,8 +111,17 @@ def _simulate_synthetic_full(seed: int = 42, daily_phi: float = 1.0):
 
 
 def main():
+    # CLI: optional first arg is suffix tag (e.g. "g1_no_infoaware",
+    # "g2_infoaware"). If suffix contains "infoaware" without "no_",
+    # automatically enable sf_info_aware=True. This way the same script
+    # produces both diagnostic configs from the same code path.
+    out_suffix = sys.argv[1] if len(sys.argv) > 1 else ''
+    sf_info_aware_on = ('infoaware' in out_suffix
+                         and 'no_infoaware' not in out_suffix)
+
     print("=" * 76)
-    print("  Stage E3 — 27-window rolling SMC² on FSA-v2 (open-loop, Φ=1)")
+    print("  Stage E3 — 27-window rolling SMC² on FSA-v2 (open-loop, Φ=1)" +
+          (f"  [{out_suffix}]" if out_suffix else ''))
     print("=" * 76)
 
     n_windows = (N_DAYS_TOTAL * 96 - WINDOW_BINS) // STRIDE_BINS + 1
@@ -120,6 +130,8 @@ def main():
     print(f"  window:   {WINDOW_BINS} bins (1 day)")
     print(f"  stride:   {STRIDE_BINS} bins (12 hours)")
     print(f"  windows:  {n_windows}")
+    print(f"  bridge:   schrodinger_follmer (Path B-fixed, q1=annealed, q0_cov)"
+          f", sf_info_aware={sf_info_aware_on}")
     print()
 
     print("  Step 1: synthesize 14-day trajectory under constant Φ=1.0")
@@ -156,7 +168,7 @@ def main():
         sf_blend=0.7,                         # bias toward new posterior
         sf_annealed_n_stages=3,
         sf_annealed_n_mh_steps=5,             # smc2bj best-practice
-        sf_info_aware=False,                  # Phase-2 enhancement; off for now
+        sf_info_aware=sf_info_aware_on,       # CLI-controlled (suffix-driven)
         num_mcmc_steps=5, hmc_step_size=0.025, hmc_num_leapfrog=8,
         num_mcmc_steps_bridge=3, max_lambda_inc_bridge=0.15,
     )
@@ -267,9 +279,11 @@ def main():
 
     # ── Diagnostic plot — per-param posterior trace across windows ──
     out_dir = "outputs/fsa_high_res"
-    out_path = f"{out_dir}/E3_rolling_window_traces.png"
+    base_path = (f"{out_dir}/E3_rolling_window_traces"
+                  + (f"_{out_suffix}" if out_suffix else ''))
     os.makedirs(out_dir, exist_ok=True)
 
+    # ── Plot 1: identifiable-subset (6 params, original 2x3 layout) ──
     cov_names = sorted(identifiable_subset)
     fig, axes = plt.subplots(2, 3, figsize=(15, 8))
     axes = axes.flatten()
@@ -289,15 +303,56 @@ def main():
         ax.set_title(f'{name} across {n_windows} windows')
         ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
 
-    plt.suptitle(f'Stage E3 — FSA-v2 27-window rolling SMC² (open-loop): '
-                  f'{n_pass}/{n_windows} windows pass ≥5/6 identifiable, '
+    plt.suptitle(f'Stage E3 — FSA-v2 27-window rolling SMC²' +
+                  (f' [{out_suffix}]' if out_suffix else '') +
+                  f': {n_pass}/{n_windows} windows pass ≥5/6 identifiable, '
                   f'{total_elapsed/60:.0f} min on '
                   f'{jax.devices()[0].platform.upper()}', fontsize=11)
     plt.tight_layout()
-    plt.savefig(out_path, dpi=120)
+    plt.savefig(f"{base_path}.png", dpi=120)
+    plt.close()
+
+    # ── Plot 2: ALL 30 estimable parameters in a 5x6 grid for full diagnostic ──
+    all_param_names = list(em.all_names)
+    n_params_all = len(all_param_names)
+    n_cols = 6
+    n_rows = (n_params_all + n_cols - 1) // n_cols
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(20, 3 * n_rows))
+    axes = axes.flatten()
+    x = np.arange(n_windows)
+    for i, name in enumerate(all_param_names):
+        ax = axes[i]
+        idx = i
+        means = [r['particles_constrained'][:, idx].mean() for r in all_results]
+        q05s  = [np.quantile(r['particles_constrained'][:, idx], 0.05)
+                 for r in all_results]
+        q95s  = [np.quantile(r['particles_constrained'][:, idx], 0.95)
+                 for r in all_results]
+        is_identifiable = name in identifiable_subset
+        color = 'steelblue' if is_identifiable else 'darkorange'
+        ax.plot(x, means, 'o-', color=color, markersize=2, lw=0.8)
+        ax.fill_between(x, q05s, q95s, alpha=0.25, color=color)
+        truth_val = truth.get(name, None)
+        if truth_val is not None:
+            ax.axhline(truth_val, color='red', linestyle='--', lw=0.8)
+        marker = ' (id)' if is_identifiable else ''
+        ax.set_title(f'{name}{marker}', fontsize=9)
+        ax.tick_params(labelsize=7)
+        ax.grid(True, alpha=0.3)
+    # Hide unused axes
+    for i in range(n_params_all, len(axes)):
+        axes[i].set_visible(False)
+    plt.suptitle(f'Stage E3 — ALL 30 PARAMS rolling-SMC² posterior trace' +
+                  (f' [{out_suffix}]' if out_suffix else '') +
+                  f': {n_pass}/{n_windows} ≥5/6 identifiable',
+                  fontsize=12, y=1.0)
+    plt.tight_layout()
+    plt.savefig(f"{base_path}_all30.png", dpi=120)
     plt.close()
     print()
-    print(f"  Plot: {out_path}")
+    print(f"  Plots:")
+    print(f"    {base_path}.png        (6 identifiable params)")
+    print(f"    {base_path}_all30.png  (all 30 params)")
     print("=" * 76)
 
 
