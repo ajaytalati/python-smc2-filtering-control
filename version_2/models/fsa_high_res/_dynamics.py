@@ -1,35 +1,70 @@
-"""Pure-JAX dynamics for the FSA high-res model — v2 (Banister-coupled).
+"""Pure-JAX dynamics for FSA-v2 (Banister-coupled) — **G1-reparametrized**.
 
 State [B, F, A]:
   B  fitness     (Banister chronic, Jacobi diffusion in [0, 1])
   F  fatigue     (Banister acute,   CIR diffusion in [0, ∞))
   A  amplitude   (Stuart-Landau,    CIR diffusion in [0, ∞))
 
-Drift (frequency-dependent, /day units):
+## Reparametrization motivation (Stage G1)
 
-  μ(B, F) = μ_0 + μ_B·B − μ_F·F − μ_FF·F²       (Stuart-Landau bifurcation parameter)
-  dB/dt = κ_B·(1 + ε_A·A)·Φ(t)  −  B / τ_B          (Banister chronic, A boosts gain)
-  dF/dt = κ_F·Φ(t)             −  (1 + λ_A·A)/τ_F · F   (Banister acute, A speeds clearance)
-  dA/dt = μ·A − η·A³                                (Stuart-Landau cubic)
+The original v2 spec had three parameter pairs that are FIM rank-
+deficient at 1-day windows under near-constant Φ and near-constant
+A ≈ 0.1:
 
-Diffusion (state-dependent Itô):
+  (κ_B, ε_A)        — only κ_B(1 + ε_A·A_typ) identifiable
+  (μ_F, μ_{FF})     — only μ_F + 2·F_typ·μ_{FF} identifiable
+  (τ_F, λ_A)        — only (1 + λ_A·A_typ)/τ_F identifiable
 
-  σ_B · √(B (1 − B)) · dW_B   (Jacobi — vanishes at both 0 and 1)
-  σ_F · √F           · dW_F   (CIR     — vanishes at 0)
-  σ_A · √A           · dW_A   (CIR     — vanishes at 0)
+The bridge handoff propagated phantom information on these directions,
+causing posterior drift across windows (E3 18/27, E5 closed-loop 3/26).
 
-The single exogenous control input is Φ(t) (training-strain rate, ≥ 0).
-Fitness B and fatigue F are BOTH driven by the same training stimulus Φ
-(canonical Banister) — fitness accrues slowly with τ_B = 42 days,
-fatigue accrues fast and decays fast with τ_F = 7 days. Autonomic /
-circadian amplitude A modulates both adaptation efficiency (B-gain
-multiplier 1+ε_A·A) and recovery rate (F-clearance multiplier 1+λ_A·A).
+This module rotates each pair into a (strongly-identified, weakly-
+identified-residual) decomposition, keeping the parameter NAMES
+unchanged (so downstream control.py and bench drivers don't require
+edits) but redefining the meanings + adjusting truth values:
 
-This replaces the v1 model where T_B(t) was an exogenous "fitness
-target" the body magically converged toward independent of training —
-which made the optimum trivially "rest with high target" and so was
-non-physiological. v2 couples B to Φ explicitly so the control problem
-becomes the real Banister periodisation trade-off.
+| param name   | NEW meaning                            | NEW truth value |
+|--------------|----------------------------------------|-----------------|
+| `kappa_B`    | κ_B^eff = κ_B·(1 + ε_A·A_typ)          | 0.012·1.04 = 0.01248 |
+| `epsilon_A`  | residual A-boost beyond A_typ          | 0.40 (unchanged) |
+| `mu_F`       | μ_F^eff = μ_F + 2·F_typ·μ_{FF} (slope at F_typ) | 0.10 + 0.16 = 0.26 |
+| `mu_FF`      | curvature; centered (F − F_typ)²       | 0.40 (unchanged) |
+| `mu_0`       | μ_0 + μ_{FF}·F_typ²  (absorbs constant) | 0.02 + 0.016 = 0.036 |
+| `tau_F`      | τ_F^eff = τ_F/(1 + λ_A·A_typ)          | 7/1.1 = 6.3636… |
+| `lambda_A`   | residual A-coupling beyond A_typ       | 1.00 (unchanged) |
+
+The **drift formulas are mathematically equivalent** to the v2 spec
+when the new truth values are used — the reparametrization is a pure
+coordinate change. A drift-parity unit test in `tests/test_g1_reparam.py`
+verifies this.
+
+The estimation-side priors tighten on `epsilon_A`, `mu_FF`, `lambda_A`
+(the residuals) because they are weakly informed at 1-day windows
+(see Stage G plan for rationale).
+
+## Drift (frequency-dependent, /day units, reparametrized)
+
+  μ(B, F) = μ_0 + μ_B·B − μ_F·F − μ_{FF}·(F − F_typ)²
+
+  dB/dt = κ_B · (1 + ε_A·A) / (1 + ε_A·A_typ) · Φ(t) − B/τ_B
+  dF/dt = κ_F·Φ(t) − (1 + λ_A·A) / (1 + λ_A·A_typ) / τ_F · F
+  dA/dt = μ·A − η·A³
+
+At A = A_typ and F = F_typ, the residual factors (1+ε_A·A)/(1+ε_A·A_typ)
+and (1+λ_A·A)/(1+λ_A·A_typ) both equal 1, so the drift collapses to:
+
+  dB/dt = κ_B·Φ − B/τ_B           ← κ_B is the effective B-gain
+  dF/dt = κ_F·Φ − F/τ_F           ← τ_F is the effective acute timescale
+  μ = μ_0 + μ_B·B − μ_F·F         ← μ_F is the local slope at F_typ
+
+i.e. at the typical operating point only the strongly-identified
+parameters appear in the dynamics.
+
+## Diffusion (state-dependent Itô — unchanged)
+
+  σ_B · √(B (1 − B)) · dW_B   (Jacobi)
+  σ_F · √F           · dW_F   (CIR)
+  σ_A · √A           · dW_A   (CIR)
 """
 
 from __future__ import annotations
@@ -38,81 +73,86 @@ import jax
 import jax.numpy as jnp
 
 
-# ── Truth parameters (Set A v2) ───────────────────────────────────────
+# ── Operating-point reference constants ───────────────────────────────
+# These define the "linearization point" around which the
+# reparametrization is centered. Priors on the residual parameters
+# (epsilon_A, mu_FF, lambda_A) encode "we believe the system is
+# typically near this point". Real-data extension may relax these.
+
+A_TYP   = 0.10     # initial-state A; representative of de-trained subject
+F_TYP   = 0.20     # mid-window F under typical Φ at typical A
+PHI_TYP = 1.0      # canonical Banister default (1 unit of TRIMP/day)
+
+
+# ── Truth parameters (Set A v2, G1-reparametrized) ────────────────────
 
 TRUTH_PARAMS = dict(
-    # Banister timescales + gains
-    tau_B=42.0,        # days — canonical chronic time constant
-    tau_F=7.0,         # days — canonical acute time constant
-    kappa_B=0.012,     # B-gain per unit Φ → B_ss ≈ 0.5 at Φ=1.0
-    kappa_F=0.030,     # F-gain per unit Φ → F_ss ≈ 0.2 at Φ=1.0
-
-    # A-coupling: autonomic state modulates both adaptation + recovery
-    epsilon_A=0.40,    # A boosts B-gain (≤40% at A=1)
-    lambda_A=1.00,     # A doubles F-clearance rate at A=1
+    # Banister timescales + (effective) gains
+    tau_B=42.0,
+    tau_F=7.0 / (1.0 + 1.00 * A_TYP),     # = 6.3636…  ← REPARAMETRIZED
+    kappa_B=0.012 * (1.0 + 0.40 * A_TYP),  # = 0.01248 ← REPARAMETRIZED
+    kappa_F=0.030,
+    epsilon_A=0.40,                         # residual (same number; tighter prior in estimation.py)
+    lambda_A=1.00,                          # residual (same number; tighter prior in estimation.py)
 
     # Stuart-Landau bifurcation parameter
-    mu_0=0.02,         # baseline (weakly subcritical)
-    mu_B=0.30,         # fitness raises μ
-    mu_F=0.10,         # fatigue suppresses μ (linear)
-    mu_FF=0.40,        # fatigue suppresses μ (quadratic — overtraining collapse)
-    eta=0.20,          # cubic damping; A* ≈ 1.0 at μ ≈ 0.20
+    mu_0=0.02 + 0.40 * (F_TYP ** 2),       # = 0.036 ← absorbs μ_FF·F_typ² constant
+    mu_B=0.30,
+    mu_F=0.10 + 2.0 * F_TYP * 0.40,        # = 0.26  ← REPARAMETRIZED (slope at F_typ)
+    mu_FF=0.40,                             # residual curvature
+    eta=0.20,
 
-    # State-dependent diffusion (sqrt-Itô).
-    # σ values scaled so the noise level at the typical operating point
-    # matches the v1 constant-σ values.
-    sigma_B=0.010,     # √(B(1-B)) Jacobi
-    sigma_F=0.012,     # √F CIR
-    sigma_A=0.020,     # √A CIR
+    # State-dependent diffusion (unchanged from v2)
+    sigma_B=0.010,
+    sigma_F=0.012,
+    sigma_A=0.020,
 )
 
 
 def drift_jax(y, params, Phi_t):
-    """JAX drift for the FSA-v2 SDE.
+    """JAX drift for the FSA-v2 SDE — G1-reparametrized.
 
     Args:
         y: state vector [B, F, A] of shape (3,).
-        params: dict with the keys listed in TRUTH_PARAMS (or a JAX-pytree
-            equivalent; only the dynamics keys are read here).
-        Phi_t: scalar — training-strain schedule value at the current step.
+        params: dict with the keys listed in TRUTH_PARAMS.
+        Phi_t: scalar — training-strain rate at current step.
 
     Returns:
-        d[B, F, A]/dt as a (3,) array (in /day units).
+        d[B, F, A]/dt of shape (3,), in /day units.
     """
     B = y[0]
     F = y[1]
     A = y[2]
 
+    # μ_FF curvature is centered at F_typ so μ_F is the local linear slope
+    F_dev = F - F_TYP
     mu = (params['mu_0']
           + params['mu_B'] * B
           - params['mu_F'] * F
-          - params['mu_FF'] * F * F)
+          - params['mu_FF'] * F_dev * F_dev)
 
-    dB = params['kappa_B'] * (1.0 + params['epsilon_A'] * A) * Phi_t \
-         - B / params['tau_B']
-    dF = params['kappa_F'] * Phi_t \
-         - (1.0 + params['lambda_A'] * A) / params['tau_F'] * F
+    # B equation: kappa_B is now κ_B^eff (= effective B-gain at A_typ).
+    # The residual factor (1+ε_A·A)/(1+ε_A·A_typ) equals 1 at A=A_typ.
+    a_factor_B = ((1.0 + params['epsilon_A'] * A)
+                   / (1.0 + params['epsilon_A'] * A_TYP))
+    dB = params['kappa_B'] * a_factor_B * Phi_t - B / params['tau_B']
+
+    # F equation: tau_F is now τ_F^eff (= effective acute timescale at A_typ).
+    a_factor_F = ((1.0 + params['lambda_A'] * A)
+                   / (1.0 + params['lambda_A'] * A_TYP))
+    dF = (params['kappa_F'] * Phi_t
+          - a_factor_F / params['tau_F'] * F)
+
     dA = mu * A - params['eta'] * A * A * A
 
     return jnp.array([dB, dF, dA])
 
 
 def diffusion_state_dep(y, params):
-    """State-dependent diagonal diffusion vector.
-
-    Returns
-        [σ_B · √(B(1−B)),
-         σ_F · √F,
-         σ_A · √A]   shape (3,)
-
-    Each component vanishes at its respective domain boundary, so the
-    SDE keeps each state in its physiological range without clipping.
-    """
+    """State-dependent diagonal diffusion vector (unchanged from v2)."""
     B = y[0]
     F = y[1]
     A = y[2]
-    # jnp.maximum(_, 0.0) is a numerical safety rail — analytically the
-    # arguments to sqrt are non-negative whenever B ∈ [0,1], F ≥ 0, A ≥ 0.
     return jnp.array([
         params['sigma_B'] * jnp.sqrt(jnp.maximum(B * (1.0 - B), 0.0)),
         params['sigma_F'] * jnp.sqrt(jnp.maximum(F, 0.0)),
@@ -122,16 +162,7 @@ def diffusion_state_dep(y, params):
 
 def imex_step_substepped(y, params, noise, Phi_t, dt, n_substeps: int = 4):
     """Substepped Euler-Maruyama with state-dependent diffusion + boundary
-    reflection.
-
-    Performs `n_substeps` deterministic drift steps of size `dt/n_substeps`
-    (handles the cubic Stuart-Landau term and Banister stiffness), then a
-    single Wiener increment of variance `σ(y)²·dt` at the outer-step
-    boundary. Boundaries are enforced by reflection rather than clipping;
-    because σ(y) → 0 at every boundary, the reflection rarely fires and
-    the SDE stays in [0,1] × [0,∞) × [0,∞) analytically.
-
-    Returns y_next of shape (3,).
+    reflection (unchanged from v2).
     """
     sub_dt = dt / float(n_substeps)
 
@@ -143,7 +174,6 @@ def imex_step_substepped(y, params, noise, Phi_t, dt, n_substeps: int = 4):
     sigma_y = diffusion_state_dep(y_det, params)
     y_pred = y_det + sigma_y * jnp.sqrt(dt) * noise
 
-    # Reflect at boundaries (B ∈ [0, 1], F ≥ 0, A ≥ 0)
     B_pred = y_pred[0]
     F_pred = y_pred[1]
     A_pred = y_pred[2]

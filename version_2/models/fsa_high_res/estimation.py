@@ -29,6 +29,10 @@ import jax.numpy as jnp
 from smc2fc.estimation_model import EstimationModel
 from smc2fc._likelihood_constants import HALF_LOG_2PI
 
+# Stage G1: import operating-point reference constants. The drift formulas
+# below are reparametrized around (A_typ, F_typ) — see _dynamics.py.
+from models.fsa_high_res._dynamics import A_TYP, F_TYP
+
 
 # =========================================================================
 # FROZEN CONSTANTS
@@ -47,19 +51,22 @@ PHI_FROZEN     = 0.0       # circadian phase, morning chronotype
 # =========================================================================
 
 PARAM_PRIOR_CONFIG = OrderedDict([
-    # --- v2 Banister dynamics ---
+    # --- v2 Banister dynamics — G1-REPARAMETRIZED ---
+    # Strongly-identified params: priors centered at the new effective truth values.
+    # Residual params (epsilon_A, mu_FF, lambda_A): TIGHTER priors since they're
+    # weakly informed at 1-day window scale (FIM rank-deficient). See plan stage G.
     ('tau_B',       ('lognormal', (math.log(42.0), 0.10))),
-    ('tau_F',       ('lognormal', (math.log( 7.0), 0.15))),
-    ('kappa_B',     ('lognormal', (math.log(0.012), 0.20))),
+    ('tau_F',       ('lognormal', (math.log( 7.0 / 1.1), 0.15))),  # τ_F^eff = 6.36
+    ('kappa_B',     ('lognormal', (math.log(0.012 * 1.04), 0.20))), # κ_B^eff = 0.01248
     ('kappa_F',     ('lognormal', (math.log(0.030), 0.20))),
-    ('epsilon_A',   ('lognormal', (math.log(0.40), 0.25))),
-    ('lambda_A',    ('lognormal', (math.log(1.00), 0.20))),
+    ('epsilon_A',   ('lognormal', (math.log(0.40), 0.05))),    # was 0.25 — tightened
+    ('lambda_A',    ('lognormal', (math.log(1.00), 0.05))),    # was 0.20 — tightened
 
-    # --- Stuart-Landau bifurcation parameter ---
-    ('mu_0',        ('lognormal', (math.log(0.02), 0.20))),
+    # --- Stuart-Landau bifurcation parameter (reparametrized around F_typ) ---
+    ('mu_0',        ('lognormal', (math.log(0.036), 0.20))),   # μ_0^eff = 0.036
     ('mu_B',        ('lognormal', (math.log(0.30), 0.20))),
-    ('mu_F',        ('lognormal', (math.log(0.10), 0.20))),
-    ('mu_FF',       ('lognormal', (math.log(0.40), 0.20))),
+    ('mu_F',        ('lognormal', (math.log(0.26), 0.20))),    # μ_F^eff = 0.26
+    ('mu_FF',       ('lognormal', (math.log(0.40), 0.05))),    # was 0.20 — tightened (residual curvature)
     ('eta',         ('lognormal', (math.log(0.20), 0.15))),
 
     # --- Ch1: HR (sleep-gated, Gaussian) — kappa_B → kappa_B_HR ---
@@ -140,10 +147,13 @@ def propagate_fn(y, t, dt, params, grid_obs, k,
     Phi_k = grid_obs['Phi'][k]
     C_k   = grid_obs['C'][k]
 
-    # --- v2 Banister Euler drift predictions ---
-    mu_bif  = mu_0 + mu_B * B - mu_F * F - mu_FF * F * F
-    drift_B = kappa_B * (1.0 + epsilon_A * A) * Phi_k - B / tau_B
-    drift_F = kappa_F * Phi_k - (1.0 + lambda_A * A) / tau_F * F
+    # --- v2 Banister Euler drift predictions — G1-REPARAMETRIZED ---
+    F_dev   = F - F_TYP
+    mu_bif  = mu_0 + mu_B * B - mu_F * F - mu_FF * F_dev * F_dev
+    a_factor_B = (1.0 + epsilon_A * A) / (1.0 + epsilon_A * A_TYP)
+    a_factor_F = (1.0 + lambda_A * A)  / (1.0 + lambda_A * A_TYP)
+    drift_B = kappa_B * a_factor_B * Phi_k - B / tau_B
+    drift_F = kappa_F * Phi_k - a_factor_F / tau_F * F
     drift_A = mu_bif * A - eta * A * A * A
     B_pred = B + dt * drift_B
     F_pred = F + dt * drift_F
@@ -446,9 +456,13 @@ def imex_step_fn(y, t, dt, params, grid_obs):
     eta       = params[_PI['eta']]
     B = y[0]; F = y[1]; A = y[2]
     Phi_k = grid_obs.get('Phi_k', 0.0)
-    mu = mu_0 + mu_B * B - mu_F * F - mu_FF * F * F
-    drift_B = kappa_B * (1.0 + epsilon_A * A) * Phi_k - B / tau_B
-    drift_F = kappa_F * Phi_k - (1.0 + lambda_A * A) / tau_F * F
+    # G1-reparametrized drift
+    F_dev = F - F_TYP
+    mu = mu_0 + mu_B * B - mu_F * F - mu_FF * F_dev * F_dev
+    a_factor_B = (1.0 + epsilon_A * A) / (1.0 + epsilon_A * A_TYP)
+    a_factor_F = (1.0 + lambda_A * A)  / (1.0 + lambda_A * A_TYP)
+    drift_B = kappa_B * a_factor_B * Phi_k - B / tau_B
+    drift_F = kappa_F * Phi_k - a_factor_F / tau_F * F
     drift_A = mu * A - eta * A * A * A
     return jnp.array([B + dt * drift_B, F + dt * drift_F, A + dt * drift_A])
 
@@ -481,9 +495,13 @@ def forward_sde_stochastic(init_state, params, exogenous, dt, n_steps,
         key, nk = jax.random.split(key)
         noise = jax.random.normal(nk, (3,))
         B, F, A = y[0], y[1], y[2]
-        mu = mu_0 + mu_B*B - mu_F*F - mu_FF*F*F
-        dB = kappa_B * (1.0 + epsilon_A * A) * Phi_arr[i] - B / tau_B
-        dF = kappa_F * Phi_arr[i] - (1.0 + lambda_A * A) / tau_F * F
+        # G1-reparametrized drift
+        F_dev = F - F_TYP
+        mu = mu_0 + mu_B*B - mu_F*F - mu_FF*F_dev*F_dev
+        a_factor_B = (1.0 + epsilon_A*A) / (1.0 + epsilon_A*A_TYP)
+        a_factor_F = (1.0 + lambda_A*A) / (1.0 + lambda_A*A_TYP)
+        dB = kappa_B * a_factor_B * Phi_arr[i] - B / tau_B
+        dF = kappa_F * Phi_arr[i] - a_factor_F / tau_F * F
         dA = mu * A - eta * A * A * A
         B_cl = jnp.clip(B, EPS_B_FROZEN, 1.0 - EPS_B_FROZEN)
         F_cl = jnp.maximum(F, 0.0); A_cl = jnp.maximum(A, 0.0)

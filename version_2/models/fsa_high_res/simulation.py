@@ -39,6 +39,13 @@ from smc2fc.simulator.sde_model import (
     DIFFUSION_DIAGONAL_STATE,
 )
 
+# Stage G1: import the operating-point reference constants. The drift below
+# is reparametrized using these (κ_B^eff, τ_F^eff, μ_F^eff, μ_0^eff
+# absorb κ_B·ε_A·A_typ, λ_A·A_typ, F_typ-centered curvature, and the
+# constant offset respectively). Drift is mathematically equivalent to v2
+# orig at the new truth values — verified by tests/test_g1_reparam.py.
+from models.fsa_high_res._dynamics import A_TYP, F_TYP
+
 
 # =========================================================================
 # FROZEN CONSTANTS
@@ -147,9 +154,17 @@ def _bin_lookup(t_days, array, dt_bin_days=DT_BIN_DAYS):
 
 
 def drift(t, y, params, aux):
-    """Numpy v2 drift for scipy / Euler-Maruyama. t in days.
+    """Numpy v2 drift — G1-reparametrized. t in days.
 
     aux = (Phi_arr,) — single per-bin training-strain rate array.
+
+    Reparametrized so:
+      `kappa_B`  = κ_B^eff (effective B-gain at A_typ; data-informed)
+      `tau_F`    = τ_F^eff (effective acute timescale at A_typ)
+      `mu_F`     = μ_F^eff (slope of μ vs F at F_typ)
+      `mu_0`     = μ_0^eff (absorbs the μ_FF·F_typ² constant offset)
+    `epsilon_A`, `lambda_A`, `mu_FF` are residuals (weakly identified —
+    tighter priors in estimation.py).
     """
     (Phi_arr,) = aux
     p = params
@@ -157,19 +172,25 @@ def drift(t, y, params, aux):
 
     Phi_t = _bin_lookup(t, Phi_arr)
 
+    F_dev = F - F_TYP
     mu = (p['mu_0'] + p['mu_B'] * B
-          - p['mu_F'] * F - p['mu_FF'] * F * F)
+          - p['mu_F'] * F - p['mu_FF'] * F_dev * F_dev)
 
-    dB = p['kappa_B'] * (1.0 + p['epsilon_A'] * A) * Phi_t - B / p['tau_B']
-    dF = p['kappa_F'] * Phi_t \
-         - (1.0 + p['lambda_A'] * A) / p['tau_F'] * F
+    a_factor_B = ((1.0 + p['epsilon_A'] * A)
+                   / (1.0 + p['epsilon_A'] * A_TYP))
+    dB = p['kappa_B'] * a_factor_B * Phi_t - B / p['tau_B']
+
+    a_factor_F = ((1.0 + p['lambda_A'] * A)
+                   / (1.0 + p['lambda_A'] * A_TYP))
+    dF = p['kappa_F'] * Phi_t - a_factor_F / p['tau_F'] * F
+
     dA = mu * A - p['eta'] * A * A * A
 
     return np.array([dB, dF, dA])
 
 
 def drift_jax(t, y, args):
-    """JAX v2 drift. t in days, args = (params_dict, Phi_arr)."""
+    """JAX v2 drift — G1-reparametrized. t in days, args = (params_dict, Phi_arr)."""
     import jax.numpy as jnp
     p, Phi_arr = args
     B = y[0]; F = y[1]; A = y[2]
@@ -177,12 +198,18 @@ def drift_jax(t, y, args):
     k = jnp.clip((t / DT_BIN_DAYS).astype(jnp.int32), 0, Phi_arr.shape[0] - 1)
     Phi_t = Phi_arr[k]
 
+    F_dev = F - F_TYP
     mu = (p['mu_0'] + p['mu_B'] * B
-          - p['mu_F'] * F - p['mu_FF'] * F * F)
+          - p['mu_F'] * F - p['mu_FF'] * F_dev * F_dev)
 
-    dB = p['kappa_B'] * (1.0 + p['epsilon_A'] * A) * Phi_t - B / p['tau_B']
-    dF = p['kappa_F'] * Phi_t \
-         - (1.0 + p['lambda_A'] * A) / p['tau_F'] * F
+    a_factor_B = ((1.0 + p['epsilon_A'] * A)
+                   / (1.0 + p['epsilon_A'] * A_TYP))
+    dB = p['kappa_B'] * a_factor_B * Phi_t - B / p['tau_B']
+
+    a_factor_F = ((1.0 + p['lambda_A'] * A)
+                   / (1.0 + p['lambda_A'] * A_TYP))
+    dF = p['kappa_F'] * Phi_t - a_factor_F / p['tau_F'] * F
+
     dA = mu * A - p['eta'] * A * A * A
 
     return jnp.array([dB, dF, dA])
@@ -399,18 +426,21 @@ def verify_physics(trajectory, t_grid, params):
 # =========================================================================
 
 DEFAULT_PARAMS = {
-    # --- v2 Banister dynamics ---
-    'tau_B':      42.0,    # canonical Banister chronic time constant
-    'tau_F':       7.0,    # canonical acute time constant
-    'kappa_B':     0.012,  # B-gain per unit Φ → B_ss ≈ 0.5 at Φ=1.0
-    'kappa_F':     0.030,  # F-gain per unit Φ → F_ss ≈ 0.2 at Φ=1.0
-    'epsilon_A':   0.40,   # A boosts B-gain (≤40% at A=1)
-    'lambda_A':    1.00,   # A doubles F-clearance rate at A=1
-    # Stuart-Landau bifurcation parameter
-    'mu_0':        0.02,
+    # --- v2 Banister dynamics — G1-REPARAMETRIZED ---
+    # See _dynamics.py for derivation. Drift formulas equivalent to the
+    # original v2 spec at these new truth values (verified by
+    # tests/test_g1_reparam.py).
+    'tau_B':      42.0,
+    'tau_F':       7.0 / (1.0 + 1.00 * A_TYP),    # = 6.3636…  τ_F^eff
+    'kappa_B':     0.012 * (1.0 + 0.40 * A_TYP),  # = 0.01248  κ_B^eff
+    'kappa_F':     0.030,
+    'epsilon_A':   0.40,                           # residual (tighter prior)
+    'lambda_A':    1.00,                           # residual (tighter prior)
+    # Stuart-Landau bifurcation parameter (reparametrized around F_typ)
+    'mu_0':        0.02 + 0.40 * (F_TYP ** 2),    # = 0.036    μ_0^eff
     'mu_B':        0.30,
-    'mu_F':        0.10,
-    'mu_FF':       0.40,
+    'mu_F':        0.10 + 2.0 * F_TYP * 0.40,     # = 0.26     μ_F^eff
+    'mu_FF':       0.40,                           # residual curvature
     'eta':         0.20,
     # sqrt-Itô diffusion scales (frozen)
     'sigma_B':     0.010,
