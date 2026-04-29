@@ -8,7 +8,7 @@ Optimal Control of a Physiological SDE\\[2pt]
 \author{Ajay Talati}
 \date{Generated 29 April 2026 \\[2pt]
 \small Source: \texttt{python-smc2-filtering-control} at commit
-\texttt{684dd49} \\
+\texttt{fdf2d45} (Stage H/I) \\
 (\href{https://github.com/ajaytalati/python-smc2-filtering-control}{github.com/ajaytalati/python-smc2-filtering-control})}
 
 \begin{document}
@@ -30,9 +30,13 @@ under a tempered cost likelihood, and close the loop in a model-predictive
 controller that interleaves a rolling SMC${}^2$ filter with a
 posterior-mean control SMC${}^2$ over an RBF schedule. The receding-horizon
 section is presented in both abstract mathematical and code-level form, and
-includes a linear--quadratic--Gaussian / differential-Riccati alternative
-that is sketched in full but flagged as the principal piece of remaining
-analytical work.
+includes a linear--quadratic--Gaussian / differential-Riccati alternative.
+We then report the Stage~H multi-horizon comparison showing that no LQG
+variant matches the SMC${}^2$ MPC on this plant -- the gap traceable to
+three structural defects of the linearised state space -- and the Stage~I
+confirmation that the SDE solver's outer step can be enlarged from $15$
+to $60$ minutes for a $4\times$ wall-clock speedup with no qualitative
+change in the control problem.
 
 \medskip
 \noindent

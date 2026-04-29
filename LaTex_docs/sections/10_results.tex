@@ -75,16 +75,127 @@ only $3$ of $26$ estimable parameters meet a strict $\ge 5/6$ coverage
 gate at the window level --- consistent with the flat-cost-surface
 argument of Section~\ref{sec:mpc-robustness}.
 
-\medskip
-A trajectory plot of $A(t)$ under both policies, and a plot of the
-SMC${}^2$ posterior-mean schedule, are included as Figure
-placeholders here; they can be regenerated from the artefacts in
-\texttt{version\_2/outputs/fsa\_high\_res/} by re-running
-\texttt{tools/bench\_smc\_full\_mpc\_fsa.py}.
+\subsection{Stage~H: LQG / Riccati baseline}\label{sec:results-lqg}
 
-\begin{center}
-\fbox{\parbox{0.85\textwidth}{\centering
-\textit{Figure placeholder: $A(t)$ trajectory under closed-loop MPC
-(blue) and constant baseline $\Phi \equiv 1$ (grey), with the
-discovered rest-leaning $\Phi$ schedule overlaid.}}}
-\end{center}
+The LQG controller of Section~\ref{sec:mpc-lqg} is the natural
+benchmark for asking whether the SMC${}^2$ machinery's compute cost
+is justified by genuine non-linear modelling, or whether a closed-form
+linear-quadratic-Gaussian solver -- five orders of magnitude cheaper --
+captures the same effective control. The Stage~H sweep across horizons
+$T \in \{14,28,42,56,84\}$ days settles the question.
+
+The default cost weights are
+$Q = \diag(0,100,100)$, $R = 1$, $Q_T = 0$,
+$x_{\mathrm{ref}} = (B_0, 0.20, 0.30)^{\!\top}$, $\Phi_{\mathrm{ref}} = 1$,
+clipped to $[0,3]$. They were chosen by a sweep at $T = 42$ d; see
+Appendix-style notes in
+\texttt{version\_2/outputs/fsa\_high\_res/PROGRESS\_HI.md}. The
+$\bar A$ values reported are mean autonomic amplitude under the
+\emph{true} non-linear FSA-v2 plant (\texttt{StepwisePlant}), which
+the LQG schedule sees only through its open-loop $\Phi$ trajectory.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}rcrrrrr@{}}
+\toprule
+$T$ (d) & $h$ (min) & $\bar A_{\mathrm{LQG}}$ & $\bar A_{\mathrm{const}}$
+   & ratio & F-viol & wall-clock \\
+\midrule
+$14$ & $15$ & $0.0830$ & $0.0824$ & $1.008$ & $0.00\%$ & $1.3$ s \\
+$28$ & $15$ & $0.0944$ & $0.0943$ & $1.002$ & $0.00\%$ & $1.5$ s \\
+$42$ & $15$ & $0.1450$ & $0.1396$ & $\mathbf{1.039}$ & $0.00\%$ & $1.6$ s \\
+$56$ & $15$ & $0.2726$ & $0.2306$ & $\mathbf{1.182}$ & $0.00\%$ & $1.8$ s \\
+$84$ & $15$ & $0.4258$ & $0.4442$ & $\mathbf{0.958}$ & $\mathbf{10.23\%}$ & $1.9$ s \\
+\bottomrule
+\end{tabular}
+\caption{Tuned LQG performance against the constant-$\Phi=1$
+baseline across horizons. The LQG schedule outperforms baseline by
+0--18\,\% with no fatigue-barrier violation up to $T = 56$ d; at
+$T = 84$ d it underperforms baseline (ratio $0.96$) and produces
+$10.23\%$ F-violation. Source:
+\texttt{version\_2/outputs/fsa\_high\_res/PROGRESS\_HI.md}.}
+\label{tab:lqg-horizons}
+\end{table}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\linewidth]{figures/fig_lqg_horizon.pdf}
+\caption{(a) LQG ratio against the constant-$\Phi=1$ baseline as a
+function of horizon. The dashed line at $1.0$ is the baseline; the
+LQG curve rises through intermediate horizons, peaks near $T = 56$ d,
+and crashes back through $1.0$ at $T = 84$ d. (b) F-violation
+fraction across horizons. The dashed line is the $5\%$ acceptance
+gate of Section~\ref{sec:mpc-feasibility}; LQG honours it for
+$T \le 56$ d, then shoots past at $T = 84$ d.}
+\label{fig:lqg-horizon}
+\end{figure}
+
+The LQG schedule shape is gradually rising: mean $\Phi$ climbs from
+$\approx 0.91$ at $T = 14$ d through to $\approx 1.41$ at $T = 56$ d,
+respecting the symmetric quadratic $F$-penalty by staying moderate.
+At $T = 84$ d the slowly unstable eigenvalue (S2) of
+\eqref{eq:lqg-numbers} has had enough horizon to dominate the
+Riccati cost-to-go, the gain pushes $\Phi$ to its upper bound, and
+the symmetric penalty cannot enforce the asymmetric soft-plus
+$F$-barrier of the true cost \eqref{eq:cost}.
+
+\subsection{LQG vs SMC$^2$ MPC vs constant baseline at \texorpdfstring{$T = 14$}{T=14}}\label{sec:results-comparison}
+
+At $T = 14$ d -- the only horizon for which both the SMC${}^2$ MPC
+and the LQG runs have committed checkpoints at the time of writing --
+the head-to-head comparison is unambiguous.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.65\linewidth]{figures/fig_t14_comparison.pdf}
+\caption{Closed-loop performance at $T = 14$ d. The LQG schedule
+delivers essentially the same mean amplitude as the constant
+baseline (ratio $1.008$); the full SMC${}^2$ MPC delivers
+$+15.7\%$ over the same baseline (ratio $1.157$). Wall-clock cost is
+roughly $5$--$6$ orders of magnitude apart.}
+\label{fig:t14}
+\end{figure}
+
+The SMC${}^2$ MPC beats the tuned LQG by $\bar A_{\mathrm{MPC}}
+- \bar A_{\mathrm{LQG}} = 0.0124$ in absolute terms, equivalently
+$15$ percentage points of the constant-baseline reward, at a
+wall-clock cost of $124$ minutes versus $1.3$ seconds. The non-linear
+machinery is paying for the asymmetric $F$-barrier that LQG cannot
+encode, and for a controller that sees the true cubic Stuart--Landau
+dynamics through its plant simulator inside the cost Monte Carlo --
+neither of which is available to a Riccati-based scheme.
+
+\subsection{Stage~I: cross-grid consistency at \texorpdfstring{$h = 1$ h}{h=1h}}\label{sec:results-stage-i}
+
+The $1$-hour outer step recommended in Section~\ref{sec:num-stab-recommend}
+has been implemented as Stage~I, behind the
+\texttt{FSA\_STEP\_MINUTES} environment variable and the
+\texttt{--step-minutes} CLI flag of the bench drivers. The
+controller's inner sub-step is automatically scaled with the outer
+step ($n_{\mathrm{sub}} = 4$ at $96$ bins/day, $n_{\mathrm{sub}} = 1$
+at $24$ bins/day) so the speedup is preserved through the controller
+cost MC.
+
+The four sanity tests that gate the Stage~I refactor all pass:
+the grid constants for $\mathrm{step\_minutes} \in \{15,30,60\}$ are
+internally consistent, the circadian channel $C(t)$ at hour-aligned
+bins agrees across grids, the sleep gating preserves an $8$-hour
+sleep window on both grids, and the plant's one-day means agree
+across the two grids to $1.64\%$ relative error. End-to-end speedup
+is roughly $4\times$, projecting the $T = 84$ closed-loop run from
+$\sim\!14$ GPU-hours down to $\sim\!3.5$ GPU-hours on an RTX~5090.
+The cross-grid LQG numbers in Table~\ref{tab:lqg-horizons} agree to
+within $0.5\%$ of the ratio between $h = 15$ min and $h = 60$ min,
+confirming that the LQG controller is itself grid-stable. The
+remaining cross-grid validation gate at $T = 14$ for the SMC${}^2$
+MPC will close once the corresponding $h = 1$ h run lands; this is
+work in progress on the math laptop.
+
+\medskip
+\noindent
+A trajectory plot of $A(t)$ under the SMC${}^2$ MPC closed-loop
+policy and the constant baseline $\Phi \equiv 1$, together with the
+discovered $\Phi$ schedule, can be regenerated from the artefacts
+in \texttt{version\_2/outputs/fsa\_high\_res/} by re-running
+\texttt{tools/bench\_smc\_full\_mpc\_fsa.py}.

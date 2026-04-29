@@ -293,12 +293,14 @@ argument is the mechanism.
 \subsection{An exact-approximate alternative: LQG and the differential
 Riccati equation}\label{sec:mpc-lqg}
 
-We close Section~\ref{sec:mpc} by sketching a second controller that
-could be added to the project as a cheap baseline or as a warm-start for
-the SMC${}^2$ control of Section~\ref{sec:control}. The sketch is
-deliberately complete enough to make the assumptions and limitations
-explicit; it is not yet implemented in the code base, and is flagged as
-required next work in Section~\ref{sec:discussion-lqg}.
+We close Section~\ref{sec:mpc} by setting out a second controller --
+LQG with a backward-differential Riccati gain -- that has now been
+implemented as Stage~H of the project (\texttt{smc2fc/control/lqg/}) and
+benchmarked against the SMC${}^2$ MPC. The sketch below makes the
+assumptions and limitations explicit; the empirical comparison is in
+Section~\ref{sec:results-lqg} and the verdict (the cubic Stuart--Landau
+non-linearity is essential, no LQG variant matches the full SMC${}^2$
+machinery on this model) in Section~\ref{sec:discussion-lqg}.
 
 \paragraph{Linearisation around an operating point.}
 Three assumptions reduce the FSA-v2 problem to one with a closed-form
@@ -383,25 +385,64 @@ LQG controller is then the certainty-equivalent composition of
 Kalman--Bucy filter and LQR feedback, and the (linear-Gaussian)
 separation principle holds.
 
-\paragraph{Where this would fit in the project.}
-A complete LQG companion to the SMC${}^2$ controller would consist of a
-new module \texttt{smc2fc/control/lqg/} containing
+\paragraph{Implementation in the project.}
+The Stage~H module \texttt{smc2fc/control/lqg/} provides
 \begin{enumerate}
-  \item automatic linearisation of the drift in
-        \texttt{version\_2/models/fsa\_high\_res/\_dynamics.py} around a
-        user-supplied operating point, via JAX automatic differentiation;
-  \item a numerical solver for \eqref{eq:riccati} by backward integration
-        on the same fifteen-minute time grid used elsewhere in the
-        project;
-  \item a \texttt{LQGController} class emitting the feedback gain $K(t)$
-        of \eqref{eq:lqg-feedback} and a corresponding $\Phi$ schedule
-        on the project's time grid.
+  \item \texttt{linearize.py} -- automatic linearisation of the drift in
+        \texttt{version\_2/models/fsa\_high\_res/\_dynamics.py} via JAX
+        \texttt{jacfwd}, evaluated at the operating point
+        $(B_{\mathrm{typ}},F_{\mathrm{typ}},A_{\mathrm{typ}},\Phi=1)$;
+  \item \texttt{riccati.py} -- a fourth-order Runge--Kutta backward
+        integrator for \eqref{eq:riccati} on the project's outer grid
+        (15-min or 1-h depending on \texttt{FSA\_STEP\_MINUTES});
+  \item \texttt{controller.py} -- \texttt{LQGController} emitting both
+        the open-loop optimal $\Phi$ schedule and a closed-loop feedback
+        gain $K(t)$ for use against an SMC${}^2$ posterior-mean state.
 \end{enumerate}
-The natural uses are (i) as a \emph{cheap baseline} against which the
-SMC${}^2$ controller of Section~\ref{sec:control} is benchmarked --- does
-the non-linear posterior-mean controller actually outperform the linear
-LQG approximation, and by how much? --- and (ii) as a \emph{warm-start}
-for the control posterior, by least-squares projection of the LQG
-schedule onto the RBF basis to give an initial $\thetactrl$ around which
-the SMC${}^2$ then explores. None of this currently exists in the
-repository; we return to it in Section~\ref{sec:discussion-lqg}.
+The bench driver \texttt{version\_2/tools/bench\_lqg\_baseline\_fsa.py}
+mirrors the SMC${}^2$ checkpoint schema and writes a comparable manifest,
+so the two controllers can be joined by horizon and grid for the
+comparison plotted in Section~\ref{sec:results-lqg}.
+
+\paragraph{Three structural facts of the linearisation.}
+At the operating point the JAX-autodiff linearisation produces
+\begin{equation}
+  A_{\mathrm{lin}} =
+  \begin{pmatrix}
+   -0.024 & \phantom{-}0.000 & \phantom{-}0.005 \\
+    0.000 & -0.157 & -0.029 \\
+    0.030 & -0.026 & -0.007
+  \end{pmatrix},
+  \quad
+  B_{\mathrm{lin}} =
+  \begin{pmatrix} 0.0125 \\ 0.0300 \\ 0.0000 \end{pmatrix},
+  \label{eq:lqg-numbers}
+\end{equation}
+with eigenvalues of $A_{\mathrm{lin}}$ approximately
+$\{+0.003,\,-0.029,\,-0.162\}$. Three structural facts emerge:
+\begin{enumerate}
+  \item[(S1)] $B_{\mathrm{lin}}^{(A)} = 0$. The training stimulus $\Phi$
+    has \emph{no direct linear path} to the autonomic amplitude $A$.
+    Linearised LQG can only steer $A$ via the slow detour
+    $\Phi \to F \to A$.
+  \item[(S2)] One eigenvalue of $A_{\mathrm{lin}}$ is positive
+    ($+0.003$). At $A_{\mathrm{typ}} = 0.10$ the cubic damping $-\eta A^3$
+    contributes only $3\eta A_{\mathrm{typ}}^2 = 0.006$ to the
+    $A$-direction rate, less than the destabilising contribution from
+    the $\mu$-coupling. The linearisation is therefore \emph{unstable}
+    in a slow $A$-direction; the cubic non-linearity that restores
+    stability in the true model is not present in the linearised state
+    space.
+  \item[(S3)] $A_{\mathrm{lin}}^{(A,F)} = -0.026 < 0$. In the
+    linearised state space, raising $F$ \emph{reduces} $A$, the
+    \emph{opposite} of the true plant's coupling
+    (raising $F$ raises $A$ via the slow build of $\mu$ before the
+    quadratic suppression takes over). The first-order Taylor
+    expansion at $A_{\mathrm{typ}}$ inverts the sign of the
+    physiologically relevant cross-coupling.
+\end{enumerate}
+No choice of $(Q,R,Q_T,x_{\mathrm{ref}})$ within the LQG family can
+correct these structural facts -- they are what
+Assumption~\ref{ass:lqg-A1} produces. They are the empirical reason for
+the failure of LQG at long horizons reported in
+Section~\ref{sec:results-lqg}.
