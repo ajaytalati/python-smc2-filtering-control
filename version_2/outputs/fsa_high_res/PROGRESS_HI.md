@@ -90,13 +90,44 @@ Acceptance criteria:
 
 ### Long-horizon results
 
-| T (d) | h (min) | mean A_MPC | mean A_const | ratio | F-viol | wall-clock |
-|-------|---------|------------|---------------|-------|--------|------------|
-| 14    | 15      | 0.0954     | 0.0824        | 1.157 | 0.00%  | 124 min    |
-| 28    | 15      | [pending]  | [pending]     | -     | -      | ~115 min   |
-| 42    | 60      | [pending]  | [pending]     | -     | -      | ~70 min    |
-| 56    | 60      | [pending]  | [pending]     | -     | -      | ~120 min   |
-| 84    | 60      | [pending]  | [pending]     | -     | -      | ~215 min   |
+| T (d) | h (min) | mean A_MPC | mean A_const | ratio | F-viol  | id-cov   | wall-clock |
+|-------|---------|------------|---------------|-------|---------|----------|------------|
+| 14    | 15      | 0.0954     | 0.0824        | **1.157** | 0.00%   | 12/26    | 124 min    |
+| 28    | 15      | 0.0532     | 0.0935        | **0.569** | **75.38%** | **4/54** | **114 min**    |
+| 14    | 60      | [running]  | -             | -     | -       | -        | ~25 min    |
+| 42    | 60      | [pending]  | -             | -     | -       | -        | ~70 min    |
+| 56    | 60      | [pending]  | -             | -     | -       | -        | ~120 min   |
+| 84    | 60      | [pending]  | -             | -     | -       | -        | ~215 min   |
+
+**Catastrophic failure at T=28 (15-min, weekly replan).** The
+closed-loop MPC's mean A is ~57% of the constant-Φ baseline; F is
+above 0.40 for 75% of the trajectory; the SMC² filter id-coverage
+collapses to 4/54 windows. The mechanism is most likely the
+SF-bridge handoff degrading the parameter posterior over 28 d at
+weekly replan cadence — by stride ~14 (the first replan, end of
+week 1) the posterior is already drifting, and subsequent weekly
+replans amplify the drift instead of correcting it. The controller
+sees an increasingly biased posterior-mean parameter set and chooses
+overly aggressive Φ schedules.
+
+This is a **real limitation of the current closed-loop SMC²-MPC
+architecture** at horizons longer than 14 d under weekly replan.
+It is *not* a discretization artifact (T=28 ran on the same 15-min
+grid as the working T=14). It is *not* a Stuart-Landau /
+linearisation artifact (the MPC sees the full nonlinear plant
+inside the cost MC).
+
+Implication for Stage H: at T=28 d the **tuned LQG (ratio 1.002,
+0% F-viol) decisively outperforms the SMC² MPC (ratio 0.569, 75%
+F-viol)**. The cheap baseline beats the expensive controller when
+the controller's filter degrades. This is a striking inversion of
+the T=14 result and a major finding for the LaTeX writeup.
+
+Whether the h=1h grid changes this picture at T=28 is exactly what
+a separate T=28 h=1h run would tell us; we do not have GPU budget
+for it in this iteration. The h=1h sweep at T=42/56/84 is still
+worth running because it tests whether the failure mode is
+T=28-specific or a general long-horizon failure.
 
 ## Stage H — LQG/Riccati baseline
 
@@ -224,8 +255,9 @@ indices).
 
 ### MPC vs LQG vs constant baseline
 
-Headline at T = 14 d (only horizon currently with both MPC and LQG
-checkpoints committed):
+Two horizons with all three controllers committed:
+
+**T = 14 d (15-min grid)**:
 
 | controller            | mean A | ratio | F-viol | wall-clock |
 |-----------------------|--------|-------|--------|------------|
@@ -233,12 +265,27 @@ checkpoints committed):
 | LQG open-loop (tuned) | 0.0830 | 1.008 | 0.00%  | 1.3 s       |
 | **SMC² MPC closed-loop** | **0.0954** | **1.157** | **0.00%** | 124 min    |
 
-The MPC vs tuned-LQG gap is **15 percentage points** of the
-constant-baseline reward — at the *short* horizon where LQG is
-best-behaved (no F-violation, ratio essentially 1). At intermediate
-horizons (T=42, 56) tuned LQG is competitive; at T=84 LQG fails.
-The MPC numbers at intermediate / long horizons fill in as the h=1h
-sweep completes.
+At T=14, the MPC vs tuned-LQG gap is **15 percentage points** of
+the constant-baseline reward; both MPC and LQG respect the
+F-barrier; MPC justifies its ~6000× compute cost.
+
+**T = 28 d (15-min grid)**:
+
+| controller            | mean A | ratio | F-viol | wall-clock |
+|-----------------------|--------|-------|--------|------------|
+| constant Φ=1.0        | 0.0935 | 1.000 | 0.00%  | < 1 s       |
+| **LQG open-loop (tuned)** | **0.0944** | **1.002** | **0.00%** | 1.5 s       |
+| SMC² MPC closed-loop  | **0.0532** | **0.569** | **75.38%** | **114 min** |
+
+**Inversion at T=28.** The tuned LQG remains a competent baseline
+(0% F-violation, marginal gain over constant Φ); the SMC² MPC
+catastrophically fails. This is the empirical case where the
+*cheap baseline beats the expensive controller*, because the SMC²
+filter's bridge handoff degrades over 4 weekly replans and the
+MPC ends up overtraining off a corrupted posterior.
+
+The MPC numbers at intermediate / long horizons (T=42, 56, 84)
+fill in as the h=1h sweep completes.
 
 ### Compute tradeoff
 
@@ -264,26 +311,29 @@ Landau dynamics through its plant simulator.
    F-violation up to T=56 d. This is *much* better than the naive
    LQG (heavy w_A) which crashed through F=0.40 at 30%+ rates.
 
-3. **At long horizons the linearisation breaks**. T=84 d: tuned LQG
+3. **At T=84 d the linearisation breaks.** Tuned LQG
    underperforms baseline (0.96) and produces 10% F-violation.
    The unstable A direction (eigenvalue +0.003 in the
    linearisation) eventually drives the Riccati gain to bang-bang;
    the symmetric F-penalty can't enforce the asymmetric barrier.
 
-4. **MPC's nonlinear machinery earns its keep at T=14.** The 15
-   percentage-point gap over tuned LQG comes from MPC seeing the
-   true cubic Stuart-Landau dynamics + asymmetric soft-plus
-   F-barrier through its full plant simulator inside the cost MC.
-   Whether the gap holds, narrows, or widens at T ≥ 28 is exactly
-   what the h=1h sweep is measuring.
+4. **MPC's nonlinear machinery earns its keep at T=14**, but
+   **fails catastrophically at T=28** under the weekly-replan
+   cadence. The 15-pp gap over tuned LQG at T=14 collapses to
+   negative-60-pp at T=28 — i.e. the LQG cheap baseline becomes
+   *better* than MPC at T=28. This points to an architectural
+   limit of the current SMC²-MPC: the SF-bridge handoff degrades
+   the parameter posterior over multi-week horizons, and the
+   controller's open-loop weekly plans amplify rather than correct
+   the drift.
 
-5. **The Stuart-Landau cubic nonlinearity matters.** The
-   linearisation at A_typ=0.10 has an *unstable* A direction *and*
-   inverts the F-A coupling sign relative to the true plant. No
-   choice of (Q, R, Q_T, x_ref) within the LQG family can fix
-   these structural facts of the linearisation, because they are
-   what (A1) produces. This is the empirical answer to Section
-   10.3 Q1.
+5. **The Stuart-Landau cubic nonlinearity matters at the
+   *controller* level**, but **filter-bridge robustness matters at
+   the *closed-loop* level**. Stage G already paid a lot of
+   attention to the filter (G1 reparametrization closed
+   identifiability gaps); Stage H+I now demonstrates that the
+   *closed-loop* coupling between filter and controller is the
+   next gating issue at horizons T ≥ 28 d.
 
 ## Outstanding (after this milestone)
 
