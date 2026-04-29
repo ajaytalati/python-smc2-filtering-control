@@ -62,19 +62,24 @@ from models.fsa_high_res._dynamics import (
 from smc2fc.control.lqg import build_lqg_open_loop_schedule
 
 
-# Cost weights — see Section 8.8 (LaTex_docs). The symmetric quadratic
-# F penalty is acknowledged as too restrictive; we set F_ref to a
-# moderate level (F_typ) so it reads as "stay near the operating point",
-# not "drive F to zero". Heavy weight on A relative to Phi so the
-# controller pushes training high enough to lift A through the F-A
-# coupling (the only path, since B_lin[2,0] = 0).
-DEFAULT_W_A   = 1000.0
-DEFAULT_W_F   = 10.0
+# Cost weights — see Section 8.8 (LaTex_docs).
+#
+# The default (w_A = w_F = 100, R = 1) was selected by a systematic
+# weight sweep at T=42 (see PROGRESS_HI.md): heavier w_A relative to
+# w_F drives bang-bang Phi schedules and 30%+ F-violation; lighter
+# w_A under-uses the controller's leverage. Equal w_A == w_F gives
+# the least pathological schedules (no F-violation at T<=56, modest
+# A gain over baseline).
+#
+# x_ref components: F_ref = F_typ keeps the symmetric F-penalty
+# centered at the natural operating-point F level, so deviations
+# above (overtraining) and below (undertraining) are penalised
+# equally.  A_ref = 0.30 is well above A_typ = 0.10, giving the
+# Riccati a clear gradient to climb.
+DEFAULT_W_A   = 100.0
+DEFAULT_W_F   = 100.0
 DEFAULT_W_PHI = 1.0
 
-# x_ref — A_ref well above operating point (A_typ + 2*sigma_A ~ 0.16
-# is too modest; we push to 0.30 to give the controller a target to
-# work toward, capped by the F-cascade penalty).
 DEFAULT_A_REF = 0.30
 DEFAULT_F_REF = 0.20    # = F_TYP
 
