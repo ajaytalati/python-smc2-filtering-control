@@ -19,16 +19,20 @@ Optimal Control of a Physiological SDE\\[2pt]
 These notes present the mathematical theory underlying a research code base
 that combines particle filtering and stochastic optimal control on a
 three-dimensional physiological stochastic differential equation. We define
-the FSA-v2 model, develop the bootstrap particle filter and the SMC${}^2$
-algorithm of Chopin, Jacob and Papaspiliopoulos, recast optimal scheduling
-of training stimulus as posterior inference under a tempered cost likelihood,
-and close the loop in a model-predictive controller that interleaves a
-rolling SMC${}^2$ filter with a posterior-mean control SMC${}^2$ over an
-RBF schedule. We end by describing how the abstract receding-horizon loop
-is realised in code, by setting out a linear--quadratic--Gaussian
-approximation that could be added as a cheap baseline, and by flagging
-two outstanding analyses (Fisher information rank and Lyapunov stability)
-that have not yet been carried out for the model.
+the FSA-v2 model in its G1-reparametrized form, prove that all $30$ static
+parameters are locally identifiable from a one-day window of four-channel
+observations by analytical Fisher-information-matrix calculation, and
+establish exponential ergodicity of the SDE on its operating domain via a
+quadratic Lyapunov function. We then develop the bootstrap particle filter
+and the SMC${}^2$ algorithm of Chopin, Jacob and Papaspiliopoulos,
+recast optimal scheduling of training stimulus as posterior inference
+under a tempered cost likelihood, and close the loop in a model-predictive
+controller that interleaves a rolling SMC${}^2$ filter with a
+posterior-mean control SMC${}^2$ over an RBF schedule. The receding-horizon
+section is presented in both abstract mathematical and code-level form, and
+includes a linear--quadratic--Gaussian / differential-Riccati alternative
+that is sketched in full but flagged as the principal piece of remaining
+analytical work.
 
 \medskip
 \noindent
@@ -45,11 +49,13 @@ principles.
 
 \input{sections/01_intro.tex}
 \input{sections/02_fsa_v2_sde.tex}
-\input{sections/03_particle_filter.tex}
-\input{sections/04_smc2.tex}
-\input{sections/05_control_inference.tex}
-\input{sections/06_mpc.tex}
-\input{sections/07_results.tex}
-\input{sections/08_discussion.tex}
+\input{sections/03_identifiability.tex}
+\input{sections/04_lyapunov.tex}
+\input{sections/05_particle_filter.tex}
+\input{sections/06_smc2.tex}
+\input{sections/07_control_inference.tex}
+\input{sections/08_mpc.tex}
+\input{sections/09_results.tex}
+\input{sections/10_discussion.tex}
 
 \end{document}

@@ -41,18 +41,29 @@ the next twelve hours of training stimulus from the most recent posterior.
 
 These notes are organised so that the mathematical content can be read
 linearly. Section~\ref{sec:fsa} defines the FSA-v2 SDE and observation
-model. Section~\ref{sec:pf} develops the bootstrap particle filter. The
-SMC${}^2$ outer loop and its rolling-window variant are presented in
-Section~\ref{sec:smc2}. Section~\ref{sec:control} formulates the control
-problem as a posterior-inference problem. Section~\ref{sec:mpc} is the
-extended core of the document: it develops the receding-horizon principle,
-describes the FSA-v2 model-predictive controller in both mathematical and
-implementation terms, and discusses a linear--quadratic--Gaussian
-approximation that could be added as a cheap baseline. Section~\ref{sec:results}
-reports the two headline empirical results of the code base: an open-loop
-gain of $+28\%$ in mean autonomic amplitude over a constant-stimulus baseline
-on an $84$-day horizon, and a closed-loop gain of $+17\%$ in a fourteen-day
-rolling controller. Section~\ref{sec:discussion} closes by flagging three
-analyses that have \emph{not} yet been carried out on this model and that we
-identify as the principal open work: Fisher information rank identifiability,
-Lyapunov stability, and the LQG / Riccati alternative.
+model in their G1-reparametrized form. Section~\ref{sec:fim} carries
+out the Fisher-information-matrix analysis: an analytical derivation
+of the three rank-deficient parameter pairs of the original
+parametrization, the reparametrization that absorbs them, and the
+empirical evidence that the resulting model is fully identifiable at
+one-day windows. Section~\ref{sec:lyap} establishes stability of the
+SDE: Jacobian-based local analysis of the deterministic skeleton, the
+Stuart--Landau bifurcation locus, and a quadratic Lyapunov function
+satisfying a Foster--Lyapunov drift inequality, from which exponential
+ergodicity follows. Section~\ref{sec:pf} develops the bootstrap
+particle filter. The SMC${}^2$ outer loop and its rolling-window
+variant are presented in Section~\ref{sec:smc2}.
+Section~\ref{sec:control} formulates the control problem as a
+posterior-inference problem. Section~\ref{sec:mpc} is the extended
+core of the document: it develops the receding-horizon principle,
+describes the FSA-v2 model-predictive controller in both mathematical
+and implementation terms, and sketches a linear--quadratic--Gaussian
+approximation that could be added as a cheap baseline.
+Section~\ref{sec:results} reports the two headline empirical results
+of the code base: an open-loop gain of $+28\%$ in mean autonomic
+amplitude over a constant-stimulus baseline on an $84$-day horizon,
+and a closed-loop gain of $+17\%$ in a fourteen-day rolling
+controller. Section~\ref{sec:discussion} closes by reviewing the
+identifiability and stability analyses just completed, and by
+identifying the LQG / Riccati alternative as the principal piece of
+remaining theoretical work.

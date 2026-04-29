@@ -1,0 +1,148 @@
+\section{Discussion and open questions}\label{sec:discussion}
+
+The empirical results of Section~\ref{sec:results} show that the
+SMC${}^2$ filter and controller, composed in receding-horizon form,
+produce a closed-loop policy that improves mean autonomic amplitude by
+$+17\%$ over a sensible constant baseline on the FSA-v2 model, with no
+fatigue-ceiling violations.
+
+Earlier drafts of these notes flagged three analyses as outstanding:
+Fisher information rank identifiability, Lyapunov stability, and a
+linear--quadratic--Gaussian (LQG) approximation. The first two have
+since been carried out and now form Sections~\ref{sec:fim}
+and~\ref{sec:lyap}. The third remains as the principal open piece of
+analytical work and is described in
+Section~\ref{sec:discussion-lqg} below. Three smaller open questions
+are then collected in Section~\ref{sec:discussion-other}.
+
+\subsection{Resolved: Fisher information rank
+identifiability}\label{sec:discussion-fim}
+
+The pen-and-paper FIM analysis of Section~\ref{sec:fim} identified
+three rank-deficient pairs in the original v2 parametrization,
+$(\kappa_B,\varepsilon_A)$, $(\mu_F,\mu_{FF})$, and
+$(\tau_F,\lambda_A)$. Each pair was shown to enter the one-day-window
+likelihood only through a single linear combination, which is the
+combinatorial signature of a rank-one rather than rank-two contribution
+to the FIM. The Stage~G1 reparametrization rotates each pair into a
+strongly-identified combination and a residual that vanishes at the
+operating point of Definition~\ref{def:operating-point}; empirically
+this restores full FIM rank and contracts the posterior standard
+deviations on the residuals by roughly a factor of six (see
+Table~\ref{tab:g1-evidence}).
+
+A useful follow-up, identified in Remark~\ref{rem:fim-where}, is to
+add a numerical FIM module under
+\texttt{smc2fc/diagnostics/fim/} that recomputes the rank and
+condition number directly from the JAX dynamics, so that any future
+modification of the model triggers an automatic re-check.
+
+\subsection{Resolved: Lyapunov stability of the
+SDE}\label{sec:discussion-lyap}
+
+Section~\ref{sec:lyap} carried out the stability analysis in two
+parts. The deterministic skeleton, under a constant control
+$\Phi \equiv \Phi_c$, has an explicit $A=0$ equilibrium whose local
+stability is determined entirely by the sign of the Stuart--Landau
+growth rate $\mu(B^*_0,F^*_0)$
+(Proposition~\ref{prop:stab-zero}); the bifurcation locus
+\eqref{eq:bif-locus} crosses zero at $\Phi_c \approx 7.5$, above which
+overtraining-collapse renders the $A=0$ branch stable. For the full
+SDE we exhibited a quadratic Lyapunov function
+$V = \tfrac12(aB^2+bF^2+cA^2)$ that satisfies a Foster--Lyapunov drift
+inequality (Theorem~\ref{thm:lyap}), and concluded exponential
+ergodicity at rate
+$\rho < \alpha = \min(2/\tau_B,1/\tau_F^{\mathrm{old}})$
+(Theorem~\ref{thm:ergodic}). This delivers strong stability of the
+controlled process on the operating domain
+$\Xcal = [0,1]\times\R_+^2$ for any bounded control schedule.
+
+Remark~\ref{rem:lyap-limits} noted that the constants in
+Theorem~\ref{thm:lyap} are loose: they use the simplest quadratic
+Lyapunov function and global bounds on the residual factors. A
+sharper rate could be obtained from a piecewise Lyapunov function
+that switches between the $\mu < 0$ and $\mu > 0$ regimes identified
+in Proposition~\ref{prop:stab-zero}, or from a non-quadratic Lyapunov
+function tuned to the geometry of the Stuart--Landau cubic.
+
+\subsection{Outstanding: LQG / Riccati
+exact-approximate alternative}\label{sec:discussion-lqg}
+
+Section~\ref{sec:mpc-lqg} sketched a linear--quadratic--Gaussian
+controller for FSA-v2 under three explicit assumptions:
+\begin{enumerate}
+  \item[(A1)] linearisation of the drift around an operating point;
+  \item[(A2)] replacement of the state-dependent Jacobi/CIR diffusions
+        by constant-coefficient Gaussian noise;
+  \item[(A3)] replacement of the asymmetric $-\!\int A\,\dd t$
+        objective and the soft fatigue barrier by a quadratic
+        surrogate cost.
+\end{enumerate}
+Under (A1)--(A3), the optimal feedback law is the time-varying linear
+policy \eqref{eq:lqg-feedback} with gain matrix $K(t) = R^{-1}
+B_{\mathrm{lin}}(t)^\top P(t)$, where $P(t)$ solves the differential
+Riccati equation \eqref{eq:riccati}. None of this is yet implemented
+in the repository.
+
+We identify three concrete pieces of work that would deliver an LQG
+companion to the SMC${}^2$ controller:
+\begin{enumerate}
+  \item Implement automatic linearisation of the drift around a
+        user-supplied operating point, using the existing JAX dynamics
+        in \texttt{version\_2/models/fsa\_high\_res/\_dynamics.py};
+        expose the time-varying $A_{\mathrm{lin}}(t),B_{\mathrm{lin}}(t)$
+        of \eqref{eq:lqg-AB} on the project's fifteen-minute grid.
+  \item Implement a backward-integration solver for the differential
+        Riccati equation \eqref{eq:riccati}.
+  \item Build an \texttt{LQGController} that emits the feedback gain
+        $K(t)$ of \eqref{eq:lqg-feedback} and a corresponding
+        $\Phi$ schedule.
+\end{enumerate}
+Two scientific questions then become accessible. \emph{Does the LQG
+schedule, evaluated as an open-loop control on the FSA-v2 model, achieve
+mean amplitude comparable to the SMC${}^2$ schedule on the $84$-day
+benchmark of Section~\ref{sec:results}?} If yes, the non-linear
+SMC${}^2$ machinery may be unnecessary in steady-state regimes; if
+no, the gap quantifies the value of capturing the cubic
+Stuart--Landau non-linearity. \emph{Does using the LQG schedule as a
+warm-start for the SMC${}^2$ control of Section~\ref{sec:control}
+reduce wall-clock time to solution?} A reasonable hypothesis is that
+LQG provides an excellent initial $\thetactrl$ in the linear regime
+and only marginal benefit where the non-linearity matters;
+experimentally testing this is the natural next step.
+
+\subsection{Other open questions}\label{sec:discussion-other}
+
+A few smaller points deserve mention but are not, in the authors'
+view, on the same level of importance as the LQG analysis above.
+
+\begin{itemize}
+  \item \emph{Horizon length.} The Stage~E5 result uses a fourteen-day
+        macrocycle. The Stage~D open-loop result uses eighty-four days.
+        It is not yet known how the closed-loop gain scales with horizon
+        length; a horizon sweep is straightforward to set up.
+  \item \emph{Posterior shape vs.\ posterior mean.} The controller of
+        Section~\ref{sec:mpc-pipeline} uses only the posterior mean
+        $\bar\theta_{\mathrm{ctrl}}$. The flat-cost-surface argument of
+        Section~\ref{sec:mpc-robustness} explains why this is sometimes
+        sufficient, but in regimes where the cost surface is curved the
+        full posterior carries useful information. A risk-sensitive
+        variant that minimises a quantile of the cost rather than the
+        mean would be the natural extension.
+  \item \emph{Parameter drift across windows.} The Bures--Wasserstein
+        bridge of Section~\ref{sec:smc2} produces a sensible
+        Gaussian-fit warm-start, but does not protect against
+        \emph{slow} parameter drift in the truth (e.g.\ the athlete's
+        time constants change with training age). A more principled
+        approach would augment the static parameters with a slow
+        random-walk component and let the filter track the drift
+        explicitly.
+\end{itemize}
+
+\medskip
+\noindent
+With the FIM and Lyapunov analyses now in place, the model has both
+empirical validation through the Stage~D and Stage~E5 results of
+Section~\ref{sec:results} and analytical guarantees on identifiability
+and stability. The remaining theoretical work concentrates on the
+LQG / Riccati alternative.
