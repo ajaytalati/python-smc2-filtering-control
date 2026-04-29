@@ -54,10 +54,16 @@ from models.fsa_high_res._dynamics import A_TYP, F_TYP
 EPS_A_FROZEN = 1.0e-4
 EPS_B_FROZEN = 1.0e-4
 
-# Time-grid constants — one "day" is 1.0 in t-units.
-DT_BIN_DAYS = 1.0 / 96.0           # 15 minutes
-DT_BIN_HOURS = 24.0 / 96.0         # = 0.25
-BINS_PER_DAY = 96
+# Time-grid constants — one "day" is 1.0 in t-units. Set FSA_STEP_MINUTES
+# env var (e.g. '60' for 1-h grid) BEFORE importing this module to coarsen
+# the grid for long-horizon MPC. Default 15 minutes.
+import os as _os
+_STEP_MIN = int(_os.environ.get('FSA_STEP_MINUTES', '15'))
+if (60 * 24) % _STEP_MIN != 0:
+    raise ValueError(f"FSA_STEP_MINUTES={_STEP_MIN} must divide 1440")
+BINS_PER_DAY = (60 * 24) // _STEP_MIN
+DT_BIN_DAYS = 1.0 / BINS_PER_DAY
+DT_BIN_HOURS = 24.0 / BINS_PER_DAY
 
 
 # =========================================================================

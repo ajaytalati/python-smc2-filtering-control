@@ -29,10 +29,26 @@ Run:
 from __future__ import annotations
 
 import os
+import sys
+
+# Parse --step-minutes before importing model/bench code so the env var
+# governs the FSA grid (BINS_PER_DAY etc.) at module-import time.
+def _pop_step_minutes_from_argv() -> int:
+    """Extract `--step-minutes N` from sys.argv (default 15). Mutates argv."""
+    if '--step-minutes' in sys.argv:
+        i = sys.argv.index('--step-minutes')
+        if i + 1 >= len(sys.argv):
+            raise SystemExit("--step-minutes requires a value")
+        val = int(sys.argv[i + 1])
+        del sys.argv[i:i + 2]
+        return val
+    return 15
+
+_STEP_MINUTES = _pop_step_minutes_from_argv()
+os.environ['FSA_STEP_MINUTES'] = str(_STEP_MINUTES)
 os.environ.setdefault('JAX_ENABLE_X64', 'True')
 
 import math
-import sys
 import time
 
 import jax
@@ -42,11 +58,12 @@ import matplotlib.pyplot as plt
 
 # Re-use E4's helper for building a posterior-mean control spec
 from tools.bench_smc_closed_loop_fsa import _build_phase2_control_spec
+from models.fsa_high_res.simulation import BINS_PER_DAY
 
 
-WINDOW_BINS  = 96    # 1 day
-STRIDE_BINS  = 48    # 12 hours
-DT = 1.0 / 96.0
+WINDOW_BINS  = BINS_PER_DAY        # 1 day
+STRIDE_BINS  = BINS_PER_DAY // 2   # 12 hours
+DT           = 1.0 / BINS_PER_DAY
 
 
 def _replan_K_for_horizon(T_total_days: int) -> int:
@@ -125,10 +142,11 @@ def main():
     identifiable_subset = {'HR_base', 'S_base', 'mu_step0',
                             'kappa_B_HR', 'k_F', 'beta_C_HR'}
 
-    n_windows = (T_total_days * 96 - WINDOW_BINS) // STRIDE_BINS + 1
+    n_windows = (T_total_days * BINS_PER_DAY - WINDOW_BINS) // STRIDE_BINS + 1
     n_strides = n_windows
     print(f"  device:   {jax.devices()[0].platform.upper()}")
     print(f"  T_total:  {T_total_days} days")
+    print(f"  step:     {_STEP_MINUTES} min ({BINS_PER_DAY} bins/day)")
     print(f"  windows:  {n_windows} (1-day, 12h stride)")
     print(f"  replan:   every K={REPLAN_EVERY_K} stride(s) "
           f"(≈ {REPLAN_EVERY_K * 0.5:.1f} day cadence)")
@@ -321,9 +339,9 @@ def main():
             # day in the plan. The next K/2 days will draw from these.
             schedule = np.asarray(res_ctrl['mean_schedule'])
             n_days_in_plan = T_total_days
-            if schedule.shape[0] >= n_days_in_plan * 96:
-                sched_per_day = (schedule[:n_days_in_plan * 96]
-                                  .reshape(n_days_in_plan, 96)
+            if schedule.shape[0] >= n_days_in_plan * BINS_PER_DAY:
+                sched_per_day = (schedule[:n_days_in_plan * BINS_PER_DAY]
+                                  .reshape(n_days_in_plan, BINS_PER_DAY)
                                   .mean(axis=1))
             else:
                 sched_per_day = np.full(n_days_in_plan, schedule.mean())
@@ -358,10 +376,11 @@ def main():
     print()
     print(f"  Running counterfactual baseline (constant Φ=1.0) ...")
     traj_full = np.concatenate(full_traj)
-    n_total_bins = traj_full.shape[0]   # 27 strides × 48 = 1296 bins
-    n_days_baseline = (n_total_bins + 95) // 96   # round up to whole days
+    n_total_bins = traj_full.shape[0]
+    n_days_baseline = (n_total_bins + BINS_PER_DAY - 1) // BINS_PER_DAY
     plant_b = StepwisePlant(seed_offset=42)
-    plant_b.advance(n_days_baseline * 96, np.full(n_days_baseline, 1.0))
+    plant_b.advance(n_days_baseline * BINS_PER_DAY,
+                    np.full(n_days_baseline, 1.0))
     traj_baseline = np.concatenate(plant_b.history['trajectory'])
     # Truncate baseline to match MPC trajectory length for fair comparison
     traj_baseline = traj_baseline[:n_total_bins]
@@ -395,18 +414,22 @@ def main():
 
     # ── G4 checkpointing: per-run folder with manifest.json + data.npz ──
     bridge_tag = ('infoaware' if smc_cfg.sf_info_aware else 'no_infoaware')
-    auto_run_name = f"T{T_total_days}d_replanK{REPLAN_EVERY_K}_{bridge_tag}"
+    # h-suffix only when non-default to keep existing 15-min run dirs intact.
+    h_suffix = '' if _STEP_MINUTES == 15 else f"_h{_STEP_MINUTES}min"
+    auto_run_name = f"T{T_total_days}d_replanK{REPLAN_EVERY_K}{h_suffix}_{bridge_tag}"
     run_name = run_name_override if run_name_override else auto_run_name
     run_dir = f"outputs/fsa_high_res/g4_runs/{run_name}"
     os.makedirs(run_dir, exist_ok=True)
 
     # Build manifest
     manifest = {
-        'schema_version': '1.0',
+        'schema_version': '1.1',
         'T_total_days': int(T_total_days),
         'replan_K': int(REPLAN_EVERY_K),
         'n_strides': int(n_strides),
         'n_replans': int(len(replan_history)),
+        'step_minutes': int(_STEP_MINUTES),
+        'BINS_PER_DAY': int(BINS_PER_DAY),
         'WINDOW_BINS': int(WINDOW_BINS),
         'STRIDE_BINS': int(STRIDE_BINS),
         'DT': float(DT),

@@ -33,10 +33,14 @@ import jax.numpy as jnp
 import numpy as np
 
 
-# Time-grid constants (must match simulation.py)
-DT_BIN_DAYS  = 1.0 / 96.0
-DT_BIN_HOURS = 24.0 / 96.0
-BINS_PER_DAY = 96
+# Time-grid constants (must match simulation.py — both read FSA_STEP_MINUTES).
+import os as _os
+_STEP_MIN = int(_os.environ.get('FSA_STEP_MINUTES', '15'))
+if (60 * 24) % _STEP_MIN != 0:
+    raise ValueError(f"FSA_STEP_MINUTES={_STEP_MIN} must divide 1440")
+BINS_PER_DAY = (60 * 24) // _STEP_MIN
+DT_BIN_DAYS  = 1.0 / BINS_PER_DAY
+DT_BIN_HOURS = 24.0 / BINS_PER_DAY
 
 
 def _build_per_day_envelope(wake_hour: float = 7.0,

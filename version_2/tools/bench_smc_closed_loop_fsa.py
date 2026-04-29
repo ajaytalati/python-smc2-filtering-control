@@ -43,9 +43,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 
-WINDOW_BINS = 96       # 1 day
-STRIDE_BINS = 96       # for E4 we plan + apply 1 day at a time (a single replan)
-DT = 1.0 / 96.0
+from models.fsa_high_res.simulation import BINS_PER_DAY  # honours FSA_STEP_MINUTES
+WINDOW_BINS = BINS_PER_DAY  # 1 day
+STRIDE_BINS = BINS_PER_DAY  # for E4 we plan + apply 1 day at a time (a single replan)
+DT = 1.0 / BINS_PER_DAY
 
 
 def main():
@@ -325,9 +326,13 @@ def _build_phase2_control_spec(*, dyn_params, init_state,
     from models.fsa_high_res._dynamics import drift_jax as drift_jax_v2
     from models.fsa_high_res._dynamics import diffusion_state_dep
 
-    n_steps = int(round(plan_horizon_days * 96))   # bins per day = 96
+    n_steps = int(round(plan_horizon_days * BINS_PER_DAY))
     dt = DT
-    n_substeps = 4
+    # Drop n_substeps to 1 when the outer step is already 1h or coarser,
+    # so the speedup from a coarser grid is realised end-to-end.
+    # (BINS_PER_DAY=96 → 4 substeps preserves legacy 3.75-min inner step;
+    #  BINS_PER_DAY=24 → 1 substep, 1-h Euler step.)
+    n_substeps = max(1, BINS_PER_DAY // 24)
     F_max = 0.40
     Phi_max = 3.0
     Phi_default = 1.0
