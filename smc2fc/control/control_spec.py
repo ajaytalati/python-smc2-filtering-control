@@ -12,7 +12,7 @@ initial state, truth params, acceptance gates) live in the
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, Optional, Union
 
 import jax.numpy as jnp
 
@@ -77,10 +77,12 @@ class ControlSpec:
     # Search space
     theta_dim: int = 0
     sigma_prior: float = 1.5
-    prior_mean: float = 0.0           # default: zero-centered prior. Set to
-                                       # a non-zero scalar (broadcast) when
-                                       # the optimum is known to be far from 0
-                                       # (e.g. Stage A3's Riccati gains around 2.1).
+    prior_mean: Union[float, jnp.ndarray] = 0.0
+    # default: zero-centered prior. Pass a non-zero scalar (broadcast)
+    # when the optimum is known to be far from 0 (e.g. Stage A3's
+    # Riccati gains around 2.1). Pass a (theta_dim,) array when
+    # different parameter dimensions need different biases (e.g. FSA
+    # control biasing T_B anchors positive and Phi anchors negative).
 
     # Core API
     cost_fn: Optional[Callable] = None
