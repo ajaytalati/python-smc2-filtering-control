@@ -93,6 +93,28 @@ two-sided trade-off.
 The "best constant" optimum is broad and centred near Φ = 1.0-1.5,
 giving mean ∫A/T ≈ 0.216. **No "rest cures all" cheat is reachable.**
 
+## Horizon sweep summary
+
+| horizon | sedentary | constant Φ=1 | **SMC²** | mean Φ (SMC) | F-viol | gain vs const | gates |
+|---------|-----------|--------------|----------|---------------|--------|----------------|-------|
+| T = 28 d (0.67 τ_B) | 0.127 | 0.132 | 0.121 | 0.62 | 0.00% | −8%   | 2 ✓ / 2 ✗ |
+| T = 42 d (1.00 τ_B) | 0.147 | 0.216 | **0.217** | 1.24 | 0.05% | +0.5% | **4 ✓** |
+| T = 56 d (1.33 τ_B) | 0.169 | 0.320 | **0.383** | 1.86 | 2.41% | **+20%** | **4 ✓** |
+| T = 84 d (2.00 τ_B) | 0.209 | 0.503 | **0.645** | 1.96 | 1.28% | **+28%** | **4 ✓** |
+
+**The headline finding is the trend, not any single number.** As the
+horizon stretches past one chronic time constant, the gain from a
+time-varying schedule over the best constant baseline grows
+monotonically. At **T = 28 d** (sub-canonical) there isn't enough
+horizon for the system to differentiate sedentary from active
+training — constant Φ=1 only beats Φ=0 by 4%, and SMC²'s posterior
+is broad enough that the posterior mean is unreliable. At **T = 42
+d** the cost surface is essentially flat near Φ=1 and SMC² confirms
+this by recovering the canonical Banister default to within 0.5%. At
+**T ≥ 56 d** front-loaded periodisation pays off, with SMC²
+discovering progressively more aggressive build-and-maintain
+patterns that beat the best constant by 20-28%.
+
 ## Headline numbers
 
 ### T = 84 days  (= 2 · τ_B, the long-horizon experiment)
@@ -149,41 +171,89 @@ structural: **the model rejects the sedentary cheat (gate 2 passes
 by 6% margin), and SMC² discovers the canonical-Banister Φ ≈ 1.2
 training intensity unprompted**.
 
-## Why time-variation pays off at T = 84 but not T = 42
+### T = 56 days  (= 1.33 · τ_B)
+
+| schedule                  | mean ∫A/T | mean Φ  | F-violation |
+|---------------------------|-----------|---------|-------------|
+| sedentary (Φ ≡ 0)         | 0.169     | 0.000   | 0.00%       |
+| baseline (constant Φ = 1) | 0.320     | 1.000   | 0.00%       |
+| **SMC² (8-D RBF)**        | **0.383** | 1.860   | 2.41%       |
+
+All 4 gates pass. SMC² beats the best constant by **+20%** and
+sedentary by **+127%**. Schedule shape is build-and-maintain: Φ
+ramps up to 2.0 in the first 3 weeks then settles around 1.5-2.0,
+B grows to 0.6, A reaches its plateau by day 40.
+
+### T = 28 days  (= 0.67 · τ_B, sub-canonical)
+
+| schedule                  | mean ∫A/T | mean Φ  | F-violation |
+|---------------------------|-----------|---------|-------------|
+| sedentary (Φ ≡ 0)         | 0.127     | 0.000   | 0.00%       |
+| baseline (constant Φ = 1) | 0.132     | 1.000   | 0.00%       |
+| **SMC² (8-D RBF)**        | 0.121     | 0.62    | 0.00%       |
+
+**Two gates fail.** This is the *negative* result: at sub-canonical
+horizons (less than τ_B), the slow Banister chronic timescale
+prevents fitness from accumulating meaningfully. The baseline
+constant Φ=1 schedule beats sedentary by only 4%, and SMC²'s
+posterior is too broad — its mean θ corresponds to a low-Φ schedule
+that, while *near optimal in cost*, is not the best individual
+schedule (the posterior is multi-modal-ish). MAP rather than
+posterior-mean would help here, but the bigger story is that
+**this horizon is too short for any schedule, period — the
+optimization is correctly telling you "rest doesn't help much, and
+neither does training, in this 4-week window".**
+
+This is the kind of result the framework should produce honestly:
+a horizon sweep that shows where time-variation matters and where
+it doesn't.
+
+## Why time-variation pays off only past one τ_B
 
 The Banister system has two timescales: τ_F = 7 d (fast) and
-τ_B = 42 d (slow). Over T = 42 d the system reaches near-equilibrium
-quickly relative to its own slow timescale; the dynamic build phase
-contributes a small fraction of ∫A/T. Over T = 84 d there's enough
-horizon for an aggressive build-and-sustain pattern to pay back the
-F-overshoot risk: pushing Φ ≈ 2 in the first 4-6 weeks builds B
-faster (κ_B·(1+ε_A·A)·Φ scales linearly in Φ), the autonomic feedback
-λ_A·A then accelerates F-clearance, and the system reaches a
-supercritical Stuart-Landau state by mid-cycle.
+τ_B = 42 d (slow). Over T < τ_B the slow channel barely activates
+— B builds with `(1 − exp(−T/τ_B))` so at T = 0.67 τ_B only ~50% of
+B's stationary value is reachable. Over T ≈ τ_B the system reaches
+near-equilibrium quickly relative to its own slow timescale; the
+dynamic build phase contributes a small fraction of ∫A/T. Over
+T ≥ 1.5 τ_B there's enough horizon for an aggressive build-and-
+sustain pattern to pay back the F-overshoot risk: pushing Φ ≈ 2 in
+the first 4-6 weeks builds B faster (κ_B·(1+ε_A·A)·Φ scales linearly
+in Φ), the autonomic feedback λ_A·A then accelerates F-clearance,
+and the system reaches a supercritical Stuart-Landau state by
+mid-cycle.
 
 This is exactly the regime where periodisation matters in practice.
 
 ## Convergence
 
-| horizon | n_steps | levels | wall (GPU) | HMC acceptance |
-|---------|---------|--------|------------|-----------------|
-| T = 42  | 4032    | 11     | ~30 min    | 0.89-0.96       |
-| T = 84  | 8064    | 10     | ~55 min    | 0.000 (HMC stuck — see note) |
+| horizon | n_steps | β_max | levels | wall (GPU) | HMC acceptance |
+|---------|---------|-------|--------|------------|-----------------|
+| T = 28  | 2688    | 24.40 | 11     | ~20 min    | 0.94-0.97       |
+| T = 42  | 4032    | 8.71  | 11     | ~30 min    | 0.89-0.96       |
+| T = 56  | 5376    | 2.71  | 10     | ~37 min    | 0.034-0.17      |
+| T = 84  | 8064    | 0.95  | 10     | ~55 min    | 0.000 (HMC stuck — see note) |
 
-**HMC pathology at T = 84**: per-step gradient magnitude scales with
-horizon × cost_std. At T = 84 with `cost_std ≈ 8.4` (vs ≈ 1.0 at
-T = 42), the leapfrog at `step_size = 0.30, num_leapfrog = 16`
-diverges on every proposal — acceptance pinned at 0.0. The SMC's
-**resampling-only** path still concentrates particles on the lowest-
-cost regions of the prior cloud, and the gates pass cleanly, but the
-final answer is closer to "best schedule sampled from the prior" than
-"posterior mean under HMC mixing". A future fix is HMC-step-size
-warmup (e.g., per-level adaptation or NUTS) — listed in TODOs.
+**HMC pathology at long horizons**: the curvature of the
+log-target's β_max·cost(θ) component scales as `cost_std² /
+sigma_prior²`. T=42 has `cost_std ≈ 0.92` → curvature ≈ 0.4.
+T=84 has `cost_std ≈ 8.4` → curvature ≈ 32 — **86× larger**.
+Step_size×sqrt(curvature) is the leapfrog stability index;
+holding `step_size = 0.30, num_leapfrog = 16` fixed across
+horizons, T=56 mixes weakly (acc ~0.05-0.17) and T=84 collapses
+(acc = 0.000). The SMC's resampling path still concentrates
+particles on the lowest-cost prior samples, and the gates pass
+cleanly, but the final answer at T=84 is closer to "best schedule
+sampled from the prior" than "posterior mean under HMC mixing".
+The proper fix is per-level HMC step adaptation (or NUTS) — listed
+in TODOs.
 
 ## Plots
 
 - T = 84 d: [`D_v2_T84_diagnostic.png`](D_v2_T84_diagnostic.png)
+- T = 56 d: [`D_v2_T56_diagnostic.png`](D_v2_T56_diagnostic.png)
 - T = 42 d: [`D_v2_T42_diagnostic.png`](D_v2_T42_diagnostic.png)
+- T = 28 d: [`D_v2_T28_diagnostic.png`](D_v2_T28_diagnostic.png)
 
 Driver: `tools/bench_smc_control_fsa.py [T_total_days]` (default 42).
 

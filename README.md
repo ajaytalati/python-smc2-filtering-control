@@ -27,7 +27,10 @@ The repo exercises **two pillars** of the same outer tempered-SMC engine:
 | **B1** bistable filter | 90% CI covers truth (identifiable params) | 4/4 | **8/8** ✓ |
 | **B2** bistable control | basin transition rate, cost vs default | ≥ 80%, ≤ default | **100%, 38%** ✓ |
 | **B3** bistable closed-loop | transition rate, cost vs oracle | ≥ 80%, ≤ 1.20× | **100%, 0.99×** ✓ |
-| **D**  FSA fully-observed control (v2 Banister) | T=84d: mean ∫A/T vs constant Φ=1 baseline; F-violation | match within 3%, ≤ 5% | **1.28×, 1.28%** ✓ |
+| **D**  FSA control v2 (Banister) — T=42d  | mean ∫A/T vs sedentary, vs constant Φ=1; F-viol | ≥ 1.40×, match within 3%, ≤ 5% | **1.48×, 1.005×, 0.05%** ✓ |
+|        T=56d (1.33 τ_B)                  | same (gain over const baseline grows)  | — | SMC² **+20%** over const, +127% over sedentary ✓ |
+|        T=84d (2.00 τ_B)                  | same (front-loaded periodisation)       | — | SMC² **+28%** over const, +208% over sedentary ✓ |
+|        T=28d (0.67 τ_B)                  | sub-canonical: too short for any schedule | — | gates fail by design — horizon < τ_B ✗ |
 
 See [`outputs/scalar_ou_lqg/RESULT.md`](outputs/scalar_ou_lqg/RESULT.md),
 [`outputs/bistable_controlled/RESULT.md`](outputs/bistable_controlled/RESULT.md),
