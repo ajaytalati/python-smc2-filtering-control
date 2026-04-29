@@ -301,28 +301,36 @@ def main():
     print("=" * 76)
 
 
-def _build_phase2_control_spec(*, dyn_params, init_state):
+def _build_phase2_control_spec(*, dyn_params, init_state,
+                                  plan_horizon_days: float = 1.0,
+                                  n_inner: int = 32, n_anchors: int = 8,
+                                  seed: int = 42):
     """Construct an FSA-v2 ControlSpec with custom truth params + init state.
 
     The version_2 control.py's `build_control_spec()` uses TRUTH_PARAMS from
-    _dynamics.py at module import time. For E4 we need to inject the
+    _dynamics.py at module import time. For E4/E5 we need to inject the
     posterior-mean params + smoothed init state. We re-create the cost
     machinery inline using the v2 drift + diffusion functions.
+
+    Parameters
+    ----------
+    plan_horizon_days : float
+        How many days ahead the controller plans at each replan. Default 1
+        (myopic, used by Stage E4 single-cycle demo). For Stage F multi-
+        horizon MPC, set to T_total_days so each replan reproduces v1
+        Stage-D's full-horizon planning.
     """
     from smc2fc.control import ControlSpec, RBFSchedule
     from smc2fc.control.calibration import build_crn_noise_grids
     from models.fsa_high_res._dynamics import drift_jax as drift_jax_v2
     from models.fsa_high_res._dynamics import diffusion_state_dep
 
-    n_steps = WINDOW_BINS    # 1-day horizon
+    n_steps = int(round(plan_horizon_days * 96))   # bins per day = 96
     dt = DT
     n_substeps = 4
     F_max = 0.40
     Phi_max = 3.0
     Phi_default = 1.0
-    n_inner = 32
-    n_anchors = 8
-    seed = 42
 
     rbf = RBFSchedule(n_steps=n_steps, dt=dt, n_anchors=n_anchors,
                        output='identity')

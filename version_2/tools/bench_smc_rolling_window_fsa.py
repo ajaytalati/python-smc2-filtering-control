@@ -142,10 +142,21 @@ def main():
     em = HIGH_RES_FSA_V2_ESTIMATION
     truth = dict(DEFAULT_PARAMS)
 
+    # F1: SF Path B-fixed bridge (decoupled-cov + annealed Path B q1).
+    # Reference: smc2-blackjax-rolling/smc2bj/estimation/sf_bridge.py +
+    # version_1/tests/test_sf_bridge.py (25 tests). Achieves 27/27 PASS at
+    # 98.5% coverage on FSA-v2 in the smc2bj reference; expected to fix
+    # the Gaussian-bridge mid-period drift (E3 prev: 18/27).
     smc_cfg = SMCConfig(
         n_smc_particles=128, n_pf_particles=200,
         target_ess_frac=0.5, max_lambda_inc=0.10,
-        bridge_type='gaussian',
+        bridge_type='schrodinger_follmer',
+        sf_q1_mode='annealed',                # Path B: K-stage tempered SMC + RW-MH
+        sf_use_q0_cov=True,                   # decoupled-cov fix (issue #3)
+        sf_blend=0.7,                         # bias toward new posterior
+        sf_annealed_n_stages=3,
+        sf_annealed_n_mh_steps=5,             # smc2bj best-practice
+        sf_info_aware=False,                  # Phase-2 enhancement; off for now
         num_mcmc_steps=5, hmc_step_size=0.025, hmc_num_leapfrog=8,
         num_mcmc_steps_bridge=3, max_lambda_inc_bridge=0.15,
     )

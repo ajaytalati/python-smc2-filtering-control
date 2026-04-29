@@ -32,6 +32,7 @@ import os
 os.environ.setdefault('JAX_ENABLE_X64', 'True')
 
 import math
+import sys
 import time
 
 import jax
@@ -43,11 +44,36 @@ import matplotlib.pyplot as plt
 from tools.bench_smc_closed_loop_fsa import _build_phase2_control_spec
 
 
-N_DAYS_TOTAL = 14
 WINDOW_BINS  = 96    # 1 day
 STRIDE_BINS  = 48    # 12 hours
 DT = 1.0 / 96.0
-REPLAN_EVERY_K = 2   # replan once per day (every 2 strides)
+
+
+def _replan_K_for_horizon(T_total_days: int) -> int:
+    """Daily replan for short horizons; weekly for longer horizons.
+
+    Compute scales linearly with `n_replans × controller_compute(T_total)`,
+    so keeping replans bounded prevents the T=84 run blowing past the
+    GPU budget. Daily (K=2) at T=14 = 13 replans; weekly (K=14) at
+    T=84 = 12 replans (still meaningfully closed-loop).
+    """
+    if T_total_days <= 14:
+        return 2     # daily (every 12h stride doubled)
+    return 14        # weekly
+
+
+def _hmc_step_for_horizon(T_total_days: int) -> float:
+    """Controller-side HMC step scaling — port from v1
+    bench_smc_control_fsa.py. At long horizons the cost-surface
+    curvature scales as cost_std² so a fixed step (0.20-0.30) makes
+    leapfrog diverge (acc → 0). The ladder below was empirically
+    validated on v1 Stage D at T = 28, 42, 56, 84.
+    """
+    if T_total_days >= 70.0:
+        return 0.05
+    if T_total_days >= 50.0:
+        return 0.12
+    return 0.20
 
 
 def extract_window(obs_data, start: int, end: int):
@@ -71,8 +97,12 @@ def extract_window(obs_data, start: int, end: int):
 
 
 def main():
+    # Parse CLI: T_total_days as positional (default 14)
+    T_total_days = int(sys.argv[1]) if len(sys.argv) > 1 else 14
+    REPLAN_EVERY_K = _replan_K_for_horizon(T_total_days)
+
     print("=" * 76)
-    print("  Stage E5 — full 27-window rolling MPC on FSA-v2")
+    print(f"  Stage E5/F — closed-loop MPC on FSA-v2 (T = {T_total_days} d)")
     print("=" * 76)
 
     from models.fsa_high_res._plant import StepwisePlant
@@ -92,17 +122,25 @@ def main():
     identifiable_subset = {'HR_base', 'S_base', 'mu_step0',
                             'kappa_B_HR', 'k_F', 'beta_C_HR'}
 
-    n_windows = (N_DAYS_TOTAL * 96 - WINDOW_BINS) // STRIDE_BINS + 1
+    n_windows = (T_total_days * 96 - WINDOW_BINS) // STRIDE_BINS + 1
     n_strides = n_windows
     print(f"  device:   {jax.devices()[0].platform.upper()}")
+    print(f"  T_total:  {T_total_days} days")
     print(f"  windows:  {n_windows} (1-day, 12h stride)")
-    print(f"  replan:   every K={REPLAN_EVERY_K} stride(s)")
+    print(f"  replan:   every K={REPLAN_EVERY_K} stride(s) "
+          f"(≈ {REPLAN_EVERY_K * 0.5:.1f} day cadence)")
+    print(f"  plan horizon: T_total = {T_total_days} d at each replan")
     print()
 
     # ── Initialize plant ──
     plant = StepwisePlant(seed_offset=42)
     daily_phi_baseline = 1.0
-    daily_phi_planned = daily_phi_baseline    # warm-start identical to baseline
+    # Receding-horizon plan: full per-day Φ for the entire macrocycle.
+    # `daily_phi_plan[i]` is day-i's planned Φ. Updated at every replan;
+    # at each stride we apply `daily_phi_plan[day_in_plan]` where
+    # day_in_plan = (s - last_replan_stride) // 2.
+    daily_phi_plan = np.full(T_total_days, daily_phi_baseline, dtype=np.float64)
+    last_replan_stride = 0    # track day_in_plan offset since last replan
 
     # Accumulators
     accumulated_obs = {
@@ -116,19 +154,34 @@ def main():
     full_traj = []
     daily_phi_per_stride = []
 
+    # F1+F2: SF Path B-fixed bridge — fixes Gaussian-bridge mid-period
+    # drift that caused E3 18/27 and E5 3/26 coverage. Reference:
+    # smc2-blackjax-rolling 27/27 PASS at 98.5% on FSA-v2.
     smc_cfg = SMCConfig(
         n_smc_particles=128, n_pf_particles=200,
         target_ess_frac=0.5, max_lambda_inc=0.10,
-        bridge_type='gaussian',
+        bridge_type='schrodinger_follmer',
+        sf_q1_mode='annealed',
+        sf_use_q0_cov=True,
+        sf_blend=0.7,
+        sf_annealed_n_stages=3,
+        sf_annealed_n_mh_steps=5,
+        sf_info_aware=False,
         num_mcmc_steps=5, hmc_step_size=0.025, hmc_num_leapfrog=8,
         num_mcmc_steps_bridge=3, max_lambda_inc_bridge=0.15,
     )
+    # Controller-side HMC step scales with the planning horizon
+    # (long-horizon cost surfaces have steeper curvature; see v1 Stage D
+    # at T=84 where step had to drop from 0.30 to 0.05).
+    hmc_step_ctrl = _hmc_step_for_horizon(T_total_days)
     ctrl_cfg = SMCControlConfig(
         n_smc=128, n_inner=32, sigma_prior=1.5,
         target_ess_frac=0.5, max_lambda_inc=0.10,
-        num_mcmc_steps=10, hmc_step_size=0.20, hmc_num_leapfrog=16,
+        num_mcmc_steps=10, hmc_step_size=hmc_step_ctrl, hmc_num_leapfrog=16,
         beta_max_target_nats=8.0, max_temp_steps=30,
     )
+    print(f"  controller hmc_step = {hmc_step_ctrl} (scaled for T={T_total_days} d)")
+    print()
 
     prev_particles = None
     fixed_init_state = COLD_START_INIT
@@ -139,7 +192,12 @@ def main():
     for s in range(n_strides):
         print(f"  Stride {s+1:>2}/{n_strides}: ", end='', flush=True)
 
-        # 1. Apply current planned Phi to plant
+        # 1. Apply the day's planned Phi to plant. day_in_plan = days since
+        # last replan (each day = 2 strides @ 12h). For K=2 (daily replan)
+        # this is always 0; for K=14 (weekly) it iterates 0..6.
+        day_in_plan = (s - last_replan_stride) // 2
+        phi_idx = min(day_in_plan, len(daily_phi_plan) - 1)
+        daily_phi_planned = float(daily_phi_plan[phi_idx])
         obs_stride = plant.advance(STRIDE_BINS, np.array([daily_phi_planned]))
         full_traj.append(obs_stride['trajectory'])
         daily_phi_per_stride.append(daily_phi_planned)
@@ -240,20 +298,36 @@ def main():
                     'sigma_B', 'sigma_F', 'sigma_A',
                 )
             }
+            # F2/F3: plan T_total days ahead at every replan
+            # (matches v1 open-loop's full-horizon planning).
             spec = _build_phase2_control_spec(
                 dyn_params=dyn_params, init_state=smoothed_state,
+                plan_horizon_days=T_total_days,
             )
             res_ctrl = run_tempered_smc_loop(
                 spec=spec, cfg=ctrl_cfg, seed=42 + s,
                 print_progress=False,
             )
+            # Controller plans T_total*96 bins. Aggregate to per-day means
+            # so the plant's Gamma-burst expander gets a daily Φ for each
+            # day in the plan. The next K/2 days will draw from these.
             schedule = np.asarray(res_ctrl['mean_schedule'])
-            new_daily_phi = float(schedule.mean())
-            print(f"plan: {res_ctrl['n_temp_levels']}lvl, Φ̄={new_daily_phi:.3f}",
-                   flush=True)
-            daily_phi_planned = new_daily_phi
+            n_days_in_plan = T_total_days
+            if schedule.shape[0] >= n_days_in_plan * 96:
+                sched_per_day = (schedule[:n_days_in_plan * 96]
+                                  .reshape(n_days_in_plan, 96)
+                                  .mean(axis=1))
+            else:
+                sched_per_day = np.full(n_days_in_plan, schedule.mean())
+            daily_phi_plan = sched_per_day.astype(np.float64)
+            last_replan_stride = s + 1
+            phi_summary = (f"day0={sched_per_day[0]:.3f}, "
+                            f"day_mid={sched_per_day[n_days_in_plan//2]:.3f}, "
+                            f"day_last={sched_per_day[-1]:.3f}")
+            print(f"plan: {res_ctrl['n_temp_levels']}lvl, "
+                   f"Φ̄={sched_per_day.mean():.3f}  ({phi_summary})", flush=True)
         else:
-            print(f"reuse Φ={daily_phi_planned:.3f}", flush=True)
+            print(f"reuse plan day={day_in_plan}, Φ={daily_phi_planned:.3f}", flush=True)
 
         all_results.append({
             'stride': s,
@@ -307,7 +381,7 @@ def main():
 
     # ── Diagnostic plot ──
     out_dir = "outputs/fsa_high_res"
-    out_path = f"{out_dir}/E5_full_mpc_traces.png"
+    out_path = f"{out_dir}/E5_full_mpc_T{T_total_days}d_traces.png"
     os.makedirs(out_dir, exist_ok=True)
     fig, axes = plt.subplots(2, 2, figsize=(14, 9))
     t_full = np.arange(traj_full.shape[0]) * DT
@@ -341,7 +415,7 @@ def main():
     ax.set_title('MPC-applied Φ schedule across {} strides'.format(n_strides))
     ax.legend(fontsize=9); ax.grid(True, alpha=0.3)
 
-    plt.suptitle(f'Stage E5 — FSA-v2 27-window rolling MPC: '
+    plt.suptitle(f'Stage F — FSA-v2 closed-loop MPC, T={T_total_days}d: '
                   f'mean A {mean_A_mpc:.3f} vs baseline {mean_A_baseline:.3f}, '
                   f'F-viol {F_viol_mpc:.1%}, {total_elapsed/60:.0f} min',
                   fontsize=11)
