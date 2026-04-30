@@ -212,7 +212,7 @@ def main():
     # accuracy. Memory: 1024*1600 = 1.6M particle slots, ~480 MB —
     # well within the 32 GB budget.
     smc_cfg = SMCConfig(
-        n_smc_particles=1024, n_pf_particles=1600,
+        n_smc_particles=1024, n_pf_particles=800,
         target_ess_frac=0.5, max_lambda_inc=0.10,
         bridge_type='schrodinger_follmer',
         sf_q1_mode='annealed',
