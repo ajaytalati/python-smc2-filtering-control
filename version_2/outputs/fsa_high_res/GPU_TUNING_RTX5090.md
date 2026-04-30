@@ -142,17 +142,85 @@ Memory was also a real concern: 25.7 GB / 32 GB total ran the
 compositor uncomfortably close to OOM during the 3-way parallel.
 
 **Bottom line**: for *this* SMC² workload on *this* GPU, run horizons
-sequentially. The multi-process pattern in this section is left
-documented because it remains the right answer when:
-- the per-process working set is small (e.g. CPU-bound problems, or
-  small models that leave more SM idle time),
-- different processes have asynchronous compile timing (e.g. they
-  start hours apart and don't all hit cold compile together),
-- you genuinely need cross-seed runs that benefit from shared
-  `JAX_COMPILATION_CACHE_DIR`.
+sequentially.
 
-For the FSA-v2 closed-loop bench at n_smc=1024 / n_pf=800, **launch
-sequentially**. T=42→T=56→T=84 in serial is the right pattern.
+### A.4.1 The same applies to cross-seed runs
+
+A natural follow-up: "fine, multi-tmux is dead for different horizons,
+but surely 5 seeds at the *same* T benefit because the JAX compile
+cache hits 100 % after the first one?" — that's only the *compile*
+contention solved; the *kernel* contention remains.
+
+Once all 5 processes are in steady state, each is launching the same
+SMC² kernel onto the same SMs. The CUDA driver time-slices them at
+roughly 1/N speed each. Same arithmetic as 3-way:
+
+| processes | per-process slowdown | aggregate throughput |
+|---|---|---|
+| 1 | 1.0× (baseline) | 1.0× |
+| 2 | ~1.5× | 1.33× |
+| 3 | 2.84× *(measured)* | 1.05× |
+| 5 | likely ~5× | ~1.0× |
+
+Cross-seed multi-tmux therefore wastes effort. Five seeds in five tmux
+sessions take the same wall-clock as five seeds run sequentially in
+one session.
+
+### A.4.2 The generalization (the actual lesson)
+
+> **On a single GPU, multi-process parallelism only beats sequential
+> when the per-process workload does not already saturate the GPU.**
+
+Our SMC² at n_smc=1024 / n_pf=800 *does* saturate the 5090's SMs
+(99 % util inside kernels). There is no in-kernel slack for extra
+processes to fill — only host-side slack, which is what the XLA
+compiler eats during cold compile. Adding a second process steals SM
+time-slices from the first; aggregate throughput is conserved.
+
+Multi-tmux **is** the right answer when any of these hold:
+- The per-process workload is CPU-bound or has SM idle time
+  (e.g. small models, sparse kernels, host-heavy orchestration).
+- Processes are *asynchronous* in compile timing (started hours
+  apart) so cold compiles don't pile up on the host.
+- You genuinely need a few cross-seed runs and prefer sequential
+  per-process wall to be slightly slower so you don't have to
+  refactor; multi-tmux is then a "no code change" lazy answer.
+
+For our workload, none of those apply.
+
+### A.4.3 The only path to genuine parallelism on this hardware
+
+`jax.vmap` over a leading parallel-axis (seed, model variant,
+hyperparameter) is **not** the same mechanism as multi-tmux. vmap
+compiles **one bigger kernel** with the parallel dimension fused in:
+
+```
+multi-tmux 5-way:  [kernel_seed0] [kernel_seed1] ... [kernel_seed4]   ← serialised on SMs
+vmap 5-way:        [kernel(5×N_smc, N_pf, ...)]                       ← single launch
+```
+
+The vmap version still has 5× the work, but it runs as ONE launch
+with no driver-level context switching, no host-side compile
+contention, and XLA can choose tile sizes that fill SM lanes denser
+than they fill at single-seed batch shape. Memory-bandwidth-limited
+sections gain a real (~1.5-2×) speedup; compute-bound sections gain
+nothing but lose nothing either.
+
+For the FSA-v2 closed-loop bench, going to vmap-per-seed would
+require ~1 day of refactor to make the bench's per-stride orchestration
+shape-tolerant of a leading seed axis. The result would be
+~30-40 min wall for 5 seeds at T=14 (vs 2.25 h sequential) — and
+**this is the only path** to actual parallelism on this single GPU
+for this workload.
+
+For the FSA-v2 closed-loop bench at n_smc=1024 / n_pf=800, current
+guidance is therefore:
+
+- **Run a single horizon → sequential.** T=42 → T=56 → T=84.
+- **Run cross-seed → sequential.** Or refactor to vmap-per-seed if
+  you'll do it more than a few times.
+- **Run anything multi-tmux → only when per-process workload is small
+  enough that GPU isn't already saturated.**
 
 **Cold-compile sharing**: `JAX_COMPILATION_CACHE_DIR` is set in
 `run_horizon.sh`, so the 3 processes share a single on-disk HLO cache.
