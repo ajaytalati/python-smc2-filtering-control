@@ -283,15 +283,16 @@ def run_smc_window_native(
     n_dim = model.n_dim
     n_smc = cfg.n_smc_particles
 
-    # Build pytree-stable callables for prior + likelihood.
-    @jax.jit
+    # Build pytree-stable callables for prior + likelihood. NO @jax.jit
+    # on the inner — they're called inside an outer jit anyway, and
+    # an inner jit interferes with Partial-of-callable tracing.
     def _logprior_inner(u):
         return log_prior_unconstrained(u, T_arr)
 
     logprior_fn = jax.tree_util.Partial(_logprior_inner)
 
-    @jax.jit
-    def _loglikelihood_inner(u, ld_fn):
+    def _loglikelihood_inner(ld_fn, u):
+        # Bound-args first (for Partial), runtime arg `u` last.
         return ld_fn(u) - log_prior_unconstrained(u, T_arr)
 
     loglikelihood_fn = jax.tree_util.Partial(
@@ -371,9 +372,9 @@ def run_smc_window_bridge_native(
           f"{mode_diag}",
           flush=True)
 
-    # logprior under the SF Gaussian base measure.
-    @jax.jit
-    def _logprior_inner(u, m_, L_inv_, log_det_):
+    # logprior under the SF Gaussian base measure. No @jax.jit on inners
+    # — bound-args first (Partial prepends), runtime `u` last.
+    def _logprior_inner(m_, L_inv_, log_det_, u):
         diff = u - m_
         maha = jnp.sum((L_inv_ @ diff) ** 2)
         const = -0.5 * (d * jnp.log(2.0 * jnp.pi) + log_det_)
@@ -382,8 +383,7 @@ def run_smc_window_bridge_native(
     logprior_fn = jax.tree_util.Partial(
         _logprior_inner, m, L_inv, log_det)
 
-    @jax.jit
-    def _loglikelihood_inner(u, ld_fn, m_, L_inv_, log_det_):
+    def _loglikelihood_inner(ld_fn, m_, L_inv_, log_det_, u):
         diff = u - m_
         maha = jnp.sum((L_inv_ @ diff) ** 2)
         const = -0.5 * (d * jnp.log(2.0 * jnp.pi) + log_det_)
