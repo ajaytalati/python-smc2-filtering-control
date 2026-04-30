@@ -1,20 +1,33 @@
 # Plan: Port SWAT model into the SMC²-MPC framework
 
-## First actions when ExitPlanMode fires (in order)
+## Status update (2026-04-30)
 
-1. **Handle the deferred `/loop` check that fired at 17:09 while
-   plan mode was blocking execution.** Check T=56 sweep status; if
-   T=56 has finished, launch T=84 in tmux via
-   `run_horizon.sh 84`. Schedule the next /loop wakeup. ~30 s of
-   bash. The GPU sweep is independent of the SWAT port work and
-   takes priority because it's already running.
+**Phase 0 (sync Repos B and C with Repo A) was DROPPED** after a
+direct empirical consistency check. The two presentations of SWAT
+(Repo A's 7-state estimation form vs Repo C's 4-state control form)
+agree to sub-picosecond precision on T(t) trajectories under
+matching (V_h, V_n, V_c) values across all three canonical
+scenarios. The "inversion" the audit flagged was a deliberate dual
+API presentation, not a model-level drift. psim auto-tracks Repo A
+via lazy imports.
 
-2. **Save this plan as a tracked artefact** in
-   `/home/ajay/Repos/python-smc2-filtering-control/project_upgrade_plans/Port_SWAT_into_SMC2_MPC_framework.md`,
-   then commit + push that on its own. This makes the plan
-   reviewable in the repo before any porting work begins.
+See [`swat_consistency_check/README.md`](swat_consistency_check/README.md)
+for the verification script and numerics.
 
-3. (Phase 0 onwards: as scheduled below.)
+The simplified path forward is: `git pull` Repo A → Phase 1
+(create `version_2/models/swat/`) → Phase 2 (duplicate bench) →
+Phase 3 (smoke + scientific validation). All three feasible without
+upstream-repo sync work.
+
+---
+
+## First actions on resume
+
+1. **/loop check on T=56** — handle the wakeup that fires when T=56
+   finishes; launch T=84 sequentially.
+2. **Pull Repo A** to current main (`9b948bf` or later) — the post
+   V_h-inversion-fix state.
+3. Phase 1 — create `version_2/models/swat/`.
 
 ## Context
 
