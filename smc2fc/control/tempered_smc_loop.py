@@ -81,7 +81,11 @@ def run_tempered_smc_loop_native(
 
     # 2. Pytree-stable Partial-wrapped logprior + loglikelihood.
     sigma_prior = float(spec.sigma_prior)
-    prior_mean = jnp.asarray(spec.prior_mean, dtype=jnp.float64)
+    # Ensure prior_mean is a (theta_dim,) array even if spec stores a scalar.
+    pm_arr = jnp.asarray(spec.prior_mean, dtype=jnp.float64)
+    if pm_arr.ndim == 0:
+        pm_arr = jnp.broadcast_to(pm_arr, (spec.theta_dim,))
+    prior_mean = pm_arr
 
     def _logprior_inner(sigma, mean, theta):
         return jnp.sum(
