@@ -48,6 +48,17 @@ _STEP_MINUTES = _pop_step_minutes_from_argv()
 os.environ['FSA_STEP_MINUTES'] = str(_STEP_MINUTES)
 os.environ.setdefault('JAX_ENABLE_X64', 'True')
 
+# Stage L (cheap variant): enable JAX's persistent compilation cache.
+# Per-stride re-tracing of log_density / smc_kernel / cost_fn produces
+# many identical HLO modules. With the disk cache populated, XLA hits
+# it and skips full optimisation/code-gen on cache-hit.
+import pathlib as _pathlib
+_CACHE_DIR = _pathlib.Path.home() / ".jax_compilation_cache"
+_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+os.environ.setdefault('JAX_COMPILATION_CACHE_DIR', str(_CACHE_DIR))
+os.environ.setdefault('JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES', '0')
+os.environ.setdefault('JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS', '1')
+
 import math
 import time
 
