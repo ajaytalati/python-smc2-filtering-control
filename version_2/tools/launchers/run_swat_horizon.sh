@@ -37,22 +37,23 @@ export XLA_PYTHON_CLIENT_PREALLOCATE=false
 # Shared compile cache across parallel processes.
 export JAX_COMPILATION_CACHE_DIR="$HOME/.jax_compilation_cache"
 
+STEP_MIN=${STEP_MINUTES:-15}     # SWAT default: 15-min bins for sleep/wake identifiability
 stamp=$(date +%Y%m%d_%H%M)
-log="$LOGDIR/g4_t${T}_h1h_${stamp}.log"
+log="$LOGDIR/swat_t${T}_h${STEP_MIN}min_${stamp}.log"
 
 echo "============================================================"
-echo "  T=${T} h=1h launching at $(date '+%Y-%m-%d %H:%M:%S')"
+echo "  SWAT T=${T} h=${STEP_MIN}min launching at $(date '+%Y-%m-%d %H:%M:%S')"
 echo "  log: $log"
 echo "  GPU mem cap: $XLA_PYTHON_CLIENT_MEM_FRACTION × total (per process)"
 echo "============================================================"
 
-python -u tools/bench_smc_full_mpc_swat.py "$T" --step-minutes 60 \
+python -u tools/bench_smc_full_mpc_swat.py "$T" --step-minutes "$STEP_MIN" \
     2>&1 | tee "$log"
 rc=${PIPESTATUS[0]}
 
 echo
 echo "============================================================"
-echo "  T=${T} finished at $(date '+%Y-%m-%d %H:%M:%S')  exit code: $rc"
+echo "  SWAT T=${T} finished at $(date '+%Y-%m-%d %H:%M:%S')  exit code: $rc"
 echo "============================================================"
-ls -la "$REPO/version_2/outputs/swat/g4_runs/T${T}d_replanK2_h60min_no_infoaware/" 2>/dev/null
+ls -la "$REPO/version_2/outputs/swat/swat_runs/swat_T${T}d_replanK2_h${STEP_MIN}min/" 2>/dev/null
 exit "$rc"

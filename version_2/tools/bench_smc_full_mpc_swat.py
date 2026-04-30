@@ -35,9 +35,20 @@ def _pop_step_minutes_from_argv() -> int:
         if i + 1 >= len(sys.argv):
             raise SystemExit("--step-minutes requires a value")
         val = int(sys.argv[i + 1])
+        if val > 15:
+            print(f"WARNING: --step-minutes {val} > 15. SWAT identifiability "
+                   f"depends on sub-hour resolution of sleep/wake transitions. "
+                   f"Recommend --step-minutes 15 or finer.", file=sys.stderr)
         del sys.argv[i:i + 2]
         return val
-    return 60  # default 1-hour bins for SWAT (matches FSA-v2 post Stage M)
+    # SWAT default: 15-minute bins. The sleep/wake switching transitions
+    # happen on a 30-60-minute timescale; coarser bins (e.g. h=1h that
+    # works for FSA-v2) bin-average those transitions and lose the
+    # information that identifies the fast-subsystem + obs-channel
+    # parameters (kappa, lmbda, alpha_HR, c_tilde, W_thresh, ...). The
+    # source spec uses h=5min; h=15min is a 4x compute saving while
+    # preserving identifiability per user 2026-04-30.
+    return 15
 
 _STEP_MINUTES = _pop_step_minutes_from_argv()
 os.environ['FSA_STEP_MINUTES'] = str(_STEP_MINUTES)
