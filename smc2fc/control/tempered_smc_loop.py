@@ -100,8 +100,13 @@ def run_tempered_smc_loop_native(
     def _loglikelihood_inner(beta, cost_callable, theta):
         return -beta * cost_callable(theta)
 
+    # Wrap cost_fn in a Partial so JAX treats it as a pytree-stable
+    # callable (PjitFunction objects aren't pytrees by themselves;
+    # Partial-wrapping them makes the outer Partial properly hashable
+    # and trace-stable across replans).
+    cost_partial = jax.tree_util.Partial(cost_fn)
     loglikelihood_fn = jax.tree_util.Partial(
-        _loglikelihood_inner, jnp.float64(beta_max), cost_fn,
+        _loglikelihood_inner, jnp.float64(beta_max), cost_partial,
     )
 
     # 3. Initial particle cloud — drawn from prior.
