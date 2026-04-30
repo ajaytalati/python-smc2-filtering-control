@@ -57,13 +57,30 @@ HALF_LOG_2PI = 0.5 * math.log(2.0 * math.pi)
 # =========================================================================
 # FROZEN CONSTANTS
 # =========================================================================
-# These are not estimated — they're either operating-point references
-# (A_SCALE, PHI_0_FROZEN) or clinical thresholds (V_C_MAX_HOURS).
+# Three operating-point references (A_SCALE, phi_0, V_c_max) plus two
+# pinning fixes from the Repo C identifiability analysis (see
+# `Python-Model-Validation/identifiability/swat/fisher_information_analysis.md`):
+#
+# - **tau_T = 2.0 days (= 48 h)** — pinned to break the (mu_0, mu_E,
+#   eta, tau_T) Stuart-Landau time-vs-rate scaling degeneracy. Without
+#   this, the FIM is rank 24/27 with condition number ~10^36 — mu_0
+#   and mu_E are not separately identifiable.
+# - **lambda_amp_Z = 8.0** — pinned because (lambda_amp_W,
+#   lambda_amp_Z) only enter E_dyn through the product
+#   amp_W * amp_Z, so only one of the two is identifiable from data.
+#
+# After both pins applied, the analysis confirms FIM rank 25/25
+# (condition 4.77e9 — borderline but identifiable). mu_0 and mu_E
+# are then both individually identifiable — the F_max-from-data
+# experiment is well-posed.
 
 FROZEN_PARAMS = dict(
     A_scale=A_SCALE_FROZEN,
     phi_0=PHI_0_FROZEN,
     V_c_max=V_C_MAX_HOURS,
+    # Pinned per Repo C FIM analysis 2026-04-27:
+    tau_T=48.0 / 24.0,            # 2.0 days
+    lambda_amp_Z=8.0,
 )
 
 
@@ -92,10 +109,11 @@ PARAM_PRIOR_CONFIG = OrderedDict([
     ('beta_Z',   ('lognormal', (math.log(4.0),  0.4))),
 
     # ── Timescales (in DAYS, converted from hours) ───────────────────
+    # tau_T is PINNED — see FROZEN_PARAMS — to break the
+    # (mu_0, mu_E, eta, tau_T) Stuart-Landau scaling degeneracy.
     ('tau_W',    ('lognormal', (_ln_d(2.0),  0.3))),
     ('tau_Z',    ('lognormal', (_ln_d(2.0),  0.3))),
     ('tau_a',    ('lognormal', (_ln_d(3.0),  0.3))),
-    ('tau_T',    ('lognormal', (_ln_d(48.0), 0.3))),
 
     # ── Stuart-Landau bifurcation block (the F_max-analog parameters) ─
     # mu_0 + mu_E = 0 is the bifurcation point E_crit = -mu_0/mu_E = 0.5
@@ -113,8 +131,10 @@ PARAM_PRIOR_CONFIG = OrderedDict([
     ('T_T',      ('lognormal', (math.log(0.0001 * _HOURS_PER_DAY), 0.5))),
 
     # ── Entrainment-amplitude block (V_h-anabolic) ───────────────────
+    # lambda_amp_Z is PINNED — see FROZEN_PARAMS — because
+    # (lambda_amp_W, lambda_amp_Z) enter E_dyn only through their
+    # product, so only one is individually identifiable.
     ('lambda_amp_W', ('lognormal', (math.log(5.0), 0.3))),
-    ('lambda_amp_Z', ('lognormal', (math.log(8.0), 0.3))),
     ('V_n_scale',    ('lognormal', (math.log(2.0), 0.3))),
 
     # ── Obs ch1: HR Gaussian (sleep-modulated via W) ─────────────────
