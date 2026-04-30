@@ -143,6 +143,11 @@ def main():
     )
     from smc2fc.core.config import SMCConfig
     from smc2fc.core.tempered_smc import run_smc_window, run_smc_window_bridge
+    # Stage M: JAX-native tempered SMC (replaces BlackJAX layer at the
+    # call site to avoid per-stride smc_kernel recompilation).
+    from smc2fc.core.jax_native_smc import (
+        run_smc_window_native, run_smc_window_bridge_native,
+    )
     from smc2fc.transforms.unconstrained import unconstrained_to_constrained
     from smc2fc.filtering.gk_dpf_v3_lite import (
         make_gk_dpf_v3_lite_log_density,
@@ -307,14 +312,14 @@ def main():
         )
 
         if prev_particles is None:
-            print(f"filter (cold)... ", end='', flush=True)
-            particles_unc, elapsed_f, n_temp_f = run_smc_window(
+            print(f"filter (cold/native)... ", end='', flush=True)
+            particles_unc, elapsed_f, n_temp_f = run_smc_window_native(
                 ld, em, T_arr, cfg=smc_cfg,
                 initial_particles=None, seed=42 + s * 1000,
             )
         else:
-            print(f"filter (bridge)... ", end='', flush=True)
-            particles_unc, elapsed_f, n_temp_f = run_smc_window_bridge(
+            print(f"filter (bridge/native)... ", end='', flush=True)
+            particles_unc, elapsed_f, n_temp_f = run_smc_window_bridge_native(
                 new_ld=ld, prev_particles=prev_particles,
                 model=em, T_arr=T_arr, cfg=smc_cfg,
                 seed=42 + s * 1000,
