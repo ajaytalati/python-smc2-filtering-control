@@ -348,17 +348,25 @@ def _build_phase2_control_spec(*, dyn_params, init_state,
         raw = c_Phi + jnp.einsum('a,ta->t', theta, Phi_design)
         return Phi_max * jax.nn.sigmoid(raw)
 
-    p_jax = {k: jnp.asarray(float(v)) for k, v in dyn_params.items()}
-    sub_dt = dt / float(n_substeps)
-    sqrt_dt = jnp.sqrt(dt)
+    # Stage L8: cast controller cost-MC SDE to FP32 (mirrors Stage K on
+    # the filter side). The em_step + per-trial Wiener noise + state
+    # arithmetic are dense FP work where consumer Blackwell's 64x FP32
+    # advantage applies. Cost accumulators stay FP64 for stable
+    # integration over the long horizon (T=84 d at h=1h = 2016 steps).
+    p_jax_f32 = {k: jnp.asarray(float(v), dtype=jnp.float32)
+                  for k, v in dyn_params.items()}
+    sub_dt_f32 = jnp.float32(dt / float(n_substeps))
+    sqrt_dt_f32 = jnp.float32(math.sqrt(dt))
 
     @jax.jit
     def em_step(y, Phi_t, noise_3d):
+        # y, Phi_t, noise_3d are FP32 inputs (caller will cast).
         def sub_body(y_inner, _):
-            return y_inner + sub_dt * drift_jax_v2(y_inner, p_jax, Phi_t), None
+            return y_inner + sub_dt_f32 * drift_jax_v2(
+                y_inner, p_jax_f32, Phi_t), None
         y_det, _ = jax.lax.scan(sub_body, y, jnp.arange(n_substeps))
-        sigma_y = diffusion_state_dep(y_det, p_jax)
-        y_pred = y_det + sigma_y * sqrt_dt * noise_3d
+        sigma_y = diffusion_state_dep(y_det, p_jax_f32)
+        y_pred = y_det + sigma_y * sqrt_dt_f32 * noise_3d
         B_pred, F_pred, A_pred = y_pred[0], y_pred[1], y_pred[2]
         B_next = jnp.where(B_pred < 0.0, -B_pred,
                             jnp.where(B_pred > 1.0, 2.0 - B_pred, B_pred))
@@ -368,23 +376,27 @@ def _build_phase2_control_spec(*, dyn_params, init_state,
 
     grids = build_crn_noise_grids(n_inner=n_inner, n_steps=n_steps,
                                     n_channels=3, seed=seed)
-    fixed_w = grids['wiener']
-    init_arr = jnp.asarray(init_state)
+    fixed_w = grids['wiener'].astype(jnp.float32)        # FP32 noise
+    init_arr_f32 = jnp.asarray(init_state, dtype=jnp.float32)
+    F_max_f32 = jnp.float32(F_max)
+    dt_f64 = jnp.float64(dt)                             # accum precision
 
     @jax.jit
     def cost_fn(theta):
-        Phi_arr = schedule_from_theta(theta)
+        Phi_arr = schedule_from_theta(theta).astype(jnp.float32)
         def trial(w_seq):
             def step(carry, k):
-                y, A_acc, barrier_acc = carry
+                y, A_acc, barrier_acc = carry              # y FP32, accum FP64
                 Phi_t = Phi_arr[k]
                 y_next = em_step(y, Phi_t, w_seq[k])
-                A_acc = A_acc + y[2] * dt
+                # Promote y[2] / barrier residual to FP64 for accum
+                A_acc = A_acc + jnp.float64(y[2]) * dt_f64
                 barrier_acc = barrier_acc + (
-                    jnp.maximum(y[1] - F_max, 0.0) ** 2 * dt
+                    jnp.float64(jnp.maximum(y[1] - F_max_f32, 0.0)) ** 2
+                    * dt_f64
                 )
                 return (y_next, A_acc, barrier_acc), None
-            init_carry = (init_arr, jnp.float64(0.0), jnp.float64(0.0))
+            init_carry = (init_arr_f32, jnp.float64(0.0), jnp.float64(0.0))
             (_, A_acc, b_acc), _ = jax.lax.scan(
                 step, init_carry, jnp.arange(n_steps),
             )
