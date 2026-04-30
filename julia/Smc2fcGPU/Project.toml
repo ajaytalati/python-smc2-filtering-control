@@ -1,0 +1,43 @@
+name = "Smc2fcGPU"
+uuid = "f9a3c1d2-7e6b-4a8f-9b3d-1c2e4f6a8b0d"
+authors = ["Ajay Talati <ajaytalati@googlemail.com>"]
+version = "0.1.0"
+
+[deps]
+Adapt = "79e6a3ab-5dfb-504d-930d-738a2a938a0e"
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+DiffEqBase = "2b5f629d-d688-5b77-993f-72d75c75574e"
+DiffEqGPU = "071ae1c0-96b5-11e9-1965-c90190d839ea"
+JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
+NPZ = "15e1cf62-19b3-5cfa-8e77-841668bca605"
+PrecompileTools = "aea7be01-6a6a-4083-8856-8a6e6704d82a"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+Random123 = "74087812-796a-5b5d-8853-05524746bad3"
+RandomNumbers = "e6cf234a-135c-5ec9-84dd-332b85af5143"
+SciMLBase = "0bca4576-84f4-4d90-8ffe-ffa030f20462"
+StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
+StochasticDiffEq = "789caeaf-c7a9-5a7d-9973-96adeb23e2a0"
+
+[compat]
+Adapt = "4"
+CUDA = "5"
+DiffEqBase = "6"
+DiffEqGPU = "3"
+JSON = "1.5.1"
+KernelAbstractions = "0.9"
+NPZ = "0.4.3"
+PrecompileTools = "1"
+Random123 = "1"
+RandomNumbers = "1"
+SciMLBase = "2"
+StaticArrays = "1"
+StochasticDiffEq = "6"
+julia = "1.10"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+
+[targets]
+test = ["Test", "Statistics"]
