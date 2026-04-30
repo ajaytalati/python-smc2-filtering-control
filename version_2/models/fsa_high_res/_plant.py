@@ -38,6 +38,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+import jax
+import jax.numpy as jnp
+from jax import lax
 import numpy as np
 
 from models.fsa_high_res.simulation import (
@@ -46,8 +49,61 @@ from models.fsa_high_res.simulation import (
     drift, noise_scale_fn,
     gen_obs_sleep, gen_obs_hr, gen_obs_stress, gen_obs_steps,
     gen_Phi_channel, gen_C_channel, circadian,
+    EPS_A_FROZEN, EPS_B_FROZEN,
 )
+from models.fsa_high_res._dynamics import drift_jax as _drift_jax_v2
 from models.fsa_high_res._phi_burst import expand_daily_phi_to_subdaily
+
+
+# =========================================================================
+# Plant SDE in JAX (Stage N): Euler-Maruyama scan on GPU.
+# Replaces the numpy for-loop in StepwisePlant.advance for the SDE step.
+# Obs samplers stay numpy for now (cheaper).
+# =========================================================================
+
+@jax.jit
+def _plant_em_step(
+    initial_state,         # (3,) f64 — current [B, F, A]
+    Phi_subdaily,          # (stride_bins,) f64 — per-bin Phi
+    p_jax,                 # dict of f64 scalars — truth params
+    sigma_diag,            # (3,) f64 — [sigma_B, sigma_F, sigma_A]
+    dt,                    # f64 scalar
+    rng_key,               # PRNGKey
+):
+    """Forward Euler-Maruyama with sqrt-Itô diffusion (Jacobi for B,
+    CIR for F + A) for stride_bins steps. Returns (final_state, traj).
+    """
+    sqrt_dt = jnp.sqrt(dt)
+    stride_bins = Phi_subdaily.shape[0]
+    EPS_B = jnp.float64(EPS_B_FROZEN)
+    EPS_A = jnp.float64(EPS_A_FROZEN)
+
+    def step(carry, k):
+        y, key = carry
+        key, sub = jax.random.split(key)
+        Phi_t = Phi_subdaily[k]
+        d_y = _drift_jax_v2(y, p_jax, Phi_t)
+        # sqrt-Itô diffusion scales (mirrors noise_scale_fn)
+        B_cl = jnp.clip(y[0], EPS_B, 1.0 - EPS_B)
+        F_cl = jnp.maximum(y[1], 0.0)
+        A_cl = jnp.maximum(y[2], 0.0)
+        g = jnp.array([
+            jnp.sqrt(B_cl * (1.0 - B_cl)),
+            jnp.sqrt(F_cl),
+            jnp.sqrt(A_cl + EPS_A),
+        ])
+        noise = jax.random.normal(sub, (3,), dtype=jnp.float64)
+        y_new = y + dt * d_y + sigma_diag * g * sqrt_dt * noise
+        # Boundary clip (matches numpy version)
+        y_new = y_new.at[0].set(jnp.clip(y_new[0], 1e-4, 1.0 - 1e-4))
+        y_new = y_new.at[1].set(jnp.maximum(y_new[1], 0.0))
+        y_new = y_new.at[2].set(jnp.maximum(y_new[2], 0.0))
+        return (y_new, key), y_new
+
+    init_carry = (initial_state, rng_key)
+    (final_state, _), traj = lax.scan(
+        step, init_carry, jnp.arange(stride_bins))
+    return final_state, traj
 
 
 @dataclass
@@ -134,29 +190,37 @@ class StepwisePlant:
         t_grid_global = (np.arange(stride_bins, dtype=np.float64)
                           + self.t_bin) * self.dt
 
-        # Forward Euler-Maruyama with sqrt-Itô diffusion
-        rng = np.random.default_rng(self.seed_offset + self.t_bin)
+        # Stage N: Forward Euler-Maruyama on GPU via _plant_em_step.
+        # Replaces the numpy for-loop (50-200 ms/stride) with a jit'd
+        # lax.scan that runs entirely on device. Obs samplers below
+        # stay numpy (cheaper, plus they need integer obs indices /
+        # Bernoulli sampling that's easier in numpy).
         sigma = np.array([
             self.truth_params['sigma_B'],
             self.truth_params['sigma_F'],
             self.truth_params['sigma_A'],
         ])
-        sqrt_dt = math.sqrt(self.dt)
-        traj = np.zeros((stride_bins, 3), dtype=np.float32)
-        y = self.state.copy()
-        aux = (Phi_subdaily,)
-        for k in range(stride_bins):
-            d_y = drift(t_grid_global[k], y, self.truth_params, aux)
-            g   = noise_scale_fn(y, self.truth_params)
-            noise = rng.standard_normal(3)
-            y = y + self.dt * d_y + sigma * g * sqrt_dt * noise
-            y[0] = float(np.clip(y[0], 1e-4, 1.0 - 1e-4))
-            y[1] = float(max(y[1], 0.0))
-            y[2] = float(max(y[2], 0.0))
-            traj[k] = y
+        # Build params dict as JAX-friendly scalars (jit-cache-stable).
+        p_jax = {k: jnp.asarray(float(v), dtype=jnp.float64)
+                  for k, v in self.truth_params.items()}
+        sigma_jax = jnp.asarray(sigma, dtype=jnp.float64)
+        Phi_jax = jnp.asarray(Phi_subdaily, dtype=jnp.float64)
+        y0_jax = jnp.asarray(self.state, dtype=jnp.float64)
+        rng_key = jax.random.PRNGKey(int(self.seed_offset + self.t_bin))
+
+        final_state_jax, traj_jax = _plant_em_step(
+            y0_jax, Phi_jax, p_jax, sigma_jax,
+            jnp.float64(self.dt), rng_key,
+        )
+        # Pull back to numpy for obs samplers + history bookkeeping.
+        traj = np.asarray(traj_jax, dtype=np.float32)
+        y = np.asarray(final_state_jax, dtype=np.float64)
 
         # Update state for next advance call
         self.state = y.copy()
+        # Obs samplers below still expect aux = (Phi_arr,) per the
+        # legacy contract.
+        aux = (Phi_subdaily,)
 
         # Sample obs on this stride. The gen_obs_* functions take a
         # local t_grid (here: stride-local 0..stride_bins-1 in days)
