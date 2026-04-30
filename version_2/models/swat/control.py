@@ -4,18 +4,20 @@ Wires the 4-state SWAT model into the framework's ``ControlSpec``
 contract. The MPC chooses **three** time-varying control schedules
 (V_h, V_n, V_c) over a horizon, encoded as RBF-anchor weights.
 
-Cost functional (default):
+Cost functional
+---------------
+::
 
-    cost(θ) = -E_w[ ∫ T(t) dt ]                    # maximise testosterone
-              + λ_h · ||V_h(t) - V_h_default||²    # intervention cost
-              + λ_n · ||V_n(t) - V_n_default||²
-              + λ_c · ||V_c(t)||²
-              + λ_T_floor · ∫ max(T_floor - T, 0)² dt   # T-collapse barrier
+    cost(θ) = -E_w[ ∫ T(t) dt ]    # maximise integrated testosterone
 
-The T-floor barrier penalises trajectories that cross the
-Stuart-Landau bifurcation (T → 0). It plays the role of FSA-v2's
-F-max barrier, but on the *outcome* state T rather than a separate
-fatigue variable.
+That is the entire cost. **No regularisation, no operating-point
+biases**. The controller figures out optimal V_h, V_n, V_c from the
+T reward alone, subject to the bound transforms below.
+
+This is by user direction (2026-04-30):
+
+    "The controller does not have to be given these baselines — it
+     should figure them out by itself. cost = -∫T dt is enough."
 
 θ packing
 ---------
@@ -24,15 +26,15 @@ entries parameterise V_h, the next ``n_anchors`` parameterise V_n,
 the final ``n_anchors`` parameterise V_c. Each chunk passes through
 an RBF basis + a variate-specific bound transform.
 
-Bounds
+Bounds (from the OT-Control adapter)
 ------
-Per the OT-Control adapter:
     V_h ∈ [0, 4],  V_n ∈ [0, 5],  V_c ∈ [-12, 12] hours.
 
-Smooth bound transforms:
-- V_h, V_n: V_max · sigmoid(c + θ·rbf), with logit bias c centred on
-  the default operating point.
-- V_c: V_max · tanh(θ·rbf), centred at 0 (no phase shift).
+Bound transforms (no logit bias — controller starts from the
+sigmoid/tanh midpoint):
+- V_h: V_h_max · sigmoid(θ·rbf)            θ=0 → V_h = 2.0
+- V_n: V_n_max · sigmoid(θ·rbf)            θ=0 → V_n = 2.5
+- V_c: V_c_max · tanh(θ·rbf)               θ=0 → V_c = 0
 """
 from __future__ import annotations
 
@@ -59,14 +61,6 @@ from version_2.models.swat._v_schedule import (
 )
 
 
-# ── Operating-point reference ─────────────────────────────────────────
-V_H_DEFAULT = 1.0     # healthy-baseline vitality reserve
-V_N_DEFAULT = 0.3     # healthy-baseline chronic load
-V_C_DEFAULT = 0.0     # no phase shift
-
-T_FLOOR_DEFAULT = 0.05    # T below this counts as collapse
-
-
 # =========================================================================
 # Schedule builders — three RBF schedules, one per variate
 # =========================================================================
@@ -74,23 +68,17 @@ T_FLOOR_DEFAULT = 0.05    # T below this counts as collapse
 def _make_three_schedules(*, n_steps: int, dt: float, n_anchors: int):
     """Build (rbf, schedule_from_theta) for the three SWAT controls.
 
-    Returns a packed ``schedule_from_theta(theta) → (n_steps, 3)``
-    function where the second axis is (V_h, V_n, V_c).
+    No logit bias — at θ=0 the schedule sits at the sigmoid/tanh
+    midpoint of each variate's bounds. Controller figures out the
+    right V_h, V_n, V_c values from the T reward.
     """
     rbf = RBFSchedule(n_steps=n_steps, dt=dt, n_anchors=n_anchors,
                        output='identity')
     design = rbf.design_matrix()        # (n_steps, n_anchors)
 
-    # Logit bias for V_h: at θ=0, sigmoid(c_h) · V_h_max = V_h_default
-    p_h = V_H_DEFAULT / V_H_BOUNDS[1]
-    c_h = float(np.log(p_h / (1.0 - p_h)))
-
-    # Logit bias for V_n: same pattern
-    p_n = V_N_DEFAULT / V_N_BOUNDS[1]
-    c_n = float(np.log(p_n / (1.0 - p_n)))
-
-    # V_c: no logit bias since default = 0 (centre of tanh)
-    V_c_max = V_C_BOUNDS[1]    # 12 hours
+    V_h_max = V_H_BOUNDS[1]   # 4
+    V_n_max = V_N_BOUNDS[1]   # 5
+    V_c_max = V_C_BOUNDS[1]   # 12
 
     @jax.jit
     def schedule_from_theta(theta: jnp.ndarray) -> jnp.ndarray:
@@ -99,12 +87,12 @@ def _make_three_schedules(*, n_steps: int, dt: float, n_anchors: int):
         theta_n = theta[n_anchors:2 * n_anchors]
         theta_c = theta[2 * n_anchors:]
 
-        raw_h = c_h + jnp.einsum('a,ta->t', theta_h, design)
-        raw_n = c_n + jnp.einsum('a,ta->t', theta_n, design)
-        raw_c =        jnp.einsum('a,ta->t', theta_c, design)
+        raw_h = jnp.einsum('a,ta->t', theta_h, design)
+        raw_n = jnp.einsum('a,ta->t', theta_n, design)
+        raw_c = jnp.einsum('a,ta->t', theta_c, design)
 
-        V_h = V_H_BOUNDS[1] * jax.nn.sigmoid(raw_h)
-        V_n = V_N_BOUNDS[1] * jax.nn.sigmoid(raw_n)
+        V_h = V_h_max * jax.nn.sigmoid(raw_h)
+        V_n = V_n_max * jax.nn.sigmoid(raw_n)
         V_c = V_c_max * jnp.tanh(raw_c)
 
         return jnp.stack([V_h, V_n, V_c], axis=-1)
@@ -144,14 +132,15 @@ def _build_cost_and_traj_fns(
     dt: float,
     n_substeps: int,
     schedule_from_theta,
-    T_floor: float = T_FLOOR_DEFAULT,
-    lam_h: float = 0.01,
-    lam_n: float = 0.01,
-    lam_c: float = 0.001,
-    lam_T_floor: float = 1.0,
     seed: int = 42,
 ):
-    """Build (cost_fn, traj_sample_fn) closures for SWAT control."""
+    """Build (cost_fn, traj_sample_fn) closures for SWAT control.
+
+    Cost is purely -E_w[ ∫ T(t) dt ]. No regularisation terms; the
+    bound transforms in schedule_from_theta keep V_h, V_n, V_c
+    physically valid, and the controller's only job is to maximise
+    integrated testosterone amplitude.
+    """
     p_jax = {k: jnp.asarray(float(v)) for k, v in DEFAULT_PARAMS.items()
               if isinstance(v, (int, float))}
     em_step = _make_em_step_fn(p_jax, dt, n_substeps)
@@ -169,34 +158,17 @@ def _build_cost_and_traj_fns(
 
         def trial(w_seq):
             def step(carry, k):
-                y, T_acc, vh_acc, vn_acc, vc_acc, floor_acc = carry
+                y, T_acc = carry
                 t_k = jnp.float64(k) * dt
                 u_t = u_arr[k]
                 y_next = em_step(y, t_k, u_t, w_seq[k])
-                # Reward: integrated testosterone
-                T_acc = T_acc + y[3] * dt
-                # Intervention costs (squared deviation from defaults)
-                vh_acc = vh_acc + (u_t[0] - V_H_DEFAULT) ** 2 * dt
-                vn_acc = vn_acc + (u_t[1] - V_N_DEFAULT) ** 2 * dt
-                vc_acc = vc_acc + u_t[2] ** 2 * dt
-                # T-floor barrier
-                floor_acc = floor_acc + (
-                    jnp.maximum(T_floor - y[3], 0.0) ** 2 * dt)
-                return (y_next, T_acc, vh_acc, vn_acc,
-                         vc_acc, floor_acc), None
+                T_acc = T_acc + y[3] * dt        # integrate testosterone
+                return (y_next, T_acc), None
 
-            init_carry = (init_arr,
-                           jnp.float64(0.0), jnp.float64(0.0),
-                           jnp.float64(0.0), jnp.float64(0.0),
-                           jnp.float64(0.0))
-            (_, T_acc, vh_acc, vn_acc, vc_acc, floor_acc), _ = jax.lax.scan(
-                step, init_carry, jnp.arange(n_steps),
+            (_, T_acc), _ = jax.lax.scan(
+                step, (init_arr, jnp.float64(0.0)), jnp.arange(n_steps),
             )
-            return (-T_acc
-                    + lam_h * vh_acc
-                    + lam_n * vn_acc
-                    + lam_c * vc_acc
-                    + lam_T_floor * floor_acc)
+            return -T_acc
 
         return jnp.mean(jax.vmap(trial)(fixed_w))
 
@@ -228,14 +200,13 @@ def build_control_spec(
     n_inner: int = 64,
     n_substeps: int = 4,
     sigma_prior: float = 1.5,
-    T_floor: float = T_FLOOR_DEFAULT,
-    lam_h: float = 0.01,
-    lam_n: float = 0.01,
-    lam_c: float = 0.001,
-    lam_T_floor: float = 1.0,
     seed: int = 42,
 ) -> ControlSpec:
     """Construct a SWAT ControlSpec for the given horizon.
+
+    Cost is purely -E[∫T dt] — no regularisation terms.
+    Bound transforms in ``schedule_from_theta`` keep V_h, V_n, V_c
+    physically valid.
 
     Args:
         n_steps:    number of bins in the planning horizon.
@@ -245,8 +216,6 @@ def build_control_spec(
         n_inner:    Monte Carlo trials per cost evaluation.
         n_substeps: deterministic Euler substeps for stiffness.
         sigma_prior: std of the Gaussian prior over θ.
-        T_floor:    T-collapse barrier threshold.
-        lam_h, lam_n, lam_c, lam_T_floor: cost regularisation weights.
         seed:       common-random-numbers seed for variance reduction.
 
     Returns:
@@ -259,9 +228,7 @@ def build_control_spec(
         n_inner=n_inner, n_steps=n_steps, dt=dt,
         n_substeps=n_substeps,
         schedule_from_theta=schedule_from_theta,
-        T_floor=T_floor,
-        lam_h=lam_h, lam_n=lam_n, lam_c=lam_c,
-        lam_T_floor=lam_T_floor, seed=seed,
+        seed=seed,
     )
 
     spec = ControlSpec(

@@ -139,8 +139,6 @@ def _build_swat_control_spec(*, dyn_params: dict, init_state: np.ndarray,
         n_inner=64,
         n_substeps=4,
         sigma_prior=1.5,
-        T_floor=0.05,
-        lam_h=0.01, lam_n=0.01, lam_c=0.001, lam_T_floor=1.0,
         seed=42,
     )
     # Override the spec's truth_params + init_state with posterior-derived values
