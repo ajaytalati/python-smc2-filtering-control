@@ -403,6 +403,86 @@ Reuse psim's test patterns + scenario presets:
 
 This Phase 3 is the "massive achievement" the user named.
 
+## Future work — principled identifiability reparametrization (NOT current Phase 3)
+
+The current SWAT estimation.py pins `tau_T = 2.0 days` and
+`lambda_amp_Z = 8.0` in FROZEN_PARAMS to break two structural
+identifiability degeneracies surfaced by Repo C's FIM analysis
+(rank 24/27 → 25/25 after pinning). **Pinning is a lazy fix.** The
+principled fix is to reparametrize the model so the redundant
+directions don't exist.
+
+### Reparametrization plan (Repo A model-level change)
+
+**1. Stuart-Landau time-rate absorption**
+
+Current drift:
+```
+dT/dt = (mu_0 + mu_E * E) * T / tau_T  -  eta * T**3 / tau_T
+```
+
+Reparametrized:
+```
+dT/dt = mu_0_tilde * T  +  mu_E_tilde * E * T  -  eta_tilde * T**3
+```
+with `mu_0_tilde := mu_0 / tau_T`, etc. Three parameters instead
+of four; tau_T disappears entirely as a meaningful parameter.
+Mirrors the FSA-v2 G1 reparametrization pattern (kappa_B^eff,
+mu_F^eff, etc.).
+
+**2. Entrainment-amplitude V_h response collapse**
+
+Current:
+```
+A_W = lambda_amp_W * V_h    (independent gains)
+A_Z = lambda_amp_Z * V_h
+E ~ amp_W * amp_Z           (only the product is identifiable)
+```
+
+Reparametrized (assume symmetric V_h response):
+```
+A_W = lambda_amp * V_h
+A_Z = lambda_amp * V_h      (single gain)
+```
+
+One parameter instead of two. Defensible biologically — V_h is
+"general vitality reserve" and should boost both flip-flop sides
+equally.
+
+### Implementation sequence
+
+This is a **Repo A model change**, not just an estimation-side fix.
+Steps:
+
+1. Update `Python-Model-Development-Simulation/version_1/models/swat/_dynamics.py`
+   drift formula and `simulation.py:PARAM_SET_*` truth values.
+2. Re-run Repo C `identifiability/swat/compute_fim.py` to confirm
+   the reparametrized model is full rank (no pins needed).
+3. Re-run Repo B (psim) consistency tests + regenerate Sets A/B/C/D
+   outputs.
+4. Update the bundled tag in
+   `Python-Model-Validation/snapshots/manifest.json`.
+5. Re-pull SWAT into our port at the new validated tag; remove
+   `tau_T` and `lambda_amp_Z` from FROZEN_PARAMS, no replacement
+   priors needed (the reparametrization eliminated them).
+
+### Why this is deferred
+
+Doing the reparametrization properly affects every consumer of
+SWAT — Repo A, Repo B (psim), Repo C (validation), our SMC²-MPC
+port, and the OT-Control engine. It needs careful staged rollout.
+
+For Phase 3 validation in the SMC²-MPC framework, the **pinning
+approach is sufficient** because:
+- The FIM is full rank (25/25) under pinning.
+- mu_0 and mu_E are individually identifiable, which is what the
+  F_max-from-data experiment requires.
+- All downstream consumers see the same pinned values
+  (they're already in Repo A's PARAM_SET_A truths).
+
+The pinning gets us across the line for Phase 3. The reparametrization
+is what we'd ship before publication.
+
 ## Out of scope
 
 - **Phase 4 multi-subject E_crit validation** (recover E_crit
