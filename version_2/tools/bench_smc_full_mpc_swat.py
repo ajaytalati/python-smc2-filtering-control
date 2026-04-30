@@ -148,14 +148,63 @@ def _build_swat_control_spec(*, dyn_params: dict, init_state: np.ndarray,
     return spec
 
 
+def _pop_scenario_from_argv() -> str:
+    """Parse --scenario {pathological, set_A}; default 'pathological'.
+
+    pathological:  the most challenging cold-start. Patient walks in
+                    with V_h=0 (no vitality), V_n=4 (max chronic load),
+                    V_c=12 (max phase shift), T_0=0 (testosterone
+                    collapsed). Controller must bring all four states
+                    back. Worse than psim Set C (which only collapsed T).
+    set_A:         healthy baseline. V_h=1, V_n=0.3, V_c=0, T_0=0.5.
+                    Used for sanity checks; the controller has little
+                    work to do here.
+    """
+    if '--scenario' in sys.argv:
+        i = sys.argv.index('--scenario')
+        if i + 1 >= len(sys.argv):
+            raise SystemExit("--scenario requires a value")
+        val = sys.argv[i + 1]
+        del sys.argv[i:i + 2]
+        if val not in ('pathological', 'set_A'):
+            raise SystemExit(f"--scenario must be 'pathological' or 'set_A'")
+        return val
+    return 'pathological'
+
+
+# Scenario presets — patient state at trial start + the pre-controller
+# (status quo) control levels. The controller takes over after the
+# warm-up window and picks new schedules.
+SCENARIO_CONFIGS = {
+    'pathological': {
+        'init_state':   np.array([0.5, 3.5, 0.5, 0.0], dtype=np.float64),
+        'baseline_v_h': 0.0,
+        'baseline_v_n': 4.0,
+        'baseline_v_c': 12.0,
+    },
+    'set_A': {
+        'init_state':   np.array([0.5, 3.5, 0.5, 0.5], dtype=np.float64),
+        'baseline_v_h': 1.0,
+        'baseline_v_n': 0.3,
+        'baseline_v_c': 0.0,
+    },
+}
+
+
 def main():
     # CLI: argv[1] = T_total_days (default 14); argv[2] = run_name override
+    SCENARIO = _pop_scenario_from_argv()
     T_total_days = int(sys.argv[1]) if len(sys.argv) > 1 else 14
     run_name_override = sys.argv[2] if len(sys.argv) > 2 else None
     REPLAN_EVERY_K = _replan_K_for_horizon(T_total_days)
 
+    sc = SCENARIO_CONFIGS[SCENARIO]
     print("=" * 76)
-    print(f"  SWAT closed-loop SMC²-MPC (T = {T_total_days} d)")
+    print(f"  SWAT closed-loop SMC²-MPC (T = {T_total_days} d, "
+          f"scenario = {SCENARIO})")
+    if SCENARIO == 'pathological':
+        print(f"  Pathological cold-start: T_0=0, V_h=0, V_n=4, V_c=12 (max).")
+        print(f"  Controller must drive recovery across the bifurcation.")
     print("=" * 76)
 
     from models.swat._plant import StepwisePlant
@@ -198,17 +247,21 @@ def main():
     print()
 
     # ── Initialize plant ──
-    plant = StepwisePlant(seed_offset=42)
+    plant = StepwisePlant(seed_offset=42, state=sc['init_state'].copy())
 
-    # Default operating-point schedules (V_h=1, V_n=0.3, V_c=0)
-    daily_v_h_baseline = 1.0
-    daily_v_n_baseline = 0.3
-    daily_v_c_baseline = 0.0
+    daily_v_h_baseline = sc['baseline_v_h']
+    daily_v_n_baseline = sc['baseline_v_n']
+    daily_v_c_baseline = sc['baseline_v_c']
 
     daily_v_h_plan = np.full(T_total_days, daily_v_h_baseline, dtype=np.float64)
     daily_v_n_plan = np.full(T_total_days, daily_v_n_baseline, dtype=np.float64)
     daily_v_c_plan = np.full(T_total_days, daily_v_c_baseline, dtype=np.float64)
     last_replan_stride = 0
+
+    print(f"  init state (W,Z,a,T) = {tuple(sc['init_state'])}")
+    print(f"  pre-controller / counterfactual baseline: "
+          f"V_h={daily_v_h_baseline}, V_n={daily_v_n_baseline}, "
+          f"V_c={daily_v_c_baseline}h")
 
     # Accumulators (SWAT-specific obs structure)
     accumulated_obs = {
@@ -467,13 +520,15 @@ def main():
 
     total_elapsed = time.time() - total_t0
 
-    # ── Counterfactual baseline (constant V_h=1, V_n=0.3, V_c=0) ──
+    # ── Counterfactual baseline (status-quo controls held constant) ──
     print()
-    print(f"  Running counterfactual baseline (constant V_h=1, V_n=0.3, V_c=0) ...")
+    print(f"  Running counterfactual baseline ("
+          f"constant V_h={daily_v_h_baseline}, "
+          f"V_n={daily_v_n_baseline}, V_c={daily_v_c_baseline}) ...")
     traj_full = np.concatenate(full_traj)
     n_total_bins = traj_full.shape[0]
     n_days_baseline = (n_total_bins + BINS_PER_DAY - 1) // BINS_PER_DAY
-    plant_b = StepwisePlant(seed_offset=42)
+    plant_b = StepwisePlant(seed_offset=42, state=sc['init_state'].copy())
     plant_b.advance(n_days_baseline * BINS_PER_DAY,
                      np.full(n_days_baseline, daily_v_h_baseline),
                      np.full(n_days_baseline, daily_v_n_baseline),
@@ -510,7 +565,8 @@ def main():
 
     # ── Save outputs ──
     h_suffix = f"_h{int(_STEP_MINUTES)}min"
-    auto_run_name = f"swat_T{T_total_days}d_replanK{REPLAN_EVERY_K}{h_suffix}"
+    auto_run_name = (f"swat_T{T_total_days}d_replanK{REPLAN_EVERY_K}"
+                      f"{h_suffix}_{SCENARIO}")
     run_name = run_name_override if run_name_override else auto_run_name
     run_dir = f"outputs/swat/swat_runs/{run_name}"
     os.makedirs(run_dir, exist_ok=True)
