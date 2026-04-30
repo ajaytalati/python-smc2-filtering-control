@@ -154,6 +154,7 @@ def main():
         make_gk_dpf_v3_lite_log_density_compileonce,
     )
     from smc2fc.control import SMCControlConfig, run_tempered_smc_loop
+    from smc2fc.control.tempered_smc_loop import run_tempered_smc_loop_native
 
     truth = dict(DEFAULT_PARAMS)
     em = HIGH_RES_FSA_V2_ESTIMATION
@@ -377,7 +378,7 @@ def main():
                 dyn_params=dyn_params, init_state=smoothed_state,
                 plan_horizon_days=T_total_days,
             )
-            res_ctrl = run_tempered_smc_loop(
+            res_ctrl = run_tempered_smc_loop_native(
                 spec=spec, cfg=ctrl_cfg, seed=42 + s,
                 print_progress=False,
             )

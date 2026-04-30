@@ -38,6 +38,128 @@ from smc2fc.control.control_spec import ControlSpec
 from smc2fc.control.calibration import calibrate_beta_max
 
 
+def run_tempered_smc_loop_native(
+    *,
+    spec: ControlSpec,
+    cfg: SMCControlConfig,
+    seed: int = 42,
+    print_progress: bool = True,
+) -> dict:
+    """Stage M mirror for the controller side.
+
+    Mirrors `run_tempered_smc_loop` but routes through the JAX-native
+    tempered SMC kernel (smc2fc.core.jax_native_smc), which compiles
+    once at module load and reuses the trace across replans. Closes
+    the per-replan ~15s recompile that was the controller-side
+    counterpart to the filter-side BlackJAX issue.
+
+    Same return-dict contract as the BlackJAX version.
+    """
+    if spec.cost_fn is None:
+        raise ValueError(f"ControlSpec {spec.name!r} has no cost_fn")
+    if spec.theta_dim <= 0:
+        raise ValueError(f"ControlSpec {spec.name!r} has theta_dim={spec.theta_dim}")
+
+    from smc2fc.core.jax_native_smc import _run_tempered_chain_jit
+
+    cost_fn = spec.cost_fn
+
+    # 1. β_max calibration (unchanged from BlackJAX path)
+    beta_max, prior_cost_mean, prior_cost_std = calibrate_beta_max(
+        cost_fn,
+        theta_dim=spec.theta_dim,
+        sigma_prior=spec.sigma_prior,
+        prior_mean=spec.prior_mean,
+        n_samples=cfg.n_calibration_samples,
+        target_nats=cfg.beta_max_target_nats,
+        seed=seed,
+    )
+    if print_progress:
+        print(f"  prior cost mean = {prior_cost_mean:.3f}, "
+              f"std = {prior_cost_std:.3f}")
+        print(f"  beta_max (auto) = {beta_max:.4f}")
+
+    # 2. Pytree-stable Partial-wrapped logprior + loglikelihood.
+    sigma_prior = float(spec.sigma_prior)
+    prior_mean = jnp.asarray(spec.prior_mean, dtype=jnp.float64)
+
+    def _logprior_inner(sigma, mean, theta):
+        return jnp.sum(
+            -0.5 * ((theta - mean) / sigma) ** 2
+            - jnp.log(sigma) - 0.5 * jnp.log(2.0 * jnp.pi)
+        )
+
+    logprior_fn = jax.tree_util.Partial(
+        _logprior_inner, jnp.float64(sigma_prior), prior_mean,
+    )
+
+    def _loglikelihood_inner(beta, cost_callable, theta):
+        return -beta * cost_callable(theta)
+
+    loglikelihood_fn = jax.tree_util.Partial(
+        _loglikelihood_inner, jnp.float64(beta_max), cost_fn,
+    )
+
+    # 3. Initial particle cloud — drawn from prior.
+    rng_key = jax.random.PRNGKey(seed + 17)
+    rng_key, sub = jax.random.split(rng_key)
+    init_particles = (
+        prior_mean[None, :]
+        + sigma_prior * jax.random.normal(
+            sub, (cfg.n_smc, spec.theta_dim), dtype=jnp.float64,
+        )
+    )
+
+    if print_progress:
+        print(f"  starting tempered SMC (native): θ ∈ ℝ^{spec.theta_dim}, "
+              f"N_SMC={cfg.n_smc}, N_inner={cfg.n_inner}, "
+              f"n_steps={spec.n_steps}")
+
+    # 4. Run native chain — single jitted call.
+    t0 = time.time()
+    final_particles, n_temp = _run_tempered_chain_jit(
+        init_particles, logprior_fn, loglikelihood_fn,
+        rng_key,
+        jnp.float64(cfg.target_ess_frac),
+        jnp.float64(cfg.max_lambda_inc),
+        int(cfg.num_mcmc_steps),
+        jnp.float64(cfg.hmc_step_size),
+        int(cfg.hmc_num_leapfrog),
+    )
+    final_particles.block_until_ready()
+    elapsed = time.time() - t0
+
+    particles = np.asarray(final_particles)
+    mean_theta = particles.mean(axis=0)
+
+    particle_costs = np.asarray(jax.vmap(cost_fn)(jnp.asarray(particles)))
+
+    if spec.schedule_from_theta is not None:
+        mean_schedule = np.asarray(
+            spec.schedule_from_theta(jnp.asarray(mean_theta))
+        )
+    else:
+        mean_schedule = None
+
+    if print_progress:
+        print(f"  done: n_temp={int(n_temp)}, elapsed={elapsed:.1f}s, "
+              f"mean cost ≈ {float(particle_costs.mean()):.3f}")
+
+    return {
+        'particles':       particles,
+        'particle_costs':  particle_costs,
+        'mean_theta':      mean_theta,
+        'mean_schedule':   mean_schedule,
+        'beta_max':        beta_max,
+        'prior_cost_mean': prior_cost_mean,
+        'prior_cost_std':  prior_cost_std,
+        'n_temp_levels':   int(n_temp),
+        'elapsed_s':       float(elapsed),
+        'spec':            spec,
+        'cfg':             cfg,
+    }
+
+
 def run_tempered_smc_loop(
     *,
     spec: ControlSpec,
