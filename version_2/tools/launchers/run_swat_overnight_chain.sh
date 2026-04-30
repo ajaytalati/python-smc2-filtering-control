@@ -27,17 +27,21 @@ cd "$REPO/version_2" || { echo "REPO not found"; exit 1; }
 
 export JAX_ENABLE_X64=True
 export PYTHONPATH=.:..
-export XLA_PYTHON_CLIENT_MEM_FRACTION=0.60
+export XLA_PYTHON_CLIENT_MEM_FRACTION=0.85    # raised from 0.60 — solo overnight, no compositor competition
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export JAX_COMPILATION_CACHE_DIR="$HOME/.jax_compilation_cache"
 export FSA_STEP_MINUTES=15
 
-# ── 0. Wait for FSA T=84 sweep to exit ──
-echo "[$(date '+%H:%M:%S')] Waiting for tmux session 't84' to exit..."
-while tmux has-session -t t84 2>/dev/null; do
-    sleep 60
-done
-echo "[$(date '+%H:%M:%S')] T=84 done. Starting SWAT chain."
+# ── 0. Wait for FSA T=84 sweep to exit (only if it's currently running) ──
+if tmux has-session -t t84 2>/dev/null; then
+    echo "[$(date '+%H:%M:%S')] Waiting for tmux session 't84' to exit..."
+    while tmux has-session -t t84 2>/dev/null; do
+        sleep 60
+    done
+    echo "[$(date '+%H:%M:%S')] T=84 done. Starting SWAT chain."
+else
+    echo "[$(date '+%H:%M:%S')] No t84 session — starting SWAT chain immediately."
+fi
 
 run_one() {
     local label=$1
