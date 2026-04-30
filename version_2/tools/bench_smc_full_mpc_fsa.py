@@ -78,16 +78,17 @@ DT           = 1.0 / BINS_PER_DAY
 
 
 def _replan_K_for_horizon(T_total_days: int) -> int:
-    """Daily replan for short horizons; weekly for longer horizons.
+    """Daily replan at all horizons (K=2, every 12h stride doubled).
 
-    Compute scales linearly with `n_replans × controller_compute(T_total)`,
-    so keeping replans bounded prevents the T=84 run blowing past the
-    GPU budget. Daily (K=2) at T=14 = 13 replans; weekly (K=14) at
-    T=84 = 12 replans (still meaningfully closed-loop).
+    Stage M-controller made replans ~5s each (vs 30-60s pre-M), so
+    weekly replan (K=14) is no longer needed to fit the GPU budget.
+    Daily replan refreshes the SF-bridge handoff every day, which
+    avoids the multi-week posterior drift that caused the pre-M T=28
+    catastrophic failure (ratio 0.569, F-violation 75%).
+
+    Always K=2 → daily-cadence closed loop, regardless of horizon.
     """
-    if T_total_days <= 14:
-        return 2     # daily (every 12h stride doubled)
-    return 14        # weekly
+    return 2
 
 
 def _hmc_step_for_horizon(T_total_days: int) -> float:
@@ -201,12 +202,13 @@ def main():
     # F1+F2: SF Path B-fixed bridge — fixes Gaussian-bridge mid-period
     # drift that caused E3 18/27 and E5 3/26 coverage. Reference:
     # smc2-blackjax-rolling 27/27 PASS at 98.5% on FSA-v2.
-    # Stage J5: bigger batches now that dispatch overhead is closed
-    # (Stage M filter+controller, Stage N plant). With 4 GB / 32 GB used
-    # at N=128/K=200, we have ~28 GB of GPU memory headroom — bump to
-    # fatten the kernels until they actually saturate the SMs.
+    # Stage J5+: bigger batches now that dispatch overhead is closed.
+    # n_smc=1024 (8× original) + n_pf=400 (2× original) — pushes power
+    # draw toward 400-500W TDP and gives the SF-bridge q0 fit a much
+    # richer particle cloud (more bridge-handoff stability, the actual
+    # mechanism that broke pre-M T=28).
     smc_cfg = SMCConfig(
-        n_smc_particles=512, n_pf_particles=400,
+        n_smc_particles=1024, n_pf_particles=400,
         target_ess_frac=0.5, max_lambda_inc=0.10,
         bridge_type='schrodinger_follmer',
         sf_q1_mode='annealed',
@@ -225,7 +227,7 @@ def main():
     # at T=84 where step had to drop from 0.30 to 0.05).
     hmc_step_ctrl = _hmc_step_for_horizon(T_total_days)
     ctrl_cfg = SMCControlConfig(
-        n_smc=512, n_inner=64, sigma_prior=1.5,
+        n_smc=1024, n_inner=64, sigma_prior=1.5,
         target_ess_frac=0.5, max_lambda_inc=0.10,
         num_mcmc_steps=10, hmc_step_size=hmc_step_ctrl, hmc_num_leapfrog=16,
         beta_max_target_nats=8.0, max_temp_steps=30,
