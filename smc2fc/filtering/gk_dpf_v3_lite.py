@@ -56,6 +56,273 @@ from smc2fc.transforms.unconstrained import (
 )
 
 
+def make_gk_dpf_v3_lite_log_density_compileonce(
+        model: EstimationModel,
+        n_particles: int = 500,
+        bandwidth_scale: float = 1.0,
+        ot_ess_frac: float = 0.05,
+        ot_temperature: float = 5.0,
+        ot_max_weight: float = 0.01,
+        ot_rank: int = 5,
+        ot_n_iter: int = 2,
+        ot_epsilon: float = 0.5,
+        dt: float = 5.0 / 60.0,
+        t_steps: int = 24,
+) -> Callable:
+    """Stage L1-deep: compile-once factory for the GK-DPF v3-lite log density.
+
+    Returns ``log_density(u, grid_obs, fixed_init_state, w_start, key0)``
+    as a STABLE jitted function. Build it ONCE at bench setup; per-stride,
+    wrap it via ``jax.tree_util.Partial(log_density, grid_obs, fixed_init,
+    w_start, key0)`` to give BlackJAX a callable that has ``f(u)`` semantics
+    but whose JAX trace cache hits across strides (because the bound args
+    are pytree leaves with stable shapes/dtypes).
+
+    Static config (n_particles, bandwidth_scale, OT params, dt, t_steps,
+    model) is captured in closure. Dynamic per-stride data (grid_obs,
+    fixed_init_state, w_start, key0) is passed as arguments.
+    """
+    if model.propagate_fn is None or model.obs_log_weight_fn is None:
+        raise ValueError(
+            f"Model '{model.name}' must provide propagate_fn and "
+            f"obs_log_weight_fn for GK-DPF v3-lite.")
+
+    K       = int(n_particles)
+    sqrt_dt = jnp.sqrt(jnp.float64(dt))
+    n_s     = model.n_states
+
+    stochastic_idx_list = list(model.stochastic_indices)
+    n_st                = len(stochastic_idx_list)
+    bw_scale            = jnp.float64(bandwidth_scale)
+    log_K               = jnp.log(jnp.float64(K))
+    K_float             = jnp.float64(K)
+
+    ot_threshold    = jnp.float64(K * ot_ess_frac)
+    ot_temp         = jnp.float64(ot_temperature)
+    ot_max          = jnp.float64(ot_max_weight)
+
+    _ot_rank    = int(ot_rank)
+    _ot_n_iter  = int(ot_n_iter)
+    _ot_epsilon = float(ot_epsilon)
+
+    T_arr = build_transform_arrays(model)
+
+    sys_offsets = jnp.arange(K, dtype=jnp.float64) / K_float
+    silverman_factor = (4.0 / (n_st + 2.0)) ** (1.0 / (n_st + 4.0))
+    k_factor         = K ** (-1.0 / (n_st + 4.0))
+
+    @jax.jit
+    def log_density(u, grid_obs, fixed_init_state, w_start, key0):
+        theta = unconstrained_to_constrained(u, T_arr)
+        params = theta[:model.n_params]
+        init = fixed_init_state
+        sigma_diag = model.diffusion_fn(params)
+
+        exogenous = {k: grid_obs[k] for k in model.exogenous_keys}
+        base = model.shard_init_fn(w_start, params, exogenous, init)
+        key0_l, ik = jax.random.split(key0)
+        noise_init = jax.random.normal(ik, (K, n_s))
+        particles = base[None, :] + sigma_diag[None, :] * sqrt_dt * noise_init
+        for i, (lo, hi) in enumerate(model.state_bounds):
+            particles = particles.at[:, i].set(
+                jnp.clip(particles[:, i], lo, hi))
+
+        log_w_init = jnp.zeros(K, dtype=u.dtype)
+
+        # Stage K f32 inputs (cast once, used inside scan)
+        params_f32 = params.astype(jnp.float32)
+        sigma_diag_f32 = sigma_diag.astype(jnp.float32)
+        grid_obs_f32 = jax.tree_util.tree_map(
+            lambda v: v.astype(jnp.float32)
+                       if (hasattr(v, 'dtype')
+                            and jnp.issubdtype(v.dtype, jnp.floating))
+                       else v, grid_obs)
+
+        @jax.checkpoint
+        def _core_step(particles, log_w, key, k):
+            key, kp, kn, kr = jax.random.split(key, 4)
+            rk = jax.random.fold_in(key, jnp.int32(7))
+            t = jnp.asarray((w_start + k) * dt, dtype=jnp.float32)
+
+            noise = jax.random.normal(kn, (K, n_s), dtype=jnp.float32)
+            particles_f32 = particles.astype(jnp.float32)
+
+            def _propagate_one(y, xi):
+                x_new, pred_lw = model.propagate_fn(
+                    y, t, dt, params_f32, grid_obs_f32, k,
+                    sigma_diag_f32, xi, kp)
+                obs_lw = model.obs_log_weight_fn(
+                    x_new, grid_obs_f32, k, params_f32)
+                return x_new, pred_lw + obs_lw
+
+            new_particles_f32, step_lw_f32 = jax.vmap(
+                _propagate_one)(particles_f32, noise)
+            new_particles = new_particles_f32.astype(u.dtype)
+            step_lw = step_lw_f32.astype(u.dtype)
+            log_w_pre = log_w + step_lw
+
+            lik_inc = (jax.nn.logsumexp(log_w_pre)
+                       - jax.nn.logsumexp(log_w))
+
+            has_obs = grid_obs.get(
+                'has_any_obs',
+                jnp.ones(t_steps, dtype=u.dtype))[k]
+
+            log_w_norm = log_w_pre - jax.nn.logsumexp(log_w_pre)
+            weights = jnp.exp(log_w_norm)
+            cumsum = jnp.cumsum(weights)
+            u_shift = jax.random.uniform(kr, (), dtype=u.dtype) / K_float
+            u_points = sys_offsets + u_shift
+            indices = jnp.searchsorted(cumsum, u_points)
+            indices = jnp.clip(indices, 0, K - 1)
+            resampled = new_particles[indices]
+
+            ess = compute_ess(log_w_pre)
+            ess_frac = jnp.clip(ess / K_float, 0.0, 1.0)
+            ess_factor = (1.0 - ess_frac) ** 2
+            effective_scale = bw_scale * ess_factor
+
+            h_norm = silverman_factor * k_factor * effective_scale
+            a = jnp.sqrt(jnp.clip(1.0 - h_norm ** 2, 0.0, 1.0))
+
+            mu_w = jnp.sum(weights[:, None] * new_particles, axis=0)
+            sys_lw = a * resampled + (1.0 - a) * mu_w[None, :]
+
+            return new_particles, log_w_pre, lik_inc, sys_lw, has_obs, key, rk
+
+        def scan_step(carry, k):
+            particles, log_w, ll_acc, key = carry
+            (new_particles, log_w_pre, lik_inc, sys_lw,
+             has_obs, key, rk) = _core_step(particles, log_w, key, k)
+
+            if ot_max_weight >= 1e-6:
+                ot_raw = ot_resample_lr(
+                    new_particles, log_w_pre, rk,
+                    stochastic_indices=stochastic_idx_list,
+                    epsilon=_ot_epsilon, n_iter=_ot_n_iter, rank=_ot_rank)
+                ot_valid = jnp.isfinite(ot_raw) & (jnp.abs(ot_raw) <= 1e10)
+                ot_safe = jnp.where(ot_valid, ot_raw, sys_lw)
+                for i, (lo, hi) in enumerate(model.state_bounds):
+                    ot_safe = ot_safe.at[:, i].set(
+                        jnp.clip(ot_safe[:, i], lo, hi))
+                ot_out = jax.lax.stop_gradient(ot_safe)
+                ess = compute_ess(log_w_pre)
+                ot_weight = ot_max * jax.nn.sigmoid(
+                    (ot_threshold - ess) / ot_temp)
+                resampled = (1.0 - ot_weight) * sys_lw + ot_weight * ot_out
+            else:
+                resampled = sys_lw
+
+            particles_next = jnp.where(has_obs > 0.5, resampled, new_particles)
+            log_w_next = jnp.where(
+                has_obs > 0.5, jnp.zeros(K, dtype=u.dtype), log_w_pre)
+
+            for i, (lo, hi) in enumerate(model.state_bounds):
+                particles_next = particles_next.at[:, i].set(
+                    jnp.clip(particles_next[:, i], lo, hi))
+
+            return (particles_next, log_w_next, ll_acc + lik_inc, key), None
+
+        init_carry = (particles, log_w_init,
+                      jnp.zeros((), dtype=u.dtype), key0_l)
+        (_, lw_final, total_ll, _), _ = jax.lax.scan(
+            scan_step, init_carry, jnp.arange(t_steps))
+
+        total_ll = total_ll + jax.nn.logsumexp(lw_final) - log_K
+        lp = log_prior_unconstrained(u, T_arr)
+        return total_ll + lp
+
+    @jax.jit
+    def extract_state_at_step(u, grid_obs, fixed_init_state, w_start,
+                               key0, target_step):
+        theta = unconstrained_to_constrained(u, T_arr)
+        params = theta[:model.n_params]
+        init = fixed_init_state
+        sigma_diag = model.diffusion_fn(params)
+
+        exogenous = {k: grid_obs[k] for k in model.exogenous_keys}
+        base = model.shard_init_fn(w_start, params, exogenous, init)
+        key0_l, ik = jax.random.split(key0)
+        noise_init = jax.random.normal(ik, (K, n_s))
+        particles = base[None, :] + sigma_diag[None, :] * sqrt_dt * noise_init
+        for i, (lo, hi) in enumerate(model.state_bounds):
+            particles = particles.at[:, i].set(
+                jnp.clip(particles[:, i], lo, hi))
+        log_w_init = jnp.zeros(K, dtype=u.dtype)
+
+        params_f32 = params.astype(jnp.float32)
+        sigma_diag_f32 = sigma_diag.astype(jnp.float32)
+        grid_obs_f32 = jax.tree_util.tree_map(
+            lambda v: v.astype(jnp.float32)
+                       if (hasattr(v, 'dtype')
+                            and jnp.issubdtype(v.dtype, jnp.floating))
+                       else v, grid_obs)
+
+        def scan_step_extract(carry, k):
+            parts, log_w, saved_parts, saved_lw, key = carry
+            key, sk, kr = jax.random.split(key, 3)
+            noise = jax.random.normal(sk, (K, n_s), dtype=jnp.float32)
+            parts_f32 = parts.astype(jnp.float32)
+
+            def _prop_one(y, xi):
+                t_step = jnp.asarray((w_start + k) * dt, dtype=jnp.float32)
+                x_new, pred_lw = model.propagate_fn(
+                    y, t_step, dt, params_f32, grid_obs_f32, k,
+                    sigma_diag_f32, xi, None)
+                obs_lw = model.obs_log_weight_fn(
+                    x_new, grid_obs_f32, k, params_f32)
+                return x_new, pred_lw + obs_lw
+
+            new_parts_f32, step_lw_f32 = jax.vmap(_prop_one)(parts_f32, noise)
+            new_parts = new_parts_f32.astype(u.dtype)
+            step_lw = step_lw_f32.astype(u.dtype)
+            log_w_pre = log_w + step_lw
+
+            has_obs = grid_obs.get(
+                'has_any_obs',
+                jnp.ones(t_steps, dtype=u.dtype))[k]
+
+            log_w_norm = log_w_pre - jax.nn.logsumexp(log_w_pre)
+            weights = jnp.exp(log_w_norm)
+            cumsum = jnp.cumsum(weights)
+            u_shift = jax.random.uniform(kr, (), dtype=u.dtype) / K_float
+            u_points = sys_offsets + u_shift
+            indices = jnp.searchsorted(cumsum, u_points)
+            indices = jnp.clip(indices, 0, K - 1)
+            resampled = new_parts[indices]
+
+            particles_next = jnp.where(has_obs > 0.5, resampled, new_parts)
+            log_w_next = jnp.where(
+                has_obs > 0.5, jnp.zeros(K, dtype=u.dtype), log_w_pre)
+
+            for i, (lo, hi) in enumerate(model.state_bounds):
+                particles_next = particles_next.at[:, i].set(
+                    jnp.clip(particles_next[:, i], lo, hi))
+
+            at_target = (k == target_step)
+            saved_parts = jnp.where(at_target, particles_next, saved_parts)
+            saved_lw = jnp.where(at_target, log_w_next, saved_lw)
+
+            return (particles_next, log_w_next,
+                    saved_parts, saved_lw, key), None
+
+        init_carry = (particles, log_w_init,
+                      jnp.zeros_like(particles), jnp.zeros_like(log_w_init),
+                      key0_l)
+        (_, _, saved_particles, saved_log_w, _), _ = jax.lax.scan(
+            scan_step_extract, init_carry, jnp.arange(t_steps))
+
+        w = jax.nn.softmax(saved_log_w)
+        state_est = jnp.sum(w[:, None] * saved_particles, axis=0)
+        return state_est
+
+    log_density.extract_state_at_step = extract_state_at_step
+    log_density._transforms = T_arr
+    log_density._model = model
+    log_density._method = 'gk_dpf_v3_lite_compileonce'
+    return log_density
+
+
 def make_gk_dpf_v3_lite_log_density(
         model: EstimationModel,
         grid_obs: Dict[str, Array],

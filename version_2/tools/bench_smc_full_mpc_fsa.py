@@ -144,7 +144,10 @@ def main():
     from smc2fc.core.config import SMCConfig
     from smc2fc.core.tempered_smc import run_smc_window, run_smc_window_bridge
     from smc2fc.transforms.unconstrained import unconstrained_to_constrained
-    from smc2fc.filtering.gk_dpf_v3_lite import make_gk_dpf_v3_lite_log_density
+    from smc2fc.filtering.gk_dpf_v3_lite import (
+        make_gk_dpf_v3_lite_log_density,
+        make_gk_dpf_v3_lite_log_density_compileonce,
+    )
     from smc2fc.control import SMCControlConfig, run_tempered_smc_loop
 
     truth = dict(DEFAULT_PARAMS)
@@ -224,6 +227,22 @@ def main():
     fixed_init_state = COLD_START_INIT
     all_results = []
 
+    # Stage L1-deep: build the GK-DPF v3-lite log_density factory ONCE
+    # before the per-stride loop. The returned function takes per-stride
+    # data (grid_obs, fixed_init_state, w_start, key0) as ARGUMENTS, so
+    # JAX's JIT cache hits across strides instead of recompiling each time.
+    log_density_factory = make_gk_dpf_v3_lite_log_density_compileonce(
+        model=em, n_particles=smc_cfg.n_pf_particles,
+        bandwidth_scale=smc_cfg.bandwidth_scale,
+        ot_ess_frac=smc_cfg.ot_ess_frac,
+        ot_temperature=smc_cfg.ot_temperature,
+        ot_max_weight=smc_cfg.ot_max_weight,
+        ot_rank=smc_cfg.ot_rank, ot_n_iter=smc_cfg.ot_n_iter,
+        ot_epsilon=smc_cfg.ot_epsilon,
+        dt=DT, t_steps=WINDOW_BINS,
+    )
+    T_arr = log_density_factory._transforms
+
     total_t0 = time.time()
 
     for s in range(n_strides):
@@ -272,17 +291,20 @@ def main():
         window_obs = extract_window(obs_data_full, start_bin, end_bin)
 
         grid_obs = em.align_obs_fn(window_obs, WINDOW_BINS, DT)
-        ld = make_gk_dpf_v3_lite_log_density(
-            model=em, grid_obs=grid_obs, n_particles=smc_cfg.n_pf_particles,
-            bandwidth_scale=smc_cfg.bandwidth_scale,
-            ot_ess_frac=smc_cfg.ot_ess_frac, ot_temperature=smc_cfg.ot_temperature,
-            ot_max_weight=smc_cfg.ot_max_weight,
-            ot_rank=smc_cfg.ot_rank, ot_n_iter=smc_cfg.ot_n_iter,
-            ot_epsilon=smc_cfg.ot_epsilon,
-            dt=DT, seed=42 + s,
-            fixed_init_state=fixed_init_state, window_start_bin=int(start_bin),
+
+        # Stage L1-deep: bind per-stride dynamic data to the compile-once
+        # factory via jax.tree_util.Partial. The Partial is a stable JAX
+        # pytree -> the underlying jitted function's cache hits across
+        # strides (no per-stride recompile of the SDE scan).
+        key0_stride = jax.random.PRNGKey(42 + s * 1000)
+        w_start_arr = jnp.asarray(start_bin, dtype=jnp.int32)
+        ld = jax.tree_util.Partial(
+            log_density_factory,
+            grid_obs=grid_obs,
+            fixed_init_state=fixed_init_state,
+            w_start=w_start_arr,
+            key0=key0_stride,
         )
-        T_arr = ld._transforms
 
         if prev_particles is None:
             print(f"filter (cold)... ", end='', flush=True)
@@ -310,14 +332,21 @@ def main():
         print(f"{n_temp_f}lvl/{elapsed_f:.0f}s, id={n_id_covered}/6 ", end='', flush=True)
 
         # Smoothed end-of-window state (for next window's PF init AND control plan).
-        # J1b: vmap over the n_extract particles instead of running n_extract
-        # separate scan launches — 1 batched kernel vs 10. Same numerical
-        # result (mean of n_extract per-particle estimates).
+        # J1b + L1-deep: vmap-batched extract via the compile-once factory.
+        # The Partial wrapper carries the same dynamic data as the bridge
+        # log_density above, so the cache hits.
         n_extract = min(10, particles_unc.shape[0])
         us_extract = jnp.asarray(particles_unc[:n_extract])
-        states = jax.vmap(
-            lambda u: ld.extract_state_at_step(u, STRIDE_BINS)
-        )(us_extract)
+        target_step_arr = jnp.asarray(STRIDE_BINS, dtype=jnp.int32)
+        extract_partial = jax.tree_util.Partial(
+            log_density_factory.extract_state_at_step,
+            grid_obs=grid_obs,
+            fixed_init_state=fixed_init_state,
+            w_start=w_start_arr,
+            key0=key0_stride,
+            target_step=target_step_arr,
+        )
+        states = jax.vmap(extract_partial)(us_extract)
         smoothed_state = np.asarray(jnp.mean(states, axis=0))
         fixed_init_state = jnp.array(smoothed_state)
         prev_particles = particles_unc
