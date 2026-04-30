@@ -202,13 +202,17 @@ def main():
     # F1+F2: SF Path B-fixed bridge — fixes Gaussian-bridge mid-period
     # drift that caused E3 18/27 and E5 3/26 coverage. Reference:
     # smc2-blackjax-rolling 27/27 PASS at 98.5% on FSA-v2.
-    # Stage J5+: bigger batches now that dispatch overhead is closed.
-    # n_smc=1024 (8× original) + n_pf=400 (2× original) — pushes power
-    # draw toward 400-500W TDP and gives the SF-bridge q0 fit a much
-    # richer particle cloud (more bridge-handoff stability, the actual
-    # mechanism that broke pre-M T=28).
+    # Stage J5++: prioritise n_pf (inner PF particles) since that's the
+    # accuracy lever for the marginal log-likelihood estimate per θ.
+    # PF estimate variance ~1/K. With K=400 the PF was noisy enough to
+    # affect HMC acceptance and SF-bridge q1 fit stability; K=1600 gives
+    # 4x lower variance per estimate, much smoother log-density surface
+    # for HMC, and tighter q0/q1 covariances in the bridge fit.
+    # n_smc=1024 (outer) for posterior coverage, n_pf=1600 (inner) for
+    # accuracy. Memory: 1024*1600 = 1.6M particle slots, ~480 MB —
+    # well within the 32 GB budget.
     smc_cfg = SMCConfig(
-        n_smc_particles=1024, n_pf_particles=400,
+        n_smc_particles=1024, n_pf_particles=1600,
         target_ess_frac=0.5, max_lambda_inc=0.10,
         bridge_type='schrodinger_follmer',
         sf_q1_mode='annealed',
@@ -227,7 +231,7 @@ def main():
     # at T=84 where step had to drop from 0.30 to 0.05).
     hmc_step_ctrl = _hmc_step_for_horizon(T_total_days)
     ctrl_cfg = SMCControlConfig(
-        n_smc=1024, n_inner=64, sigma_prior=1.5,
+        n_smc=1024, n_inner=128, sigma_prior=1.5,
         target_ess_frac=0.5, max_lambda_inc=0.10,
         num_mcmc_steps=10, hmc_step_size=hmc_step_ctrl, hmc_num_leapfrog=16,
         beta_max_target_nats=8.0, max_temp_steps=30,
