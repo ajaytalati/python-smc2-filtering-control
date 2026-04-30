@@ -103,20 +103,56 @@ set to `XLA_PYTHON_CLIENT_MEM_FRACTION=0.40` in `run_horizon.sh` so
 even if one process tries to grow past 8 GB, it can't starve the
 others.
 
-**Honest speedup expectation**: GPU utilization is already 97-99 %
-*inside* a kernel during a single-process run. The parallelism only
-fills the inter-stride idle gaps (100-200 W, ~30-40 % of wall). Three
-parallel horizons therefore give roughly **1.5-2× aggregate speedup**,
-not 3×. Realistic delta vs sequential T=42→T=56→T=84:
+**Empirical speedup result (2026-04-30 measurement)**: the
+parallelism does **not** pay off for this workload.
 
-| | sequential | 3 in parallel |
+What we expected:
+- GPU utilization is already 97-99 % *inside* a kernel during a
+  single-process run.
+- The parallelism would fill the inter-stride idle gaps (100-200 W,
+  ~30-40 % of wall) → ~1.5-2× aggregate speedup, individual runs
+  ~30 % slower.
+
+What we actually measured running T=42 + T=56 + T=84 in parallel:
+
+| | solo | 3-way parallel |
 |---|---|---|
-| total wall to all-3-done | ~7 hours | ~3.5-4 hours |
-| each individual run | normal speed | ~30 % slower |
+| T=42 stride wall | 43 s | **122 s** (2.84× slower) |
+| T=56/T=84 cold compile | ~110 s | **311 s** (2.83× slower) |
+| GPU memory used | 8 GB | **25.7 GB / 32 GB** |
+| GPU power | 340 W | 290-340 W (no aggregate gain) |
+| aggregate throughput | 1.0× (1 process) | 3 / 2.84 = **1.05×** (3 processes) |
 
-The trade-off — slowing each individual run to gain aggregate wall —
-is correct for "I want all the results sooner". It's wrong for "I want
-this one specific run as fast as possible".
+In other words, every process gets slowed by 2.8× — almost exactly
+matching N processes contending for a single GPU. There is **no net
+wall-clock speedup**. Total wall-to-all-3-done is identical to
+sequential.
+
+Why the prediction failed:
+- **Host-side XLA compiler thread contention**: cold compile is
+  CPU-bound, not GPU-bound. 3 processes hit cold compile near
+  simultaneously and each one takes 2.8× longer.
+- **CUDA driver kernel-launch serialization**: time-slicing of kernels
+  on a single context is not as efficient as I assumed. The 5090's
+  in-kernel utilization was already near-saturating, so there's no
+  spare SM time to fill — only spare host time, which is what the
+  XLA compile uses.
+
+Memory was also a real concern: 25.7 GB / 32 GB total ran the
+compositor uncomfortably close to OOM during the 3-way parallel.
+
+**Bottom line**: for *this* SMC² workload on *this* GPU, run horizons
+sequentially. The multi-process pattern in this section is left
+documented because it remains the right answer when:
+- the per-process working set is small (e.g. CPU-bound problems, or
+  small models that leave more SM idle time),
+- different processes have asynchronous compile timing (e.g. they
+  start hours apart and don't all hit cold compile together),
+- you genuinely need cross-seed runs that benefit from shared
+  `JAX_COMPILATION_CACHE_DIR`.
+
+For the FSA-v2 closed-loop bench at n_smc=1024 / n_pf=800, **launch
+sequentially**. T=42→T=56→T=84 in serial is the right pattern.
 
 **Cold-compile sharing**: `JAX_COMPILATION_CACHE_DIR` is set in
 `run_horizon.sh`, so the 3 processes share a single on-disk HLO cache.
