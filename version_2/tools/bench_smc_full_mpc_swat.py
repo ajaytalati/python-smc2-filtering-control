@@ -223,34 +223,39 @@ def main():
         n_pf_particles=800,
         target_ess_frac=0.5,
         max_lambda_inc=0.5,
-        n_mcmc_steps=5,
+        num_mcmc_steps=5,
         hmc_step_size=0.2,
         hmc_num_leapfrog=10,
-        sf_n_stages=3,
-        sf_n_mh=5,
+        sf_annealed_n_stages=3,
+        sf_annealed_n_mh_steps=5,
         sf_blend=0.7,
         sf_entropy_reg=0.0,
         sf_info_aware=False,
-        seed=42,
+        bridge_type='schrodinger_follmer',
+        sf_q1_mode='annealed',
     )
 
     ctrl_cfg = SMCControlConfig(
         n_smc=1024, n_inner=128,
         target_ess_frac=0.5, max_lambda_inc=0.5,
-        n_mcmc_steps=5,
+        num_mcmc_steps=5,
         hmc_step_size=_hmc_step_for_horizon(T_total_days),
         hmc_num_leapfrog=10,
-        seed=42,
     )
 
     # ── Compile-once log_density factory ──
     log_density_factory = make_gk_dpf_v3_lite_log_density_compileonce(
         model=em,
         n_particles=smc_cfg.n_pf_particles,
-        bandwidth_scale=1.0,
-        dt=DT,
-        t_steps=WINDOW_BINS,
+        bandwidth_scale=smc_cfg.bandwidth_scale,
+        ot_ess_frac=smc_cfg.ot_ess_frac,
+        ot_temperature=smc_cfg.ot_temperature,
+        ot_max_weight=smc_cfg.ot_max_weight,
+        ot_rank=smc_cfg.ot_rank, ot_n_iter=smc_cfg.ot_n_iter,
+        ot_epsilon=smc_cfg.ot_epsilon,
+        dt=DT, t_steps=WINDOW_BINS,
     )
+    T_arr = log_density_factory._transforms
 
     # Filter state across strides
     fixed_init_state = COLD_START_INIT
@@ -260,11 +265,7 @@ def main():
     total_t0 = time.time()
 
     for s in range(n_strides):
-        start_bin = s * STRIDE_BINS
-        end_bin = start_bin + WINDOW_BINS
-
-        if end_bin > T_total_days * BINS_PER_DAY:
-            break
+        print(f"  Stride {s+1:>2}/{n_strides}: ", end='', flush=True)
 
         # ── 1. Plant advances ──
         # Apply the day-of-plan controls (relative to last replan)
@@ -273,7 +274,7 @@ def main():
         v_n_today = float(daily_v_n_plan[day_in_plan])
         v_c_today = float(daily_v_c_plan[day_in_plan])
 
-        # Two-day window for advance (covers the stride + warm-up of next)
+        # Two-day window for advance (covers the stride + safety margin)
         n_days_advance = 2
         v_h_arr = np.full(n_days_advance, v_h_today)
         v_n_arr = np.full(n_days_advance, v_n_today)
@@ -282,8 +283,6 @@ def main():
         if s == 0:
             # First stride: advance a full WINDOW (so the first window has data)
             obs_stride = plant.advance(WINDOW_BINS, v_h_arr, v_n_arr, v_c_arr)
-            print(f"  Stride {s+1:>2}/{n_strides}: warm-up "
-                  f"(first window populated)", flush=True)
         else:
             obs_stride = plant.advance(STRIDE_BINS, v_h_arr, v_n_arr, v_c_arr)
 
@@ -293,62 +292,80 @@ def main():
         daily_v_c_per_stride.append(v_c_today)
 
         # Append per-stride obs to the global accumulators
-        for ch_name in ('obs_HR', 'obs_sleep', 'obs_steps', 'obs_stress',
-                         'V_h', 'V_n', 'V_c'):
-            for key, arr in obs_stride[ch_name].items():
-                if key == 'bin_hours':
-                    accumulated_obs[ch_name]['bin_hours'] = arr
-                    continue
-                accumulated_obs[ch_name].setdefault(key, []).extend(
-                    np.asarray(arr).tolist() if hasattr(arr, '__iter__')
-                    else [arr])
+        for ch in ('obs_HR', 'obs_stress'):
+            accumulated_obs[ch]['t_idx'].append(obs_stride[ch]['t_idx'])
+            accumulated_obs[ch]['obs_value'].append(obs_stride[ch]['obs_value'])
+        accumulated_obs['obs_sleep']['t_idx'].append(obs_stride['obs_sleep']['t_idx'])
+        accumulated_obs['obs_sleep']['obs_label'].append(obs_stride['obs_sleep']['obs_label'])
+        accumulated_obs['obs_steps']['t_idx'].append(obs_stride['obs_steps']['t_idx'])
+        accumulated_obs['obs_steps']['obs_count'].append(obs_stride['obs_steps']['obs_count'])
+        for ch in ('V_h', 'V_n', 'V_c'):
+            accumulated_obs[ch]['t_idx'].append(obs_stride[ch]['t_idx'])
+            accumulated_obs[ch]['value'].append(obs_stride[ch]['value'])
 
-        if s == 0:
-            # No filter / control yet — first window is just warm-up
+        # Define this window's bin range (LAST WINDOW_BINS up to current t_bin)
+        end_bin = plant.t_bin
+        start_bin = max(0, end_bin - WINDOW_BINS)
+
+        if end_bin - start_bin < WINDOW_BINS:
+            print(f"warm-up (window not full yet)", flush=True)
             continue
 
         # ── 2. Filter the window ──
-        window_obs = extract_window(accumulated_obs, start_bin, end_bin)
+        # Concatenate per-stride accumulators into a single dict per channel
+        obs_data_full = {}
+        for ch in accumulated_obs:
+            obs_data_full[ch] = {'t_idx': np.concatenate(
+                [np.asarray(a) for a in accumulated_obs[ch]['t_idx']])}
+            for key in accumulated_obs[ch]:
+                if key == 't_idx':
+                    continue
+                val = accumulated_obs[ch][key]
+                if isinstance(val, list):
+                    obs_data_full[ch][key] = np.concatenate(
+                        [np.asarray(a) for a in val])
+                else:
+                    obs_data_full[ch][key] = val      # bin_hours scalar
+        window_obs = extract_window(obs_data_full, start_bin, end_bin)
         # Pre-align to grid (numpy)
-        grid_obs_np = em.align_obs_fn(window_obs, t_steps=WINDOW_BINS, dt=DT)
+        grid_obs = em.align_obs_fn(window_obs, t_steps=WINDOW_BINS, dt=DT)
+        # Convert numpy arrays to jnp for the factory
         grid_obs = {k: jnp.asarray(v) if isinstance(v, np.ndarray)
-                          else jnp.float64(v)
-                     for k, v in grid_obs_np.items()}
-        w_start_arr = jnp.asarray(np.random.RandomState(42 + s).randn(
-            smc_cfg.n_pf_particles, em.n_states), dtype=jnp.float64)
-        key0_stride = jax.random.PRNGKey(42 + s)
+                          else jnp.float64(v) if isinstance(v, float)
+                          else v
+                     for k, v in grid_obs.items()}
 
-        log_density = jax.tree_util.Partial(
-            log_density_factory.log_density,
+        # w_start is a SCALAR start_bin index (per FSA bench convention)
+        w_start_arr = jnp.asarray(start_bin, dtype=jnp.int32)
+        key0_stride = jax.random.PRNGKey(42 + s * 1000)
+
+        ld = jax.tree_util.Partial(
+            log_density_factory,
             grid_obs=grid_obs,
             fixed_init_state=fixed_init_state,
             w_start=w_start_arr,
             key0=key0_stride,
         )
 
-        filter_t0 = time.time()
         if prev_particles is None:
-            print(f"  Stride {s+1:>2}/{n_strides}: filter (cold/native)... ",
-                  end='', flush=True)
-            res_f = run_smc_window_native(
-                log_density=log_density, cfg=smc_cfg, em=em,
-                seed=42 + s,
+            print(f"filter (cold/native)... ", end='', flush=True)
+            particles_unc, elapsed_f, n_temp_f = run_smc_window_native(
+                ld, em, T_arr, cfg=smc_cfg,
+                initial_particles=None, seed=42 + s * 1000,
             )
         else:
-            print(f"  Stride {s+1:>2}/{n_strides}: filter (bridge/native)... ",
-                  end='', flush=True)
-            res_f = run_smc_window_bridge_native(
-                log_density=log_density, cfg=smc_cfg, em=em,
-                prev_particles_unc=prev_particles,
-                seed=42 + s,
+            print(f"filter (bridge/native)... ", end='', flush=True)
+            particles_unc, elapsed_f, n_temp_f = run_smc_window_bridge_native(
+                new_ld=ld, prev_particles=prev_particles,
+                model=em, T_arr=T_arr, cfg=smc_cfg,
+                seed=42 + s * 1000,
             )
-        elapsed_f = time.time() - filter_t0
-        n_temp_f = res_f['n_temp_levels']
-        particles_unc = res_f['particles_unc']  # (n_smc, theta_dim)
 
         # Convert to constrained for posterior summaries
-        particles = np.asarray(jax.vmap(
-            lambda u: unconstrained_to_constrained(u, em))(particles_unc))
+        particles = np.array([
+            np.asarray(unconstrained_to_constrained(jnp.asarray(p), T_arr))
+            for p in np.asarray(particles_unc)
+        ])
 
         # id-coverage check (does posterior 5/95% interval cover truth?)
         n_id_covered = sum(
@@ -523,9 +540,21 @@ def main():
         json.dump(manifest, f, indent=2)
 
     # Data npz
-    posterior_particles = np.stack([
-        r['particles_constrained'] for r in all_results
-    ]) if all_results else np.zeros((0, 0, 0))
+    # Build posterior_particles with shape (n_strides, n_smc, n_params).
+    # Strides where the filter ran (s >= 1 in our pattern) get real
+    # posteriors; warm-up stride (s=0) gets zeros + mask=False.
+    if all_results:
+        n_smc, n_params = all_results[0]['particles_constrained'].shape
+        posterior_particles = np.zeros(
+            (n_strides, n_smc, n_params), dtype=np.float32)
+        posterior_window_mask = np.zeros(n_strides, dtype=bool)
+        for r in all_results:
+            posterior_particles[r['stride']] = r['particles_constrained']
+            posterior_window_mask[r['stride']] = True
+    else:
+        posterior_particles = np.zeros((n_strides, 1, len(em.all_names)),
+                                        dtype=np.float32)
+        posterior_window_mask = np.zeros(n_strides, dtype=bool)
 
     np.savez(f"{run_dir}/data.npz",
               trajectory_mpc=traj_full,
@@ -533,7 +562,8 @@ def main():
               daily_v_h_per_stride=np.asarray(daily_v_h_per_stride),
               daily_v_n_per_stride=np.asarray(daily_v_n_per_stride),
               daily_v_c_per_stride=np.asarray(daily_v_c_per_stride),
-              posterior_particles=posterior_particles)
+              posterior_particles=posterior_particles,
+              posterior_window_mask=posterior_window_mask)
 
     # Auto-plot: latents + 3-control schedule
     fig, axes = plt.subplots(2, 2, figsize=(14, 9))
