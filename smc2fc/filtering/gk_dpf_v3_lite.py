@@ -173,7 +173,11 @@ def make_gk_dpf_v3_lite_log_density(
     # rolling driver passes the actual window's start_bin for w >= 1
     # so that t-of-day-dependent dynamics see global time, not within-
     # window time. fsa_high_res ignores both via `del t` and `del time_offset`.
-    _w_start = jnp.int32(window_start_bin)
+    # Stage L1: ensure these are JAX arrays (not Python ints) so JIT
+    # doesn't specialise on concrete value -> XLA cache hits across strides.
+    _w_start = jnp.asarray(window_start_bin, dtype=jnp.int32)
+    _seed_key = (seed if isinstance(seed, jax.Array)
+                  else jax.random.PRNGKey(int(seed)))
 
     @jax.jit
     def log_density(u):
@@ -183,8 +187,9 @@ def make_gk_dpf_v3_lite_log_density(
         sigma_diag   = model.diffusion_fn(params)
 
         base      = model.shard_init_fn(_w_start, params, exogenous, init)
-        key0      = jax.random.PRNGKey(seed)
-        key0, ik  = jax.random.split(key0)
+        # Stage L1: use the JAX-array seed key from closure (not a fresh
+        # PRNGKey(int) which would specialise on the Python int).
+        key0, ik  = jax.random.split(_seed_key)
         noise_init = jax.random.normal(ik, (K, n_s))
         particles  = base[None, :] + sigma_diag[None, :] * sqrt_dt * noise_init
         for i, (lo, hi) in enumerate(model.state_bounds):
@@ -348,8 +353,8 @@ def make_gk_dpf_v3_lite_log_density(
         sigma_diag = model.diffusion_fn(params)
 
         base   = model.shard_init_fn(_w_start, params, exogenous, init)
-        key0   = jax.random.PRNGKey(seed)
-        key0, ik = jax.random.split(key0)
+        # Stage L1: same seed-key reuse as log_density above.
+        key0, ik = jax.random.split(_seed_key)
         noise_init = jax.random.normal(ik, (K, n_s))
         particles  = base[None, :] + sigma_diag[None, :] * sqrt_dt * noise_init
         for i, (lo, hi) in enumerate(model.state_bounds):
