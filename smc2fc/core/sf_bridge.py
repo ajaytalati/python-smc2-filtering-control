@@ -231,51 +231,73 @@ def estimate_target_gaussian_annealed(
     particles = jnp.asarray(prev_particles, dtype=jnp.float64)
     N, d = particles.shape
     K = int(n_stages)
+    n_mh = int(n_mh_steps)
+    inv_K = 1.0 / K
 
     # One initial new_ld eval so MH ratios at stage 1 have a baseline.
     log_p_curr = jax.vmap(new_ld_fn)(particles)
 
-    n_eff_min = float(N)
-    accept_sum = 0.0
-    accept_count = 0
+    # Stage J2: two-level lax.scan replaces the Python double loop. The
+    # 30 separately-launched vmap(new_ld_fn) calls in the original code
+    # (3 stages * 5 MH * 2 evaluations) collapse to one fused kernel
+    # (one outer scan over stages, one inner scan over MH steps,
+    # both jit-traced under the wrapper below).
 
-    for k in range(1, K + 1):
-        # 1. Reweight by (1/K) * new_ld and resample
-        log_w_unnorm = (1.0 / K) * log_p_curr
+    def mh_inner_body(mh_carry, _):
+        particles, log_p, key, acc_sum, beta_k, L_prop = mh_carry
+        key, sub_n, sub_u = jax.random.split(key, 3)
+        noise = jax.random.normal(sub_n, particles.shape, dtype=jnp.float64)
+        proposals = particles + noise @ L_prop.T
+        log_p_prop = jax.vmap(new_ld_fn)(proposals)
+        log_alpha = beta_k * (log_p_prop - log_p_curr)
+        log_u = jnp.log(jax.random.uniform(sub_u, (N,), dtype=jnp.float64))
+        accept = log_u < log_alpha
+        particles = jnp.where(accept[:, None], proposals, particles)
+        log_p_new = jnp.where(accept, log_p_prop, log_p_curr)
+        acc_sum = acc_sum + jnp.mean(accept.astype(jnp.float64))
+        return (particles, log_p_new, key, acc_sum, beta_k, L_prop), None
+
+    def stage_body(stage_carry, k):
+        particles, log_p_curr, key, n_eff_min, acc_sum_total = stage_carry
+
+        # 1. Reweight by (1/K) * new_ld and resample (multinomial).
+        log_w_unnorm = inv_K * log_p_curr
         log_w_norm = log_w_unnorm - jax.scipy.special.logsumexp(log_w_unnorm)
         w = jnp.exp(log_w_norm)
-        n_eff = float(1.0 / jnp.sum(w ** 2))
-        n_eff_min = min(n_eff_min, n_eff)
+        n_eff_stage = 1.0 / jnp.sum(w ** 2)
+        n_eff_min = jnp.minimum(n_eff_min, n_eff_stage)
 
-        rng_key, sub = jax.random.split(rng_key)
-        idx = jax.random.choice(sub, N, shape=(N,), p=w)   # multinomial; cheap
+        key, sub = jax.random.split(key)
+        idx = jax.random.choice(sub, N, shape=(N,), p=w)
         particles = particles[idx]
         log_p_curr = log_p_curr[idx]
 
-        # 2. RW-MH at temperature beta_k = k/K with empirical-cov proposal
-        beta_k = k / K
+        # 2. RW-MH at temperature beta_k = (k+1)/K (k iterates 0..K-1)
+        beta_k = (k + 1).astype(jnp.float64) * inv_K
         emp_cov = jnp.cov(particles.T) + 1e-6 * jnp.eye(d)
         L_prop = jnp.linalg.cholesky(proposal_scale ** 2 * emp_cov)
 
-        for _ in range(n_mh_steps):
-            rng_key, sub_n, sub_u = jax.random.split(rng_key, 3)
-            noise = jax.random.normal(sub_n, particles.shape, dtype=jnp.float64)
-            proposals = particles + noise @ L_prop.T
-            log_p_prop = jax.vmap(new_ld_fn)(proposals)
-            log_alpha = beta_k * (log_p_prop - log_p_curr)
-            log_u = jnp.log(jax.random.uniform(sub_u, (N,), dtype=jnp.float64))
-            accept = log_u < log_alpha
-            particles = jnp.where(accept[:, None], proposals, particles)
-            log_p_curr = jnp.where(accept, log_p_prop, log_p_curr)
-            accept_sum += float(jnp.mean(accept.astype(jnp.float64)))
-            accept_count += 1
+        init_mh = (particles, log_p_curr, key, jnp.float64(0.0),
+                   beta_k, L_prop)
+        (particles, log_p_curr, key, acc_sum_stage, _, _), _ = jax.lax.scan(
+            mh_inner_body, init_mh, None, length=n_mh)
+
+        acc_sum_total = acc_sum_total + acc_sum_stage
+        return (particles, log_p_curr, key,
+                n_eff_min, acc_sum_total), None
+
+    init_stage = (particles, log_p_curr, rng_key,
+                   jnp.float64(N),    # n_eff_min start
+                   jnp.float64(0.0))  # acc_sum total
+    (particles, log_p_curr, _, n_eff_min_dev, acc_sum_total), _ = jax.lax.scan(
+        stage_body, init_stage, jnp.arange(K))
 
     m1 = jnp.mean(particles, axis=0)
     diffs = particles - m1[None, :]
     S1_raw = diffs.T @ diffs / N
     S1 = S1_raw + 1e-4 * jnp.eye(d)
-    accept_mean = accept_sum / max(accept_count, 1)
-    return m1, S1, n_eff_min, accept_mean
+    accept_mean = float(acc_sum_total / float(K * n_mh))
+    return m1, S1, float(n_eff_min_dev), accept_mean
 
 
 # ─────────────────────────────────────────────────────────────────────

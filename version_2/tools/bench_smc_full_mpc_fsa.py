@@ -298,14 +298,16 @@ def main():
         )
         print(f"{n_temp_f}lvl/{elapsed_f:.0f}s, id={n_id_covered}/6 ", end='', flush=True)
 
-        # Smoothed end-of-window state (for next window's PF init AND control plan)
+        # Smoothed end-of-window state (for next window's PF init AND control plan).
+        # J1b: vmap over the n_extract particles instead of running n_extract
+        # separate scan launches — 1 batched kernel vs 10. Same numerical
+        # result (mean of n_extract per-particle estimates).
         n_extract = min(10, particles_unc.shape[0])
-        extracted = []
-        for ei in range(n_extract):
-            u_draw = jnp.array(particles_unc[ei])
-            st = ld.extract_state_at_step(u_draw, STRIDE_BINS)
-            extracted.append(np.array(st))
-        smoothed_state = np.mean(extracted, axis=0)
+        us_extract = jnp.asarray(particles_unc[:n_extract])
+        states = jax.vmap(
+            lambda u: ld.extract_state_at_step(u, STRIDE_BINS)
+        )(us_extract)
+        smoothed_state = np.asarray(jnp.mean(states, axis=0))
         fixed_init_state = jnp.array(smoothed_state)
         prev_particles = particles_unc
 

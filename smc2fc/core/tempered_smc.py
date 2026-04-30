@@ -161,7 +161,11 @@ def run_smc_window(full_log_density, model, T_arr, cfg: SMCConfig,
     rng_key = jax.random.PRNGKey(seed + 123)
     step_idx = 0
     t0 = time.time()
-    prev_lam = 0.0
+
+    # Stage J1a: defer per-step printing-only syncs. We keep the
+    # control-flow-required floats (while-condition, delta clip, snap-to-1)
+    # but stash diagnostics as device arrays and drain them once at the end.
+    diag_buf = []   # list of {'lam_dev', 'delta', 'acc_dev', 'elapsed'}
 
     while float(state.tempering_param) < 1.0:
         rng_key, step_key = jax.random.split(rng_key)
@@ -192,25 +196,33 @@ def run_smc_window(full_log_density, model, T_arr, cfg: SMCConfig,
             jnp.float64(next_lam), mcmc_parameters)
         inv_mass = estimate_mass_matrix(state.particles)
 
-        lam = float(state.tempering_param)
         step_idx += 1
-        actual_delta = lam - prev_lam
-        prev_lam = lam
-
         try:
-            acc = float(jnp.mean(info.update_info.acceptance_rate))
+            acc_dev = jnp.mean(info.update_info.acceptance_rate)
         except Exception:
-            acc = float('nan')
-
-        elapsed = time.time() - t0
-        compile_note = " (JIT)" if step_idx == 1 else ""
-        print(f"      step {step_idx:3d}  lam={lam:.6f}  "
-              f"d={actual_delta:.4f}  acc={acc:.3f}  "
-              f"[{elapsed:.0f}s{compile_note}]",
-              flush=True)
+            acc_dev = jnp.float64('nan')
+        diag_buf.append({
+            'lam_dev':   state.tempering_param,
+            'delta':     delta,
+            'acc_dev':   acc_dev,
+            'elapsed':   time.time() - t0,
+        })
 
     elapsed = time.time() - t0
     particles = np.array(jax.device_get(state.particles))
+
+    # Drain the diagnostics buffer in one pass — single batched sync.
+    prev_lam = 0.0
+    for i, d in enumerate(diag_buf):
+        lam = float(d['lam_dev'])
+        acc = float(d['acc_dev'])
+        actual_delta = lam - prev_lam
+        prev_lam = lam
+        compile_note = " (JIT)" if i == 0 else ""
+        print(f"      step {i + 1:3d}  lam={lam:.6f}  "
+              f"d={actual_delta:.4f}  acc={acc:.3f}  "
+              f"[{d['elapsed']:.0f}s{compile_note}]",
+              flush=True)
     return particles, elapsed, step_idx
 
 
@@ -396,13 +408,15 @@ def run_smc_window_bridge(new_ld, prev_particles, model, T_arr,
     rng_key = jax.random.PRNGKey(seed + 123)
     step_idx = 0
     t0 = time.time()
-    prev_lam = 0.0
 
+    # Stage J1a: same per-step-sync deferral as run_smc_window. The
+    # initial incr_ll diagnostic is queued (not synced) so the first
+    # tempering kernel can dispatch in parallel with it being formatted.
     incr_ll_init = jax.vmap(loglikelihood_fn)(initial_particles)
-    incr_var_init = float(jnp.var(incr_ll_init))
-    incr_range_init = float(jnp.max(incr_ll_init) - jnp.min(incr_ll_init))
-    print(f"      Bridge init: incr_ll var={incr_var_init:.1f} "
-          f"range={incr_range_init:.1f}", flush=True)
+    incr_var_init_dev = jnp.var(incr_ll_init)
+    incr_range_init_dev = jnp.max(incr_ll_init) - jnp.min(incr_ll_init)
+
+    diag_buf = []   # list of {'lam_dev', 'delta', 'acc_dev', 'incr_var_dev', 'elapsed'}
 
     while float(state.tempering_param) < 1.0:
         rng_key, step_key = jax.random.split(rng_key)
@@ -433,27 +447,37 @@ def run_smc_window_bridge(new_ld, prev_particles, model, T_arr,
             jnp.float64(next_lam), mcmc_parameters)
         inv_mass = estimate_mass_matrix(state.particles)
 
-        lam = float(state.tempering_param)
         step_idx += 1
-        actual_delta = lam - prev_lam
-        prev_lam = lam
-
         try:
-            acc = float(jnp.mean(info.update_info.acceptance_rate))
+            acc_dev = jnp.mean(info.update_info.acceptance_rate)
         except Exception:
-            acc = float('nan')
-
-        incr_ll = jax.vmap(loglikelihood_fn)(state.particles)
-        incr_var = float(jnp.var(incr_ll))
-
-        elapsed = time.time() - t0
-        compile_note = " (JIT)" if step_idx == 1 else ""
-        print(f"      step {step_idx:3d}  lam={lam:.6f}  "
-              f"d={actual_delta:.4f}  acc={acc:.3f}  "
-              f"incr_var={incr_var:.1f}  "
-              f"[{elapsed:.0f}s{compile_note}]",
-              flush=True)
+            acc_dev = jnp.float64('nan')
+        incr_var_dev = jnp.var(jax.vmap(loglikelihood_fn)(state.particles))
+        diag_buf.append({
+            'lam_dev':       state.tempering_param,
+            'delta':         delta,
+            'acc_dev':       acc_dev,
+            'incr_var_dev':  incr_var_dev,
+            'elapsed':       time.time() - t0,
+        })
 
     elapsed = time.time() - t0
     particles = np.array(jax.device_get(state.particles))
+
+    # Drain init-diagnostic + per-step buffers in one batched sync.
+    print(f"      Bridge init: incr_ll var={float(incr_var_init_dev):.1f} "
+          f"range={float(incr_range_init_dev):.1f}", flush=True)
+    prev_lam = 0.0
+    for i, d in enumerate(diag_buf):
+        lam = float(d['lam_dev'])
+        acc = float(d['acc_dev'])
+        incr_var = float(d['incr_var_dev'])
+        actual_delta = lam - prev_lam
+        prev_lam = lam
+        compile_note = " (JIT)" if i == 0 else ""
+        print(f"      step {i + 1:3d}  lam={lam:.6f}  "
+              f"d={actual_delta:.4f}  acc={acc:.3f}  "
+              f"incr_var={incr_var:.1f}  "
+              f"[{d['elapsed']:.0f}s{compile_note}]",
+              flush=True)
     return particles, elapsed, step_idx
