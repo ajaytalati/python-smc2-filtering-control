@@ -73,14 +73,35 @@ import matplotlib.pyplot as plt
 from models.swat.simulation import BINS_PER_DAY
 
 
-WINDOW_BINS  = BINS_PER_DAY        # 1 day
-STRIDE_BINS  = BINS_PER_DAY // 2   # 12 hours
-DT           = 1.0 / BINS_PER_DAY
+# ── SWAT-specific replan cadence (per user 2026-04-30) ──────────────
+# SWAT replans every 6 hours wall-clock, regardless of step_minutes.
+# Rationale: SWAT's fast subsystem (W, Z, a) has τ ~ 2-3 hours, and
+# the sleep/wake transitions that drive identifiability happen on
+# 30-60-minute timescales. Daily replan (FSA-v2's choice) is too
+# coarse — by the time the controller decides anything, the patient
+# has been through a full sleep/wake cycle. 6-hour replan lets the
+# controller adapt V_h, V_n, V_c within-day.
+#
+# Computed from wall-clock constants so the cadence holds across
+# step-minutes choices (h=5min, 15min, 1h all give 6h replan).
+
+STRIDE_HOURS  = 3.0     # 3-hour stride
+WINDOW_HOURS  = 24.0    # 1-day filter window
+REPLAN_HOURS  = 6.0     # replan every 6 hours wall-clock
+
+# Convert wall-clock to bin counts using the actual step_minutes.
+BINS_PER_HOUR = 60 // _STEP_MINUTES        # 4 at h=15min, 1 at h=1h, 12 at h=5min
+STRIDE_BINS   = int(round(STRIDE_HOURS * BINS_PER_HOUR))
+WINDOW_BINS   = int(round(WINDOW_HOURS * BINS_PER_HOUR))    # = BINS_PER_DAY
+DT            = 1.0 / BINS_PER_DAY
 
 
 def _replan_K_for_horizon(T_total_days: int) -> int:
-    """Daily replan (K=2 strides = 1 day) at all horizons."""
-    return 2
+    """Replan every K strides where K = REPLAN_HOURS / STRIDE_HOURS.
+
+    With STRIDE_HOURS=3, REPLAN_HOURS=6, K=2 strides → 6-hour replan.
+    """
+    return int(round(REPLAN_HOURS / STRIDE_HOURS))
 
 
 def _hmc_step_for_horizon(T_total_days: int) -> float:
@@ -238,12 +259,15 @@ def main():
 
     n_windows = (T_total_days * BINS_PER_DAY - WINDOW_BINS) // STRIDE_BINS + 1
     n_strides = n_windows
-    print(f"  device:   {jax.devices()[0].platform.upper()}")
-    print(f"  T_total:  {T_total_days} days")
-    print(f"  step:     {_STEP_MINUTES} min ({BINS_PER_DAY} bins/day)")
-    print(f"  windows:  {n_windows} (1-day, 12h stride)")
-    print(f"  replan:   every K={REPLAN_EVERY_K} stride(s) "
-          f"(≈ {REPLAN_EVERY_K * 0.5:.1f} day cadence)")
+    print(f"  device:    {jax.devices()[0].platform.upper()}")
+    print(f"  T_total:   {T_total_days} days")
+    print(f"  step:      {_STEP_MINUTES} min ({BINS_PER_DAY} bins/day, "
+          f"{BINS_PER_HOUR} bins/hour)")
+    print(f"  window:    {WINDOW_BINS} bins ({WINDOW_HOURS:.0f}h)")
+    print(f"  stride:    {STRIDE_BINS} bins ({STRIDE_HOURS:.0f}h)")
+    print(f"  windows:   {n_windows}")
+    print(f"  replan:    every K={REPLAN_EVERY_K} stride(s) "
+          f"= {REPLAN_EVERY_K * STRIDE_HOURS:.0f}h wall-clock")
     print()
 
     # ── Initialize plant ──
