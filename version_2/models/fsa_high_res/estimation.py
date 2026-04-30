@@ -235,7 +235,9 @@ def propagate_fn(y, t, dt, params, grid_obs, k,
     )
 
     # --- Sample from fused Gaussian posterior ---
-    P_safe = P_fused + 1e-10 * jnp.eye(3)
+    # Dtype-match jnp.eye to mu_prior so an FP32 hot-loop call stays FP32.
+    P_safe = P_fused + jnp.asarray(1e-10, dtype=P_fused.dtype) \
+                       * jnp.eye(3, dtype=P_fused.dtype)
     L = jnp.linalg.cholesky(P_safe)
     x_new = mu_fused + L @ noise
 

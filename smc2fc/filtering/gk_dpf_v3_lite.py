@@ -198,6 +198,20 @@ def make_gk_dpf_v3_lite_log_density(
         # OT computation lives OUTSIDE the checkpoint, so its forward
         # runs ONCE and intermediates are stored for backward.
 
+        # Stage K: dual precision — cast SDE-loop inputs to f32 once.
+        # Keeps every FP op inside propagate_fn (drift, diffusion, Kalman
+        # fusion, Cholesky, sampling) at FP32, where consumer Blackwell
+        # is ~64x faster than FP64. Log-weights stay in u.dtype (FP64)
+        # for log-domain reductions.
+        params_f32 = params.astype(jnp.float32)
+        sigma_diag_f32 = sigma_diag.astype(jnp.float32)
+        grid_obs_f32 = jax.tree_util.tree_map(
+            lambda v: v.astype(jnp.float32)
+                       if (hasattr(v, 'dtype')
+                            and jnp.issubdtype(v.dtype, jnp.floating))
+                       else v,
+            grid_obs)
+
         @jax.checkpoint
         def _core_step(particles, log_w, key, k):
             """Core PF: propagate, weight update, systematic+LW."""
@@ -205,17 +219,23 @@ def make_gk_dpf_v3_lite_log_density(
             rk = jax.random.fold_in(key, jnp.int32(7))
             # GLOBAL time = (window_start_bin + k) * dt — accurate
             # for time-of-day-dependent dynamics across rolling windows.
-            t = jnp.asarray((_w_start + k) * dt, dtype=u.dtype)
+            t = jnp.asarray((_w_start + k) * dt, dtype=jnp.float32)
 
-            noise = jax.random.normal(kn, (K, n_s))
+            noise = jax.random.normal(kn, (K, n_s), dtype=jnp.float32)
+            particles_f32 = particles.astype(jnp.float32)
 
             def _propagate_one(y, xi):
                 x_new, pred_lw = model.propagate_fn(
-                    y, t, dt, params, grid_obs, k, sigma_diag, xi, kp)
-                obs_lw = model.obs_log_weight_fn(x_new, grid_obs, k, params)
+                    y, t, dt, params_f32, grid_obs_f32, k,
+                    sigma_diag_f32, xi, kp)
+                obs_lw = model.obs_log_weight_fn(
+                    x_new, grid_obs_f32, k, params_f32)
                 return x_new, pred_lw + obs_lw
 
-            new_particles, step_lw = jax.vmap(_propagate_one)(particles, noise)
+            new_particles_f32, step_lw_f32 = jax.vmap(
+                _propagate_one)(particles_f32, noise)
+            new_particles = new_particles_f32.astype(u.dtype)
+            step_lw = step_lw_f32.astype(u.dtype)
             log_w_pre = log_w + step_lw
 
             lik_inc = (jax.nn.logsumexp(log_w_pre)
@@ -338,41 +358,34 @@ def make_gk_dpf_v3_lite_log_density(
 
         log_w_init = jnp.zeros(K, dtype=u.dtype)
 
+        # Stage K: same FP32-SDE casting as in log_density.
+        params_f32 = params.astype(jnp.float32)
+        sigma_diag_f32 = sigma_diag.astype(jnp.float32)
+        grid_obs_f32 = jax.tree_util.tree_map(
+            lambda v: v.astype(jnp.float32)
+                       if (hasattr(v, 'dtype')
+                            and jnp.issubdtype(v.dtype, jnp.floating))
+                       else v,
+            grid_obs)
+
         def scan_step_extract(carry, k):
             parts, log_w, saved_parts, saved_lw, key = carry
             key, sk, kr = jax.random.split(key, 3)
-            noise = jax.random.normal(sk, (K, n_s))
+            noise = jax.random.normal(sk, (K, n_s), dtype=jnp.float32)
+            parts_f32 = parts.astype(jnp.float32)
 
             def _prop_one(y, xi):
-                # BUG fix (2026-04-25): position 6 of propagate_fn is the
-                # step index `k`, not the particle-count constant `K`. The
-                # earlier signature `... grid_obs, K, sigma_diag ...` was
-                # silently producing out-of-bounds reads on grid_obs[T_B][k]
-                # (K=400 vs t_steps=96 in the high-res model), corrupting
-                # the extracted bridge state.
-                #
-                # BUG fix (2026-04-26 part 1): position 2 of propagate_fn
-                # is the time, not the bare step index `k`. Originally
-                # passed `t=k`; corrected to use a time computation.
-                #
-                # BUG fix (2026-04-26 part 2): the time MUST be the
-                # GLOBAL time `(_w_start + k) * dt` (where _w_start is
-                # the window's bin-offset), NOT the within-window
-                # `k * dt`. For models that compute time-of-day
-                # analytically (e.g. SWAT's ``C_eff = sin(2π(t - V_c)/24 + φ)``),
-                # within-window time resets the phase every window —
-                # producing the C-phase pathology familiar from the
-                # high_res_FSA postmortem. fsa_high_res unaffected
-                # because its propagate_fn does ``del t``.
-                t_step = jnp.asarray((_w_start + k) * dt, dtype=u.dtype)
+                t_step = jnp.asarray((_w_start + k) * dt, dtype=jnp.float32)
                 x_new, pred_lw = model.propagate_fn(
-                    y, t_step, dt, params, grid_obs, k,
-                    sigma_diag, xi, None)
+                    y, t_step, dt, params_f32, grid_obs_f32, k,
+                    sigma_diag_f32, xi, None)
                 obs_lw = model.obs_log_weight_fn(
-                    x_new, grid_obs, k, params)
+                    x_new, grid_obs_f32, k, params_f32)
                 return x_new, pred_lw + obs_lw
 
-            new_parts, step_lw = jax.vmap(_prop_one)(parts, noise)
+            new_parts_f32, step_lw_f32 = jax.vmap(_prop_one)(parts_f32, noise)
+            new_parts = new_parts_f32.astype(u.dtype)
+            step_lw = step_lw_f32.astype(u.dtype)
             log_w_pre = log_w + step_lw
 
             has_obs = grid_obs.get(
