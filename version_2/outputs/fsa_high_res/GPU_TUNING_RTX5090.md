@@ -64,6 +64,78 @@ Run benches in a tmux session whose ancestor is `bash`, **not**
 integrated terminal. The bench can then survive VS Code being closed
 or crashing.
 
+### A.4 Parallel-horizon multi-process (one GPU, multiple horizons)
+
+A single bench run uses ~8 GB of VRAM on the 5090's 32 GB and pulls
+~340 W of the ~575 W TDP cap during kernels — leaving **~24 GB and
+~50 % of TDP** unused. The simplest way to put that headroom to work
+is multi-process: launch independent bench processes (different `T`,
+or different seeds, or different model variants) in separate tmux
+sessions. Each grabs GPU memory lazily; the CUDA driver time-slices
+between their kernel launches.
+
+Three launchers ship with the repo at
+`version_2/tools/launchers/`:
+
+| script | purpose |
+|---|---|
+| `run_h1h_sweep.sh` | Sequential T=14 → T=28 → T=42/56/84 with the T=28 hard gate. |
+| `run_horizon.sh <T_days>` | Single-horizon launcher, parameterised by T. Designed to be run multiple times in parallel under different tmux sessions. |
+| `run_t42_only.sh` | Convenience wrapper for the T=42 single run. |
+
+Pattern for running 3 horizons in parallel from a clean GPU:
+
+```bash
+tmux new -s t42 -d "$REPO/version_2/tools/launchers/run_horizon.sh 42"
+tmux new -s t56 -d "$REPO/version_2/tools/launchers/run_horizon.sh 56"
+tmux new -s t84 -d "$REPO/version_2/tools/launchers/run_horizon.sh 84"
+tmux ls
+```
+
+Each tmux session writes its own log under `~/bench_logs/g4_t<T>_h1h_<stamp>.log`
+and its own checkpoint under
+`outputs/fsa_high_res/g4_runs/T<T>d_replanK2_h60min_no_infoaware/`.
+
+**Memory budget**: at current settings (n_smc=1024, n_pf=800), each
+process peaks at ~8 GB. Three processes ≈ 24 GB of 32 GB total, leaving
+~8 GB compositor headroom (verified empirically). Per-process cap is
+set to `XLA_PYTHON_CLIENT_MEM_FRACTION=0.40` in `run_horizon.sh` so
+even if one process tries to grow past 8 GB, it can't starve the
+others.
+
+**Honest speedup expectation**: GPU utilization is already 97-99 %
+*inside* a kernel during a single-process run. The parallelism only
+fills the inter-stride idle gaps (100-200 W, ~30-40 % of wall). Three
+parallel horizons therefore give roughly **1.5-2× aggregate speedup**,
+not 3×. Realistic delta vs sequential T=42→T=56→T=84:
+
+| | sequential | 3 in parallel |
+|---|---|---|
+| total wall to all-3-done | ~7 hours | ~3.5-4 hours |
+| each individual run | normal speed | ~30 % slower |
+
+The trade-off — slowing each individual run to gain aggregate wall —
+is correct for "I want all the results sooner". It's wrong for "I want
+this one specific run as fast as possible".
+
+**Cold-compile sharing**: `JAX_COMPILATION_CACHE_DIR` is set in
+`run_horizon.sh`, so the 3 processes share a single on-disk HLO cache.
+The first process to compile a given binary shape pays the ~110 s
+cold cost; the others read from cache (sub-10 s). Extends naturally
+to running cross-seed sweeps on the same T (each seed → its own tmux
+session; the seed only affects rng_key, not binary shape, so cache
+hits 100 %).
+
+**Watch the GPU** while running 3 parallel:
+
+```bash
+nvidia-smi --query-gpu=power.draw,utilization.gpu,memory.used --format=csv -l 2
+```
+
+Healthy pattern: power draws into 380-450 W (vs 340 W solo), util
+sustained at 99 %, memory ~24 GB. If memory > 28 GB, kill the
+weakest-priority horizon (`tmux kill-session -t t84`).
+
 ## B. JAX compilation discipline
 
 ### B.1 The BlackJAX closure problem (the dominant wall-clock cost)
