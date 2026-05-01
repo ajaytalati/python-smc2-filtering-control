@@ -235,11 +235,14 @@ def drift_jax(y, params, t, u):
 
 
 def diffusion_state_dep(y, params):
-    """SWAT diagonal diffusion — Jacobi for W, Z, a + sqrt-CIR for T.
+    """SWAT diagonal diffusion — Jacobi for W, Z, a + state-INDEP for T.
 
-    The W, Z, a states are now bounded in [0,1] with Jacobi diffusion
+    The W, Z, a states are bounded in [0,1] with Jacobi diffusion
     (vanishes at boundaries), matching FSA-v2's pattern for B. T uses
-    sqrt-CIR (vanishes only at lower boundary).
+    state-INDEPENDENT noise so the Stuart-Landau bifurcation is not
+    absorbing at T=0: the multiplicative drift (μT - ηT³) vanishes at
+    T=0, so we need additive Gaussian kicks to escape collapse from
+    the pathological cold-start (T_0=0).
 
     Args:
         y:      state (W, Z, a, T). Bounded states use Jacobi.
@@ -247,13 +250,12 @@ def diffusion_state_dep(y, params):
 
     Returns:
         Diagonal noise vector of shape (4,):
-            σ_W √(W(1-W)), σ_Z √(Z(1-Z)), σ_a √(a(1-a)), σ_T √T
+            σ_W √(W(1-W)), σ_Z √(Z(1-Z)), σ_a √(a(1-a)), σ_T
         where σ_i = √(2·T_i).
     """
     W = y[0]
     Z = y[1]
     a = y[2]
-    T = y[3]
     sigma_W = jnp.sqrt(2.0 * params['T_W'])
     sigma_Z = jnp.sqrt(2.0 * params['T_Z'])
     sigma_a = jnp.sqrt(2.0 * params['T_a'])
@@ -262,7 +264,7 @@ def diffusion_state_dep(y, params):
         sigma_W * jnp.sqrt(jnp.maximum(W * (1.0 - W), 0.0)),
         sigma_Z * jnp.sqrt(jnp.maximum(Z * (1.0 - Z), 0.0)),
         sigma_a * jnp.sqrt(jnp.maximum(a * (1.0 - a), 0.0)),
-        sigma_T * jnp.sqrt(jnp.maximum(T, 0.0)),
+        sigma_T * jnp.ones_like(W),
     ])
 
 
