@@ -304,13 +304,14 @@ def main():
     replan_history = []
 
     # ── SMC config ──
-    # Halved vs FSA-v2 (n_smc 1024→512, n_pf 800→400) because at
-    # h=15min SWAT has 4× more bins per window (96 vs 24), making
-    # the inner PF working set 4× larger. With the 60% GPU mem cap
-    # the FSA settings cause an OOM at the cold-compile stage.
+    # Quartered vs FSA-v2 because at h=15min SWAT has 4× more bins
+    # per window AND per controller-rollout horizon. Two OOM crashes
+    # at 512/400 (filter) and 512/64 (controller) for T=14 — the
+    # controller's MPC rollout at 1344 bins × 4 states needs the
+    # smaller particle count to fit the 32GB GPU.
     smc_cfg = SMCConfig(
-        n_smc_particles=512,
-        n_pf_particles=400,
+        n_smc_particles=256,
+        n_pf_particles=200,
         target_ess_frac=0.5,
         max_lambda_inc=0.5,
         num_mcmc_steps=5,
@@ -326,7 +327,7 @@ def main():
     )
 
     ctrl_cfg = SMCControlConfig(
-        n_smc=512, n_inner=64,
+        n_smc=256, n_inner=32,
         target_ess_frac=0.5, max_lambda_inc=0.5,
         num_mcmc_steps=5,
         hmc_step_size=_hmc_step_for_horizon(T_total_days),
