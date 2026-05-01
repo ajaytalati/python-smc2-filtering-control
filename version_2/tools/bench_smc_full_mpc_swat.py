@@ -198,13 +198,14 @@ def _pop_scenario_from_argv() -> str:
 # warm-up window and picks new schedules.
 SCENARIO_CONFIGS = {
     'pathological': {
-        'init_state':   np.array([0.5, 3.5, 0.5, 0.0], dtype=np.float64),
+        # Z rescaled from 3.5 (in [0,6]) to 0.58 (in [0,1]).
+        'init_state':   np.array([0.5, 0.58, 0.5, 0.0], dtype=np.float64),
         'baseline_v_h': 0.0,
         'baseline_v_n': 4.0,
         'baseline_v_c': 12.0,
     },
     'set_A': {
-        'init_state':   np.array([0.5, 3.5, 0.5, 0.5], dtype=np.float64),
+        'init_state':   np.array([0.5, 0.58, 0.5, 0.5], dtype=np.float64),
         'baseline_v_h': 1.0,
         'baseline_v_n': 0.3,
         'baseline_v_c': 0.0,
@@ -248,12 +249,12 @@ def main():
     name_to_idx = {n: i for i, n in enumerate(em.all_names)}
 
     # SWAT identifiable subset — params we expect to recover under the
-    # 4-channel obs model. From the SWAT identifiability extension's
-    # rank analysis (see safekeeping repo's
-    # SWAT_Identifiability_Extension.md). Will tune in Phase 3.
+    # 4-channel obs model. lambda_step / W_thresh dropped after Poisson
+    # → log-Gaussian wake-gated steps switch (Phase 3.5); replaced by
+    # mu_step0 / beta_W_steps which are linear-in-W so well-identified.
     identifiable_subset = {
         'alpha_HR', 'sigma_HR', 'tau_W', 'tau_Z',
-        'beta_Z', 'tau_a', 'lambda_step', 'W_thresh',
+        'beta_Z', 'tau_a', 'mu_step0', 'beta_W_steps',
         'mu_0', 'mu_E',  # the F_max-from-data analogs
     }
 
@@ -291,7 +292,7 @@ def main():
     accumulated_obs = {
         'obs_HR':     {'t_idx': [], 'obs_value': []},
         'obs_sleep':  {'t_idx': [], 'obs_label': []},
-        'obs_steps':  {'t_idx': [], 'obs_count': [], 'bin_hours': 1.0},
+        'obs_steps':  {'t_idx': [], 'log_value': [], 'present_mask': []},
         'obs_stress': {'t_idx': [], 'obs_value': []},
         'V_h':        {'t_idx': [], 'value': []},
         'V_n':        {'t_idx': [], 'value': []},
@@ -304,14 +305,12 @@ def main():
     replan_history = []
 
     # ── SMC config ──
-    # Quartered vs FSA-v2 because at h=15min SWAT has 4× more bins
-    # per window AND per controller-rollout horizon. Two OOM crashes
-    # at 512/400 (filter) and 512/64 (controller) for T=14 — the
-    # controller's MPC rollout at 1344 bins × 4 states needs the
-    # smaller particle count to fit the 32GB GPU.
+    # Doubled back to 512/400 for Phase 3.5 — at T=7 (vs the OOM-
+    # triggering T=14) the controller's MPC rollout fits comfortably
+    # in 32 GB. If revisiting longer horizons later, halve again.
     smc_cfg = SMCConfig(
-        n_smc_particles=256,
-        n_pf_particles=200,
+        n_smc_particles=512,
+        n_pf_particles=400,
         target_ess_frac=0.5,
         max_lambda_inc=0.5,
         num_mcmc_steps=5,
@@ -327,7 +326,7 @@ def main():
     )
 
     ctrl_cfg = SMCControlConfig(
-        n_smc=256, n_inner=32,
+        n_smc=512, n_inner=64,
         target_ess_frac=0.5, max_lambda_inc=0.5,
         num_mcmc_steps=5,
         hmc_step_size=_hmc_step_for_horizon(T_total_days),
@@ -389,7 +388,8 @@ def main():
         accumulated_obs['obs_sleep']['t_idx'].append(obs_stride['obs_sleep']['t_idx'])
         accumulated_obs['obs_sleep']['obs_label'].append(obs_stride['obs_sleep']['obs_label'])
         accumulated_obs['obs_steps']['t_idx'].append(obs_stride['obs_steps']['t_idx'])
-        accumulated_obs['obs_steps']['obs_count'].append(obs_stride['obs_steps']['obs_count'])
+        accumulated_obs['obs_steps']['log_value'].append(obs_stride['obs_steps']['log_value'])
+        accumulated_obs['obs_steps']['present_mask'].append(obs_stride['obs_steps']['present_mask'])
         for ch in ('V_h', 'V_n', 'V_c'):
             accumulated_obs[ch]['t_idx'].append(obs_stride[ch]['t_idx'])
             accumulated_obs[ch]['value'].append(obs_stride[ch]['value'])
@@ -710,9 +710,100 @@ def main():
     fig.savefig(out_path, dpi=120)
     plt.close(fig)
 
+    # ── Diagnostic plot 1: latents + circadian overlay ──────────────────
+    # Per-bin V_c trajectory (applied controls) for the circadian phase.
+    PHI_0 = -math.pi / 3.0
+    v_c_per_bin = np.concatenate(
+        [np.asarray(a) for a in accumulated_obs['V_c']['value']])
+    v_c_per_bin = v_c_per_bin[:n_total_bins]
+    C_t = np.sin(2.0 * np.pi * (t_days - v_c_per_bin / 24.0) + PHI_0)
+
+    fig2, ax_lat = plt.subplots(figsize=(12, 5))
+    ax_lat.plot(t_days, traj_full[:, 0], color='C0', lw=1.0, label='W')
+    ax_lat.plot(t_days, traj_full[:, 1], color='C1', lw=1.0, label='Z')
+    ax_lat.plot(t_days, traj_full[:, 2], color='C3', lw=1.0, label='a')
+    ax_lat.set_xlabel('time (days)')
+    ax_lat.set_ylabel('W / Z / a  (in [0, 1])')
+    ax_lat.set_ylim(-0.05, 1.05)
+    ax_lat.grid(alpha=0.3)
+    ax_circ = ax_lat.twinx()
+    ax_circ.plot(t_days, C_t, color='grey', lw=0.8, alpha=0.5,
+                 label='C(t)')
+    ax_circ.set_ylabel('C(t) circadian')
+    ax_circ.set_ylim(-1.1, 1.1)
+    lines1, labels1 = ax_lat.get_legend_handles_labels()
+    lines2, labels2 = ax_circ.get_legend_handles_labels()
+    ax_lat.legend(lines1 + lines2, labels1 + labels2, fontsize=9, loc='upper right')
+    ax_lat.set_title(f'SWAT latents + circadian, T={T_total_days}d, '
+                     f'scenario={SCENARIO}')
+    fig2.tight_layout()
+    out_path2 = f"{run_dir}/E5_latents_circadian_T{T_total_days}d.png"
+    fig2.savefig(out_path2, dpi=120)
+    plt.close(fig2)
+
+    # ── Diagnostic plot 2: obs channels + circadian overlay ─────────────
+    # Reconstruct per-bin obs from the accumulators. For wake-gated steps
+    # we only scatter the "present" bins (wake bins where steps were
+    # actually observed).
+    def _flat_obs(ch_dict, val_key):
+        if not ch_dict['t_idx']:
+            return np.array([], dtype=int), np.array([], dtype=float)
+        idx = np.concatenate([np.asarray(a) for a in ch_dict['t_idx']])
+        val = np.concatenate([np.asarray(a) for a in ch_dict[val_key]])
+        return idx, val
+
+    hr_idx, hr_val = _flat_obs(accumulated_obs['obs_HR'], 'obs_value')
+    sl_idx, sl_val = _flat_obs(accumulated_obs['obs_sleep'], 'obs_label')
+    st_idx, st_logval = _flat_obs(accumulated_obs['obs_steps'], 'log_value')
+    _, st_present = _flat_obs(accumulated_obs['obs_steps'], 'present_mask')
+    sr_idx, sr_val = _flat_obs(accumulated_obs['obs_stress'], 'obs_value')
+
+    # Wake-gate the steps scatter
+    if st_present.size > 0:
+        wake_mask = st_present > 0.5
+        st_idx_p = st_idx[wake_mask]
+        st_logval_p = st_logval[wake_mask]
+    else:
+        st_idx_p = st_idx
+        st_logval_p = st_logval
+
+    fig3, ax3 = plt.subplots(4, 1, figsize=(12, 10), sharex=True)
+    channels = [
+        ('HR (bpm)', hr_idx, hr_val, 'C0', 'line'),
+        ('Sleep label (0=wake,1=light,2=deep)', sl_idx, sl_val, 'C2', 'step'),
+        ('log(steps+1) — wake bins only', st_idx_p, st_logval_p, 'C3', 'scatter'),
+        ('Stress (0-100)', sr_idx, sr_val, 'C4', 'line'),
+    ]
+    for axi, (lbl, ix, vv, col, kind) in zip(ax3, channels):
+        if ix.size > 0:
+            tt = ix * DT
+            if kind == 'line':
+                axi.plot(tt, vv, color=col, lw=1.0)
+            elif kind == 'step':
+                axi.step(tt, vv, color=col, lw=1.0, where='post')
+            else:  # scatter
+                axi.scatter(tt, vv, color=col, s=6, alpha=0.6)
+        axi.set_ylabel(lbl, fontsize=9)
+        axi.grid(alpha=0.3)
+        # Circadian overlay on right axis
+        ax_c = axi.twinx()
+        ax_c.plot(t_days, C_t, color='grey', lw=0.6, alpha=0.5)
+        ax_c.set_ylabel('C(t)', color='grey', fontsize=8)
+        ax_c.set_ylim(-1.1, 1.1)
+        ax_c.tick_params(axis='y', labelcolor='grey', labelsize=7)
+    ax3[-1].set_xlabel('time (days)')
+    fig3.suptitle(f'SWAT obs channels + circadian, T={T_total_days}d, '
+                  f'scenario={SCENARIO}')
+    fig3.tight_layout(rect=[0, 0, 1, 0.97])
+    out_path3 = f"{run_dir}/E5_obs_circadian_T{T_total_days}d.png"
+    fig3.savefig(out_path3, dpi=120)
+    plt.close(fig3)
+
     print()
     print(f"  Checkpoint: {run_dir}/manifest.json + data.npz")
     print(f"  Plot: {out_path}")
+    print(f"  Plot: {out_path2}")
+    print(f"  Plot: {out_path3}")
     print("=" * 76)
 
 

@@ -1,21 +1,20 @@
 #!/usr/bin/env bash
-# Overnight SWAT Phase 3 chain — runs serially after the FSA T=84
-# sweep finishes.
+# SWAT Phase 3.5 chain — log-Gaussian wake-gated steps, Jacobi
+# diffusion on Z & a, tightened init priors, particles back to
+# 512/400 + 512/64.
 #
 # Sequence:
-#   0. Wait for tmux session 't84' to exit (FSA T=84 sweep finish).
 #   1. T=2 pathological smoke (~25 min) — flushes any wiring bugs.
-#   2. T=14 pathological main test (~3 hours) — recovery from
-#      collapsed state, headline scientific result.
-#   3. T=14 set_A control (~3 hours) — sanity check that the
-#      controller doesn't damage a healthy patient.
+#   2. T=7 pathological main test (~3 hours) — recovery from
+#      collapsed state, headline scientific result for 3.5.
 #
 # After each run: auto-generate the param-trace plot.
 # If any run fails, the chain stops (no point burning GPU on bad
 # state).
 #
 # Launch via:
-#   tmux new -s swat_overnight -d "$HOME/bench_logs/run_swat_overnight_chain.sh"
+#   tmux new -s swat_overnight -d \
+#     "$HOME/Repos/python-smc2-filtering-control/version_2/tools/launchers/run_swat_overnight_chain.sh"
 
 set -u
 
@@ -31,17 +30,6 @@ export XLA_PYTHON_CLIENT_MEM_FRACTION=0.85    # raised from 0.60 — solo overni
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export JAX_COMPILATION_CACHE_DIR="$HOME/.jax_compilation_cache"
 export FSA_STEP_MINUTES=15
-
-# ── 0. Wait for FSA T=84 sweep to exit (only if it's currently running) ──
-if tmux has-session -t t84 2>/dev/null; then
-    echo "[$(date '+%H:%M:%S')] Waiting for tmux session 't84' to exit..."
-    while tmux has-session -t t84 2>/dev/null; do
-        sleep 60
-    done
-    echo "[$(date '+%H:%M:%S')] T=84 done. Starting SWAT chain."
-else
-    echo "[$(date '+%H:%M:%S')] No t84 session — starting SWAT chain immediately."
-fi
 
 run_one() {
     local label=$1
@@ -76,14 +64,11 @@ run_one() {
 # ── 1. T=2 pathological smoke ──
 run_one "t2_pathological" 2 pathological || exit 1
 
-# ── 2. T=14 pathological main test ──
-run_one "t14_pathological" 14 pathological || exit 2
-
-# ── 3. T=14 set_A control ──
-run_one "t14_set_A" 14 set_A || exit 3
+# ── 2. T=7 pathological main test ──
+run_one "t7_pathological" 7 pathological || exit 2
 
 echo
 echo "============================================================"
-echo "[$(date '+%H:%M:%S')] ALL 3 SWAT EXPERIMENTS COMPLETE"
+echo "[$(date '+%H:%M:%S')] ALL SWAT EXPERIMENTS COMPLETE"
 echo "============================================================"
 ls -la "$REPO/version_2/outputs/swat/swat_runs/" 2>/dev/null

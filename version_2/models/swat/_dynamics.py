@@ -217,8 +217,14 @@ def drift_jax(y, params, t, u):
     u_W = lmbda * C_eff + V_n - a - kappa * Z + alpha_T * T
     u_Z = -gamma_3 * W - V_n + beta_Z * a
 
+    # Jacobi-style: Z and a now bounded in [0, 1] (was [0, A_scale=6]
+    # and [0, ∞) respectively). Z saturates at sigmoid max = 1; a is
+    # a low-pass of W ∈ [0,1] so naturally bounded by [0,1].
+    # Diffusion (in diffusion_state_dep) is now Jacobi sqrt(x*(1-x))
+    # to vanish at the boundaries, mirroring W and FSA-v2's B.
+    del A_scale  # no longer used in drift
     dW = (_sigmoid(u_W) - W) / tau_W
-    dZ = (A_scale * _sigmoid(u_Z) - Z) / tau_Z
+    dZ = (_sigmoid(u_Z) - Z) / tau_Z
     da = (W - a) / tau_a
 
     E_dyn = entrainment_quality(W, Z, a, T, V_h, V_n, V_c, params)
@@ -229,27 +235,34 @@ def drift_jax(y, params, t, u):
 
 
 def diffusion_state_dep(y, params):
-    """SWAT diagonal diffusion (state-INDEPENDENT, despite the name).
+    """SWAT diagonal diffusion — Jacobi for W, Z, a + sqrt-CIR for T.
 
-    The name keeps the FSA-v2 convention so the same plant integrator
-    can call this function. Returns sqrt(2 * temperature) per
-    component, giving Euler-Maruyama steps of the form
-
-        y_{t+dt}[i] = y_t[i] + drift_i * dt + sigma_i * sqrt(dt) * xi_i
+    The W, Z, a states are now bounded in [0,1] with Jacobi diffusion
+    (vanishes at boundaries), matching FSA-v2's pattern for B. T uses
+    sqrt-CIR (vanishes only at lower boundary).
 
     Args:
-        y:      state (unused — present for FSA-v2 API parity).
-        params: dict with T_W, T_Z, T_a, T_T.
+        y:      state (W, Z, a, T). Bounded states use Jacobi.
+        params: dict with T_W, T_Z, T_a, T_T (noise temperatures).
 
     Returns:
-        Diagonal noise vector of shape (4,).
+        Diagonal noise vector of shape (4,):
+            σ_W √(W(1-W)), σ_Z √(Z(1-Z)), σ_a √(a(1-a)), σ_T √T
+        where σ_i = √(2·T_i).
     """
-    del y  # diffusion is state-independent in SWAT
+    W = y[0]
+    Z = y[1]
+    a = y[2]
+    T = y[3]
+    sigma_W = jnp.sqrt(2.0 * params['T_W'])
+    sigma_Z = jnp.sqrt(2.0 * params['T_Z'])
+    sigma_a = jnp.sqrt(2.0 * params['T_a'])
+    sigma_T = jnp.sqrt(2.0 * params['T_T'])
     return jnp.array([
-        jnp.sqrt(2.0 * params['T_W']),
-        jnp.sqrt(2.0 * params['T_Z']),
-        jnp.sqrt(2.0 * params['T_a']),
-        jnp.sqrt(2.0 * params['T_T']),
+        sigma_W * jnp.sqrt(jnp.maximum(W * (1.0 - W), 0.0)),
+        sigma_Z * jnp.sqrt(jnp.maximum(Z * (1.0 - Z), 0.0)),
+        sigma_a * jnp.sqrt(jnp.maximum(a * (1.0 - a), 0.0)),
+        sigma_T * jnp.sqrt(jnp.maximum(T, 0.0)),
     ])
 
 
@@ -273,10 +286,10 @@ def state_clip(y):
         Clipped state of shape (4,).
     """
     return jnp.array([
-        jnp.clip(y[0], 0.0, 1.0),
-        jnp.clip(y[1], 0.0, A_SCALE_FROZEN),
-        jnp.maximum(y[2], 0.0),
-        jnp.maximum(y[3], 0.0),
+        jnp.clip(y[0], 0.0, 1.0),       # W ∈ [0, 1]
+        jnp.clip(y[1], 0.0, 1.0),       # Z ∈ [0, 1] (was [0, A_scale])
+        jnp.clip(y[2], 0.0, 1.0),       # a ∈ [0, 1] (was [0, ∞))
+        jnp.maximum(y[3], 0.0),         # T ∈ [0, ∞) (Stuart-Landau)
     ])
 
 

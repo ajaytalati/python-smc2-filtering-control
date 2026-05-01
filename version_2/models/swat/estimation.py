@@ -18,7 +18,7 @@ Design choices vs FSA-v2:
 - **Four obs channels** with mixed likelihoods:
   - HR Gaussian (always observed)
   - Sleep 3-level ordinal (always observed)
-  - Steps Poisson (per-bin count)
+  - Steps log-Gaussian, wake-gated (matches FSA-v2)
   - Stress Gaussian (always observed)
 - **propagate_fn** is plain Euler-Maruyama for now — no Kalman
   fusion of Gaussian channels. The GK-DPF guided proposal (which
@@ -143,13 +143,16 @@ PARAM_PRIOR_CONFIG = OrderedDict([
     ('sigma_HR', ('lognormal', (math.log(8.0),  0.3))),
 
     # ── Obs ch2: Sleep 3-level ordinal ───────────────────────────────
-    ('c_tilde',  ('normal',    (2.5, 0.5))),
-    ('delta_c',  ('lognormal', (math.log(1.5),  0.3))),
+    # Z domain rescaled to [0,1]: c_tilde 2.5/6 ≈ 0.42, delta_c 1.5/6 = 0.25
+    ('c_tilde',  ('normal',    (0.42, 0.10))),
+    ('delta_c',  ('lognormal', (math.log(0.25), 0.3))),
 
-    # ── Obs ch3: Steps Poisson ───────────────────────────────────────
-    ('lambda_base', ('lognormal', (math.log(0.5),  0.7))),
-    ('lambda_step', ('lognormal', (math.log(200.0), 0.5))),
-    ('W_thresh',    ('normal',    (0.6, 0.1))),
+    # ── Obs ch3: Steps log-Gaussian, wake-gated ──────────────────────
+    # log(steps+1) ~ N(mu_step0 + beta_W_steps * W, sigma_step^2),
+    # only observed when sleep_label == 0 (wake bin).
+    ('mu_step0',     ('normal',    (4.0, 0.3))),
+    ('beta_W_steps', ('lognormal', (math.log(0.8), 0.2))),
+    ('sigma_step',   ('lognormal', (math.log(0.5), 0.15))),
 
     # ── Obs ch4: Stress Gaussian ─────────────────────────────────────
     ('s_base',   ('normal',    (30.0, 10.0))),
@@ -164,10 +167,13 @@ PARAM_PRIOR_CONFIG = OrderedDict([
 # =========================================================================
 
 INIT_STATE_PRIOR_CONFIG = OrderedDict([
-    ('W_0',  ('normal',    (0.5, 0.2))),
-    ('Z_0',  ('normal',    (3.5, 1.0))),
-    ('a_0',  ('lognormal', (math.log(0.5),  0.3))),
-    ('T_0',  ('lognormal', (math.log(0.5),  0.5))),
+    # Tight known priors — match FSA-v2 cold-start pattern. Inits are
+    # not part of the inferred posterior in practice; the bench's
+    # shard_init_fn cold-starts from COLD_START_INIT.
+    ('W_0',  ('normal', (0.50, 0.05))),
+    ('Z_0',  ('normal', (0.58, 0.05))),  # rescaled from 3.5/6
+    ('a_0',  ('normal', (0.50, 0.05))),
+    ('T_0',  ('normal', (0.50, 0.05))),
 ])
 
 # Fast lookup: parameter name -> index in the prior-vector
@@ -176,7 +182,8 @@ _PI = {k: i for i, k in enumerate(_PK)}
 
 
 # Cold-start initial state for the very first window's prior mean.
-COLD_START_INIT = jnp.array([0.5, 3.5, 0.5, 0.5], dtype=jnp.float64)
+# Z_0 rescaled from 3.5 (in [0,6]) to 0.58 (in [0,1]).
+COLD_START_INIT = jnp.array([0.5, 0.58, 0.5, 0.5], dtype=jnp.float64)
 
 
 # =========================================================================
@@ -282,15 +289,6 @@ def _ordinal_log_lik(obs_label, Z, c1, c2):
     return jnp.log(jnp.maximum(p, 1e-30))
 
 
-def _poisson_log_lik(obs_count, rate, bin_hours):
-    """log Poisson(obs_count | rate * bin_hours).
-
-    Stable form: k*log(λ) - λ - log(k!)  where λ = rate*bin_hours.
-    Uses lgamma(k+1) for log(k!).
-    """
-    lam = rate * bin_hours
-    return obs_count * jnp.log(jnp.maximum(lam, 1e-30)) - lam - jax.lax.lgamma(
-        obs_count.astype(jnp.float64) + 1.0)
 
 
 def obs_log_weight_fn(x_new, grid_obs, k, params):
@@ -319,14 +317,15 @@ def obs_log_weight_fn(x_new, grid_obs, k, params):
     c2 = c1 + p['delta_c']
     log_w += sleep_present * _ordinal_log_lik(sleep_label, Z, c1, c2)
 
-    # ── Ch3: Steps Poisson ───────────────────────────────────────────
-    steps_count = grid_obs['steps_count'][k]
+    # ── Ch3: Steps log-Gaussian (wake-gated) ─────────────────────────
+    # log(steps+1) ~ N(mu_step0 + beta_W_steps * W, sigma_step^2).
+    # Wake-gating is folded into steps_present (set to 0 in non-wake
+    # bins by align_obs_fn).
+    log_steps_value = grid_obs['log_steps_value'][k]
     steps_present = grid_obs['steps_present'][k]
-    rate = p['lambda_base'] + p['lambda_step'] * jax.nn.sigmoid(
-        10.0 * (W - p['W_thresh']))
-    bin_hours = grid_obs.get('steps_bin_hours', jnp.float64(1.0))
-    log_w += steps_present * _poisson_log_lik(
-        steps_count, rate, bin_hours)
+    step_mean = p['mu_step0'] + p['beta_W_steps'] * W
+    log_w += steps_present * _gauss_log_lik(
+        log_steps_value, step_mean, p['sigma_step'])
 
     # ── Ch4: Stress Gaussian ─────────────────────────────────────────
     stress_value = grid_obs['stress_value'][k]
@@ -361,7 +360,8 @@ def align_obs_fn(obs_data: dict, t_steps: int, dt: float) -> dict:
         dict with per-bin arrays for every channel:
         - hr_value, hr_present
         - sleep_label, sleep_present
-        - steps_count, steps_present, steps_bin_hours
+        - log_steps_value, steps_present  (steps_present is AND of
+          sample-exists and wake-gate; log-Gaussian likelihood)
         - stress_value, stress_present
         - V_h, V_n, V_c    (exogenous controls, always present)
     """
@@ -394,18 +394,22 @@ def align_obs_fn(obs_data: dict, t_steps: int, dt: float) -> dict:
     out['sleep_label'] = sleep_label
     out['sleep_present'] = sleep_present
 
-    # ── Steps ────
+    # ── Steps (log-Gaussian, wake-gated) ────
+    # gen_obs_steps returns t_idx, log_value, present_mask (1 only in
+    # wake bins). steps_present here is the AND of "obs sample exists
+    # at this bin" with "wake gate is open at this bin".
     st = obs_data['obs_steps']
-    steps_count = np.zeros(t_steps, dtype=np.int32)
+    log_steps_value = np.zeros(t_steps, dtype=np.float64)
     steps_present = np.zeros(t_steps, dtype=np.float64)
     if len(st['t_idx']) > 0:
         idx = np.asarray(st['t_idx'])
         mask = (idx >= 0) & (idx < t_steps)
-        steps_count[idx[mask]] = np.asarray(st['obs_count'])[mask]
-        steps_present[idx[mask]] = 1.0
-    out['steps_count'] = steps_count
+        log_vals = np.asarray(st['log_value'])[mask]
+        present_vals = np.asarray(st['present_mask'])[mask].astype(np.float64)
+        log_steps_value[idx[mask]] = log_vals
+        steps_present[idx[mask]] = present_vals
+    out['log_steps_value'] = log_steps_value
     out['steps_present'] = steps_present
-    out['steps_bin_hours'] = float(st.get('bin_hours', 1.0))
 
     # ── Stress ────
     sr = obs_data['obs_stress']
@@ -459,10 +463,10 @@ SWAT_ESTIMATION = EstimationModel(
     n_stochastic=4,
     stochastic_indices=(0, 1, 2, 3),
     state_bounds=(
-        (0.0, 1.0),               # W
-        (0.0, A_SCALE_FROZEN),    # Z
-        (0.0, 10.0),              # a (soft upper)
-        (0.0, 5.0),               # T (soft upper, T* ~ 1)
+        (0.0, 1.0),               # W (Jacobi)
+        (0.0, 1.0),               # Z (Jacobi, rescaled from [0, A_SCALE_FROZEN])
+        (0.0, 1.0),               # a (Jacobi)
+        (0.0, 5.0),               # T (sqrt-CIR, soft upper; T* ~ 1)
     ),
     param_prior_config=PARAM_PRIOR_CONFIG,
     init_state_prior_config=INIT_STATE_PRIOR_CONFIG,

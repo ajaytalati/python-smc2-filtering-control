@@ -45,14 +45,19 @@ _OBS_PARAMS = dict(
     alpha_HR=25.0,
     sigma_HR=8.0,
 
-    # Sleep 3-level ordinal channel (thresholds on Z)
-    c_tilde=2.5,
-    delta_c=1.5,                    # c2 = c_tilde + delta_c = 4.0
+    # Sleep 3-level ordinal channel (thresholds on Z ∈ [0,1])
+    # Rescaled from Z ∈ [0, 6] to Z ∈ [0, 1]:
+    # c_tilde was 2.5 → 2.5/6 ≈ 0.42, delta_c was 1.5 → 1.5/6 = 0.25
+    c_tilde=0.42,
+    delta_c=0.25,                   # c2 = c_tilde + delta_c ≈ 0.67
 
-    # Steps Poisson channel (per-hour rate parameters)
-    lambda_base=0.5,                # rare steps during sleep
-    lambda_step=200.0,              # peak rate during wake (per hour)
-    W_thresh=0.6,                   # wake threshold for step activation
+    # Steps log-Gaussian channel (FSA-v2 pattern, wake-gated)
+    # log(steps + 1) ~ N(mu_step0 + beta_W_steps * W, sigma_step²)
+    # Per 15-min wake bin: at W=0.5, log_mean = 4.4 → ~80 steps/bin
+    # ≈ 320 steps/hr (typical light-activity wake-bin rate).
+    mu_step0=4.0,                   # ≈ log(54+1), baseline log-rate
+    beta_W_steps=0.8,               # W coupling
+    sigma_step=0.5,
 
     # Stress Gaussian channel (Garmin-style 0-100 score)
     s_base=30.0,
@@ -69,7 +74,8 @@ DEFAULT_PARAMS = {**TRUTH_PARAMS, **_OBS_PARAMS}
 # 4-state vector (W, Z, a, T). V_h, V_n, V_c are exogenous controls
 # passed in at integration time, NOT part of the state.
 
-DEFAULT_INIT = np.array([0.5, 3.5, 0.5, 0.5], dtype=np.float64)
+# Z_0 was 3.5 in [0, 6]; rescaled to 3.5/6 ≈ 0.58 for [0, 1] domain.
+DEFAULT_INIT = np.array([0.5, 0.58, 0.5, 0.5], dtype=np.float64)
 
 
 # ── Scenario presets ────────────────────────────────────────────────
@@ -88,6 +94,7 @@ def scenario_presets(t_total_days: int) -> dict:
     constant-truth schedules are for forward-sim validation against
     psim's 14-day reference outputs.
     """
+    # Z_0 rescaled to [0,1] domain (was 3.5 in [0,6])
     return {
         'A_healthy': {
             'init': DEFAULT_INIT.copy(),
@@ -102,7 +109,7 @@ def scenario_presets(t_total_days: int) -> dict:
             'v_c_daily': np.full(t_total_days, 0.0, dtype=np.float64),
         },
         'C_recovery': {
-            'init': np.array([0.5, 3.5, 0.5, 0.05], dtype=np.float64),  # T_0 starts low
+            'init': np.array([0.5, 0.58, 0.5, 0.05], dtype=np.float64),  # T_0 starts low
             'v_h_daily': np.full(t_total_days, 1.0, dtype=np.float64),
             'v_n_daily': np.full(t_total_days, 0.3, dtype=np.float64),
             'v_c_daily': np.full(t_total_days, 0.0, dtype=np.float64),
@@ -194,51 +201,39 @@ def gen_obs_sleep(trajectory, t_grid_days, params, seed=43):
     }
 
 
-def gen_obs_steps(trajectory, t_grid_days, params, seed=44,
-                    bin_hours=None):
-    """Poisson step-count channel.
+def gen_obs_steps(trajectory, t_grid_days, params, sleep_label, seed=44):
+    """Steps log-Gaussian channel, wake-gated (FSA-v2 pattern).
 
-    Rate (per hour):
-        r(W) = lambda_base + lambda_step * sigmoid(10 * (W - W_thresh))
-    Bin count:
-        k_bin ~ Poisson(r(mean_W_per_bin) * bin_hours)
+    log(steps + 1) ~ N(mu_step0 + beta_W_steps * W, sigma_step^2)
+
+    The channel is **wake-gated** — only emitted when sleep_label == 0.
+    The corresponding bin's `present_mask` flag is 1 if wake, 0
+    otherwise. The bench's align_obs_fn ANDs this with steps_present
+    so the filter never sees sleep-bin step values.
 
     Args:
         trajectory:   (T_len, 4) state.
         t_grid_days:  (T_len,) time grid in days.
-        params:       dict.
+        params:       dict with mu_step0, beta_W_steps, sigma_step.
+        sleep_label:  (T_len,) integer labels {0=wake, 1=light, 2=deep}.
         seed:         RNG seed.
-        bin_hours:    width of one observation bin in hours. If None,
-                       inferred from the simulation grid spacing
-                       (DT_BIN_HOURS) — i.e. one obs per simulation bin.
 
-    For the SMC²-MPC framework's h=1h convention, bin_hours=1.0 by
-    default and steps are observed once per simulation bin.
+    Returns:
+        dict with t_idx (one per bin), log_value (the Gaussian sample),
+        and present_mask (1 if wake at this bin, 0 if light/deep).
     """
     rng = np.random.default_rng(seed)
     W = trajectory[:, 0]
+    T_len = len(t_grid_days)
 
-    if bin_hours is None:
-        bin_hours = DT_BIN_HOURS
-
-    # Determine sample count per obs bin from the simulation dt.
-    sim_dt_hours = (t_grid_days[1] - t_grid_days[0]) * 24.0
-    bin_samples = max(int(round(bin_hours / sim_dt_hours)), 1)
-    n_bins = len(t_grid_days) // bin_samples
-
-    W_per_bin = W[:n_bins * bin_samples].reshape(n_bins, bin_samples).mean(axis=1)
-
-    rate_per_hour = params['lambda_base'] + params['lambda_step'] * _sigmoid(
-        10.0 * (W_per_bin - params['W_thresh']))
-    expected = rate_per_hour * bin_hours
-
-    k = rng.poisson(expected).astype(np.int32)
-    bin_t_idx = (np.arange(n_bins) * bin_samples).astype(np.int32)
+    log_mean = params['mu_step0'] + params['beta_W_steps'] * W
+    log_value = log_mean + rng.normal(0.0, params['sigma_step'], size=T_len)
+    present_mask = (np.asarray(sleep_label) == 0).astype(np.float64)
 
     return {
-        't_idx':       bin_t_idx,
-        'obs_count':   k,
-        'bin_hours':   float(bin_hours),
+        't_idx':        np.arange(T_len, dtype=np.int32),
+        'log_value':    log_value.astype(np.float64),
+        'present_mask': present_mask,
     }
 
 
@@ -330,13 +325,17 @@ def forward_sim_set(scenario_name: str, t_total_days: int = 14,
         traj.append(y)
     trajectory = np.asarray(jnp.stack(traj))   # (n_bins, 4)
 
+    sleep_ch = gen_obs_sleep(trajectory, t_grid_days, DEFAULT_PARAMS,
+                              seed=seed + 1)
     return {
         'trajectory':  trajectory,
         't_grid_days': t_grid_days,
         'u_per_bin':   u_per_bin,
         'obs_HR':      gen_obs_hr(trajectory, t_grid_days, DEFAULT_PARAMS, seed=seed),
-        'obs_sleep':   gen_obs_sleep(trajectory, t_grid_days, DEFAULT_PARAMS, seed=seed + 1),
-        'obs_steps':   gen_obs_steps(trajectory, t_grid_days, DEFAULT_PARAMS, seed=seed + 2),
+        'obs_sleep':   sleep_ch,
+        'obs_steps':   gen_obs_steps(trajectory, t_grid_days, DEFAULT_PARAMS,
+                                       sleep_label=sleep_ch['obs_label'],
+                                       seed=seed + 2),
         'obs_stress':  gen_obs_stress(trajectory, t_grid_days, DEFAULT_PARAMS,
                                         V_n_per_bin=u_per_bin[:, 1], seed=seed + 3),
     }

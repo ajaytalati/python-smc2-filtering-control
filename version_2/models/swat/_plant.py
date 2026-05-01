@@ -136,7 +136,9 @@ class StepwisePlant:
         'V_c_per_bin':         [],
         'obs_HR_t_idx':        [], 'obs_HR_value':     [],
         'obs_sleep_t_idx':     [], 'obs_sleep_label':  [],
-        'obs_steps_t_idx':     [], 'obs_steps_count':  [],
+        'obs_steps_t_idx':         [],
+        'obs_steps_log_value':     [],
+        'obs_steps_present_mask':  [],
         'obs_stress_t_idx':    [], 'obs_stress_value': [],
     })
 
@@ -201,6 +203,8 @@ class StepwisePlant:
         local_t = np.arange(stride_bins, dtype=np.int32)
         global_t = local_t + self.t_bin
 
+        # gen_obs_sleep MUST come before gen_obs_steps so the wake-mask
+        # is available for steps wake-gating.
         hr_ch = gen_obs_hr(traj, t_grid_global_days, self.truth_params,
                             seed=self.seed_offset + self.t_bin + 1)
         sleep_ch = gen_obs_sleep(traj, t_grid_global_days,
@@ -208,8 +212,8 @@ class StepwisePlant:
                                    seed=self.seed_offset + self.t_bin + 2)
         steps_ch = gen_obs_steps(traj, t_grid_global_days,
                                    self.truth_params,
-                                   seed=self.seed_offset + self.t_bin + 3,
-                                   bin_hours=self.dt * 24.0)
+                                   sleep_label=sleep_ch['obs_label'],
+                                   seed=self.seed_offset + self.t_bin + 3)
         stress_ch = gen_obs_stress(traj, t_grid_global_days,
                                     self.truth_params,
                                     V_n_per_bin=u_per_bin[:, 1],
@@ -237,7 +241,8 @@ class StepwisePlant:
         self.history['obs_sleep_t_idx'].append(sleep_ch['t_idx'])
         self.history['obs_sleep_label'].append(sleep_ch['obs_label'])
         self.history['obs_steps_t_idx'].append(steps_ch['t_idx'])
-        self.history['obs_steps_count'].append(steps_ch['obs_count'])
+        self.history['obs_steps_log_value'].append(steps_ch['log_value'])
+        self.history['obs_steps_present_mask'].append(steps_ch['present_mask'])
         self.history['obs_stress_t_idx'].append(stress_ch['t_idx'])
         self.history['obs_stress_value'].append(stress_ch['obs_value'])
 
@@ -288,7 +293,8 @@ class StepwisePlant:
                   obs_label=np.concatenate(self.history['obs_sleep_label']))
         np.savez(obs_dir / "obs_steps.npz",
                   t_idx=np.concatenate(self.history['obs_steps_t_idx']),
-                  obs_count=np.concatenate(self.history['obs_steps_count']))
+                  log_value=np.concatenate(self.history['obs_steps_log_value']),
+                  present_mask=np.concatenate(self.history['obs_steps_present_mask']))
         np.savez(obs_dir / "obs_stress.npz",
                   t_idx=np.concatenate(self.history['obs_stress_t_idx']),
                   obs_value=np.concatenate(self.history['obs_stress_value']))
