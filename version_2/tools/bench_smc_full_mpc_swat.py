@@ -153,6 +153,9 @@ def _build_swat_control_spec(*, dyn_params: dict, init_state: np.ndarray,
             truth_params[k] = float(v)
 
     n_steps = plan_horizon_days * BINS_PER_DAY
+    # lambda_E (∫E_dyn shaping weight) overridable via SWAT_LAMBDA_E
+    # env var. Default 1.0 (balanced with ∫T at healthy ops).
+    lambda_E = float(os.environ.get('SWAT_LAMBDA_E', '1.0'))
     # Pass init_state + posterior-mean params INTO build_control_spec
     # so they are baked into the cost-fn JIT closure. A previous version
     # set these after construction via object.__setattr__, which only
@@ -169,6 +172,7 @@ def _build_swat_control_spec(*, dyn_params: dict, init_state: np.ndarray,
         n_inner=64,
         n_substeps=4,
         sigma_prior=1.5,
+        lambda_E=lambda_E,
         init_state=np.asarray(init_state, dtype=np.float64),
         params=truth_params,
         seed=42,
