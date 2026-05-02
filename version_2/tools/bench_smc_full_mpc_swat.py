@@ -724,24 +724,44 @@ def main():
     v_c_per_bin = v_c_per_bin[:n_total_bins]
     C_t = np.sin(2.0 * np.pi * t_days + PHI_0)
 
-    fig2, ax_lat = plt.subplots(figsize=(12, 5))
+    # Subject's internal/subjective drive (V_c-shifted) for the second
+    # panel comparing wall-clock vs subjective circadian.
+    C_t_internal = np.sin(2.0 * np.pi * (t_days - v_c_per_bin / 24.0)
+                           + PHI_0)
+
+    fig2, (ax_lat, ax_c2) = plt.subplots(
+        2, 1, figsize=(12, 7), sharex=True,
+        gridspec_kw={'height_ratios': [3, 1]})
     ax_lat.plot(t_days, traj_full[:, 0], color='C0', lw=1.0, label='W')
     ax_lat.plot(t_days, traj_full[:, 1], color='C1', lw=1.0, label='Z')
     ax_lat.plot(t_days, traj_full[:, 2], color='C3', lw=1.0, label='a')
-    ax_lat.set_xlabel('time (days)')
     ax_lat.set_ylabel('W / Z / a  (in [0, 1])')
     ax_lat.set_ylim(-0.05, 1.05)
     ax_lat.grid(alpha=0.3)
     ax_circ = ax_lat.twinx()
     ax_circ.plot(t_days, C_t, color='grey', lw=0.8, alpha=0.5,
-                 label='C(t)')
-    ax_circ.set_ylabel('C(t) circadian')
+                 label='C(t) external')
+    ax_circ.set_ylabel('C(t) external (ground-truth)')
     ax_circ.set_ylim(-1.1, 1.1)
     lines1, labels1 = ax_lat.get_legend_handles_labels()
     lines2, labels2 = ax_circ.get_legend_handles_labels()
-    ax_lat.legend(lines1 + lines2, labels1 + labels2, fontsize=9, loc='upper right')
+    ax_lat.legend(lines1 + lines2, labels1 + labels2,
+                  fontsize=9, loc='upper right')
     ax_lat.set_title(f'SWAT latents + circadian, T={T_total_days}d, '
                      f'scenario={SCENARIO}')
+
+    # Bottom panel: external vs subjective circadian time
+    ax_c2.plot(t_days, C_t, color='black', lw=1.0,
+               label='C(t) external (wall-clock)')
+    ax_c2.plot(t_days, C_t_internal, color='royalblue', lw=1.0,
+               label='C_eff(t) subjective (V_c-shifted)')
+    ax_c2.axhline(0, color='grey', lw=0.5, alpha=0.5)
+    ax_c2.set_ylim(-1.15, 1.15)
+    ax_c2.set_ylabel('C(t)')
+    ax_c2.set_xlabel('time (days)')
+    ax_c2.grid(alpha=0.3)
+    ax_c2.legend(fontsize=9, loc='upper right')
+
     fig2.tight_layout()
     out_path2 = f"{run_dir}/E5_latents_circadian_T{T_total_days}d.png"
     fig2.savefig(out_path2, dpi=120)
