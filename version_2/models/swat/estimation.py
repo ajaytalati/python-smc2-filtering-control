@@ -81,6 +81,13 @@ FROZEN_PARAMS = dict(
     # Pinned per Repo C FIM analysis 2026-04-27:
     tau_T=48.0 / 24.0,            # 2.0 days
     lambda_amp_Z=8.0,
+    # Phase 3.6 sim-side / sigmoid-shape constants (frozen by design,
+    # not by FIM rank). sleep_sharpness rescales the sleep likelihood
+    # so it sees the same separability as the legacy A_SCALE=6 domain;
+    # tau_sleep_persist_h is the sticky-HMM persistence used only in
+    # generation (estimator treats labels conditionally independent).
+    sleep_sharpness=10.0,
+    tau_sleep_persist_h=1.0,
 )
 
 
@@ -111,9 +118,10 @@ PARAM_PRIOR_CONFIG = OrderedDict([
     # ── Timescales (in DAYS, converted from hours) ───────────────────
     # tau_T is PINNED — see FROZEN_PARAMS — to break the
     # (mu_0, mu_E, eta, tau_T) Stuart-Landau scaling degeneracy.
-    ('tau_W',    ('lognormal', (_ln_d(2.0),  0.3))),
-    ('tau_Z',    ('lognormal', (_ln_d(2.0),  0.3))),
-    ('tau_a',    ('lognormal', (_ln_d(3.0),  0.3))),
+    # Phase 3.6 dev-repo truth values: tau_W=2h, tau_Z=0.25h, tau_a=10h.
+    ('tau_W',    ('lognormal', (_ln_d(2.0),   0.3))),
+    ('tau_Z',    ('lognormal', (_ln_d(0.25),  0.3))),
+    ('tau_a',    ('lognormal', (_ln_d(10.0),  0.3))),
 
     # ── Stuart-Landau bifurcation block (the F_max-analog parameters) ─
     # mu_0 + mu_E = 0 is the bifurcation point E_crit = -mu_0/mu_E = 0.5
@@ -143,8 +151,9 @@ PARAM_PRIOR_CONFIG = OrderedDict([
     ('sigma_HR', ('lognormal', (math.log(8.0),  0.3))),
 
     # ── Obs ch2: Sleep 3-level ordinal ───────────────────────────────
-    # Z domain rescaled to [0,1]: c_tilde 2.5/6 ≈ 0.42, delta_c 1.5/6 = 0.25
-    ('c_tilde',  ('normal',    (0.42, 0.10))),
+    # Z domain rescaled to [0,1]: c_tilde 2.5/6 ≈ 0.417, delta_c 1.5/6 = 0.25
+    # sleep_sharpness pinned in FROZEN_PARAMS (sigmoid-sharpness rescale).
+    ('c_tilde',  ('normal',    (0.417, 0.10))),
     ('delta_c',  ('lognormal', (math.log(0.25), 0.3))),
 
     # ── Obs ch3: Steps log-Gaussian, wake-gated ──────────────────────
@@ -171,7 +180,7 @@ INIT_STATE_PRIOR_CONFIG = OrderedDict([
     # not part of the inferred posterior in practice; the bench's
     # shard_init_fn cold-starts from COLD_START_INIT.
     ('W_0',  ('normal', (0.50, 0.05))),
-    ('Z_0',  ('normal', (0.58, 0.05))),  # rescaled from 3.5/6
+    ('Z_0',  ('normal', (0.583, 0.05))),  # 3.5/6 = 0.583 (dev INIT_STATE_A)
     ('a_0',  ('normal', (0.50, 0.05))),
     ('T_0',  ('normal', (0.50, 0.05))),
 ])
@@ -182,8 +191,8 @@ _PI = {k: i for i, k in enumerate(_PK)}
 
 
 # Cold-start initial state for the very first window's prior mean.
-# Z_0 rescaled from 3.5 (in [0,6]) to 0.58 (in [0,1]).
-COLD_START_INIT = jnp.array([0.5, 0.58, 0.5, 0.5], dtype=jnp.float64)
+# Z_0 rescaled from 3.5 (in [0,6]) to 0.583 (in [0,1]).
+COLD_START_INIT = jnp.array([0.5, 0.583, 0.5, 0.5], dtype=jnp.float64)
 
 
 # =========================================================================
@@ -271,15 +280,16 @@ def _gauss_log_lik(obs_value, mean, sigma):
     return -HALF_LOG_2PI - jnp.log(sigma) - 0.5 * z * z
 
 
-def _ordinal_log_lik(obs_label, Z, c1, c2):
-    """3-level ordinal: P(label | Z) via thresholds c1 < c2.
+def _ordinal_log_lik(obs_label, Z, c1, c2, sharp):
+    """3-level ordinal: P(label | Z) via thresholds c1 < c2 with
+    sigmoid sharpness multiplier matching the dev-repo generator.
 
-        P(0=wake)   = 1 - sigmoid(Z - c1)
-        P(1=light)  = sigmoid(Z - c1) - sigmoid(Z - c2)
-        P(2=deep)   = sigmoid(Z - c2)
+        P(0=wake)   = 1 - sigmoid(sharp * (Z - c1))
+        P(1=light)  = sigmoid(sharp * (Z - c1)) - sigmoid(sharp * (Z - c2))
+        P(2=deep)   = sigmoid(sharp * (Z - c2))
     """
-    s1 = jax.nn.sigmoid(Z - c1)
-    s2 = jax.nn.sigmoid(Z - c2)
+    s1 = jax.nn.sigmoid(sharp * (Z - c1))
+    s2 = jax.nn.sigmoid(sharp * (Z - c2))
     p_wake = 1.0 - s1
     p_light = s1 - s2
     p_deep = s2
@@ -315,7 +325,9 @@ def obs_log_weight_fn(x_new, grid_obs, k, params):
     sleep_present = grid_obs['sleep_present'][k]
     c1 = p['c_tilde']
     c2 = c1 + p['delta_c']
-    log_w += sleep_present * _ordinal_log_lik(sleep_label, Z, c1, c2)
+    sharp = jnp.float64(FROZEN_PARAMS['sleep_sharpness'])
+    log_w += sleep_present * _ordinal_log_lik(
+        sleep_label, Z, c1, c2, sharp)
 
     # ── Ch3: Steps log-Gaussian (wake-gated) ─────────────────────────
     # log(steps+1) ~ N(mu_step0 + beta_W_steps * W, sigma_step^2).

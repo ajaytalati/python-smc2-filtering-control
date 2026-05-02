@@ -32,15 +32,25 @@ This matches the FSA-v2 model's day-based time unit so the same
 SMC²-MPC bench infrastructure can drive both models without unit
 conversions.
 
-Drift summary
--------------
-    dW/dt = (sigmoid(u_W)        - W) / tau_W
-    dZ/dt = (A_scale*sigmoid(u_Z) - Z) / tau_Z
-    da/dt = (W                    - a) / tau_a
-    dT/dt = (mu(E)*T - eta*T^3)       / tau_T
+Drift summary (Phase 3.6, dev-repo authoritative formulation)
+-------------------------------------------------------------
+    dW/dt = (gate * sigmoid(u_W) - W) / tau_W
+    dZ/dt = (gate * sigmoid(u_Z) - Z) / tau_Z
+    da/dt = (W                   - a) / tau_a
+    dT/dt = (mu(E)*T - eta*T^3)      / tau_T
 
-with ``u_W = lambda*C_eff(t, V_c) + V_n - a - kappa*Z + alpha_T*T``
-and ``u_Z = -gamma_3*W - V_n + beta_Z*a``.
+with the multiplicative rhythm gate
+
+    gate = V_h * exp(-V_n / V_n_scale)        (anabolic V_h, catabolic V_n)
+
+and sigmoid arguments
+
+    u_W = lambda*C_eff(t, V_c) - a - kappa*Z + alpha_T*T   (no V_h, V_n)
+    u_Z = -gamma_3*W            + beta_Z*a                 (no V_h, V_n)
+
+V_h and V_n enter the SDE drift ONLY through gate. gate=1 (V_h=1, V_n=0)
+gives un-gated dynamics; gate=0 (V_h=0) gives W and Z flat at 0 (sedentary
+patient). This matches the dev repo's _dynamics.py / simulation.py exactly.
 
 The Stuart-Landau bifurcation parameter is
 
@@ -49,11 +59,10 @@ The Stuart-Landau bifurcation parameter is
 where E is the entrainment quality (V_h-anabolic, V_n-catabolic,
 phase-clamped) — see ``entrainment_quality`` below.
 
-Diffusion is state-independent and diagonal (constant per
-component). The framework's existing FSA-v2 plant integrator
-(version_2/models/fsa_high_res/_plant.py) accepts a state-dependent
-diffusion vector via ``sigma(y, params)``; SWAT just returns
-constants.
+Diffusion is Jacobi sqrt(x*(1-x)) for W, Z, a and state-INDEPENDENT
+(additive) for T. The state-INDEP T diffusion is the absorbing-boundary
+fix: Stuart-Landau drift (mu T - eta T^3) vanishes at T=0, so additive
+Gaussian kicks are needed to escape the absorbing point at T=0.
 """
 from __future__ import annotations
 
@@ -89,11 +98,15 @@ TRUTH_PARAMS = dict(
     gamma_3=8.0,
     beta_Z=4.0,
 
-    # Timescales (days)
-    tau_W=2.0  / _HOURS_PER_DAY,        # 0.0833 d
-    tau_Z=2.0  / _HOURS_PER_DAY,        # 0.0833 d
-    tau_a=3.0  / _HOURS_PER_DAY,        # 0.125  d
-    tau_T=48.0 / _HOURS_PER_DAY,        # 2.0    d
+    # Timescales (days). dev-repo Phase 3.6 values:
+    #   tau_W = 2.0 h      (unchanged)
+    #   tau_Z = 0.25 h     (was 2.0 h; sharper Z↔sleep flip-flop)
+    #   tau_a = 10.0 h     (was 3.0 h; slow adenosine drain → step-like Z)
+    #   tau_T = 48.0 h     (unchanged; pinned in estimation FROZEN_PARAMS)
+    tau_W=2.0   / _HOURS_PER_DAY,        # 0.0833 d
+    tau_Z=0.25  / _HOURS_PER_DAY,        # 0.0104 d
+    tau_a=10.0  / _HOURS_PER_DAY,        # 0.4167 d
+    tau_T=48.0  / _HOURS_PER_DAY,        # 2.0    d
 
     # Stuart-Landau testosterone (block T)
     mu_0=-0.5,
@@ -213,18 +226,25 @@ def drift_jax(y, params, t, u):
     eta = params['eta']
     alpha_T = params['alpha_T']
 
+    # Phase 3.6 dev-repo formulation: V_h, V_n no longer enter u_W or
+    # u_Z directly — they enter ONLY through the multiplicative
+    # rhythm-amplitude gate
+    #     gate = V_h * exp(-V_n / V_n_scale)        (anabolic V_h, catabolic V_n)
+    # which scales the σ-output peak so W and Z cycle 0 ↔ gate
+    # (anchored at 0). Matches `models/swat/_dynamics.py` and
+    # `models/swat/simulation.py` in SWAT_model_dev exactly.
+    V_n_scale = params['V_n_scale']
     C_eff = _circadian(t, V_c, PHI_0_FROZEN)
-    u_W = lmbda * C_eff + V_n - a - kappa * Z + alpha_T * T
-    u_Z = -gamma_3 * W - V_n + beta_Z * a
+    u_W = -kappa * Z + lmbda * C_eff - a + alpha_T * T
+    u_Z = -gamma_3 * W                 + beta_Z * a
 
-    # Jacobi-style: Z and a now bounded in [0, 1] (was [0, A_scale=6]
-    # and [0, ∞) respectively). Z saturates at sigmoid max = 1; a is
-    # a low-pass of W ∈ [0,1] so naturally bounded by [0,1].
-    # Diffusion (in diffusion_state_dep) is now Jacobi sqrt(x*(1-x))
-    # to vanish at the boundaries, mirroring W and FSA-v2's B.
-    del A_scale  # no longer used in drift
-    dW = (_sigmoid(u_W) - W) / tau_W
-    dZ = (_sigmoid(u_Z) - Z) / tau_Z
+    gate = V_h * jnp.exp(-V_n / V_n_scale)
+    W_target = gate * _sigmoid(u_W)
+    Z_target = gate * _sigmoid(u_Z)
+
+    del A_scale  # no longer used in drift (Z, a now in [0, 1])
+    dW = (W_target - W) / tau_W
+    dZ = (Z_target - Z) / tau_Z
     da = (W - a) / tau_a
 
     E_dyn = entrainment_quality(W, Z, a, T, V_h, V_n, V_c, params)

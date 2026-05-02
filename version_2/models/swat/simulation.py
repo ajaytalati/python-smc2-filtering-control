@@ -45,11 +45,17 @@ _OBS_PARAMS = dict(
     alpha_HR=25.0,
     sigma_HR=8.0,
 
-    # Sleep 3-level ordinal channel (thresholds on Z ∈ [0,1])
-    # Rescaled from Z ∈ [0, 6] to Z ∈ [0, 1]:
-    # c_tilde was 2.5 → 2.5/6 ≈ 0.42, delta_c was 1.5 → 1.5/6 = 0.25
-    c_tilde=0.42,
-    delta_c=0.25,                   # c2 = c_tilde + delta_c ≈ 0.67
+    # Sleep 3-level ordinal channel (thresholds on Z ∈ [0,1]).
+    # Phase 3.6 dev-repo values:
+    #   c_tilde 2.5/6 ≈ 0.417  (was 0.42 — minor refinement)
+    #   delta_c 1.5/6 = 0.25
+    #   sleep_sharpness 10.0   (restores legacy A_SCALE=6 sigmoid sharpness
+    #                            after Z's rescale to [0, 1])
+    #   tau_sleep_persist_h 1.0 (sticky-HMM persistence, sim-side only)
+    c_tilde=0.417,
+    delta_c=0.25,                   # c2 = c_tilde + delta_c ≈ 0.667
+    sleep_sharpness=10.0,
+    tau_sleep_persist_h=1.0,
 
     # Steps log-Gaussian channel (FSA-v2 pattern, wake-gated)
     # log(steps + 1) ~ N(mu_step0 + beta_W_steps * W, sigma_step²)
@@ -74,8 +80,9 @@ DEFAULT_PARAMS = {**TRUTH_PARAMS, **_OBS_PARAMS}
 # 4-state vector (W, Z, a, T). V_h, V_n, V_c are exogenous controls
 # passed in at integration time, NOT part of the state.
 
-# Z_0 was 3.5 in [0, 6]; rescaled to 3.5/6 ≈ 0.58 for [0, 1] domain.
-DEFAULT_INIT = np.array([0.5, 0.58, 0.5, 0.5], dtype=np.float64)
+# Z_0 was 3.5 in [0, 6]; rescaled to 3.5/6 ≈ 0.583 for [0, 1] domain
+# (matches dev repo INIT_STATE_A['Zt_0'] = 0.583 exactly).
+DEFAULT_INIT = np.array([0.5, 0.583, 0.5, 0.5], dtype=np.float64)
 
 
 # ── Scenario presets ────────────────────────────────────────────────
@@ -87,38 +94,52 @@ DEFAULT_INIT = np.array([0.5, 0.58, 0.5, 0.5], dtype=np.float64)
 # init for Set C recovery).
 
 def scenario_presets(t_total_days: int) -> dict:
-    """Return the 4 canonical SWAT scenario truth schedules + inits.
+    """Return the 6 canonical SWAT scenario truth schedules + inits.
 
-    All four scenarios use constant daily controls — the bench tool
-    will perturb V_c (and V_h, V_n) under closed-loop control. These
-    constant-truth schedules are for forward-sim validation against
-    psim's 14-day reference outputs.
+    Mirrors the dev repo's `models/swat/simulation.py` PARAM_SET_*
+    + INIT_STATE_* values (Phase 3.6, 2026-05-01). All scenarios use
+    constant daily controls — the bench tool will perturb V_c (and
+    V_h, V_n) under closed-loop control. These constant-truth
+    schedules are for forward-sim validation against psim's 14-day
+    reference outputs.
     """
-    # Z_0 rescaled to [0,1] domain (was 3.5 in [0,6])
+    # Z_0 rescaled to [0,1] domain (was 3.5 in [0,6] = 0.583).
     return {
         'A_healthy': {
             'init': DEFAULT_INIT.copy(),
             'v_h_daily': np.full(t_total_days, 1.0, dtype=np.float64),
-            'v_n_daily': np.full(t_total_days, 0.3, dtype=np.float64),
+            'v_n_daily': np.full(t_total_days, 0.2, dtype=np.float64),
             'v_c_daily': np.full(t_total_days, 0.0, dtype=np.float64),
         },
         'B_amplitude_collapse': {
             'init': DEFAULT_INIT.copy(),    # same start, fail mode is via control
             'v_h_daily': np.full(t_total_days, 0.2, dtype=np.float64),
-            'v_n_daily': np.full(t_total_days, 3.5, dtype=np.float64),
+            'v_n_daily': np.full(t_total_days, 1.0, dtype=np.float64),
             'v_c_daily': np.full(t_total_days, 0.0, dtype=np.float64),
         },
         'C_recovery': {
-            'init': np.array([0.5, 0.58, 0.5, 0.05], dtype=np.float64),  # T_0 starts low
+            'init': np.array([0.5, 0.583, 0.5, 0.05], dtype=np.float64),  # T_0 starts low
             'v_h_daily': np.full(t_total_days, 1.0, dtype=np.float64),
-            'v_n_daily': np.full(t_total_days, 0.3, dtype=np.float64),
+            'v_n_daily': np.full(t_total_days, 0.2, dtype=np.float64),
             'v_c_daily': np.full(t_total_days, 0.0, dtype=np.float64),
         },
         'D_phase_shift': {
             'init': DEFAULT_INIT.copy(),
             'v_h_daily': np.full(t_total_days, 1.0, dtype=np.float64),
-            'v_n_daily': np.full(t_total_days, 0.3, dtype=np.float64),
+            'v_n_daily': np.full(t_total_days, 0.2, dtype=np.float64),
             'v_c_daily': np.full(t_total_days, 6.0, dtype=np.float64),  # 6h jet lag
+        },
+        'E_overtrained': {
+            'init': DEFAULT_INIT.copy(),
+            'v_h_daily': np.full(t_total_days, 1.0, dtype=np.float64),
+            'v_n_daily': np.full(t_total_days, 1.0, dtype=np.float64),
+            'v_c_daily': np.full(t_total_days, 0.0, dtype=np.float64),
+        },
+        'F_sedentary': {
+            'init': DEFAULT_INIT.copy(),
+            'v_h_daily': np.full(t_total_days, 0.2, dtype=np.float64),
+            'v_n_daily': np.full(t_total_days, 0.2, dtype=np.float64),
+            'v_c_daily': np.full(t_total_days, 0.0, dtype=np.float64),
         },
     }
 
@@ -171,15 +192,27 @@ def gen_obs_hr(trajectory, t_grid_days, params, seed=42):
 
 
 def gen_obs_sleep(trajectory, t_grid_days, params, seed=43):
-    """3-level ordinal sleep channel: {0=wake, 1=light+REM, 2=deep}.
+    """3-level ordinal sleep channel with sticky-HMM persistence.
 
-    Two thresholds c1 < c2 on Z:
-        P(level <= 0) = 1 - sigmoid(Z - c1)
-        P(level <= 1) = 1 - sigmoid(Z - c2)
-    Parameterised as (c_tilde, delta_c > 0) with c1 = c_tilde,
-    c2 = c_tilde + delta_c.
+    Mirrors dev-repo `models/swat/simulation.py:gen_sleep`. Per-bin
+    marginal P(label | Z) uses the sigmoid model:
+        P(wake)      = 1 - sigmoid(sharp * (Z - c1))
+        P(light+rem) = sigmoid(sharp * (Z - c1)) - sigmoid(sharp * (Z - c2))
+        P(deep)      = sigmoid(sharp * (Z - c2))
 
-    Sleep is observed at every bin.
+    where sharp = sleep_sharpness (defaults to 1.0 if absent),
+    c1 = c_tilde, c2 = c_tilde + delta_c, both in [0, 1].
+
+    Labels are NOT drawn independently. With persistence
+        P_stay = exp(-dt_h / tau_sleep_persist_h)
+    the per-bin transition kernel mixes sticky and marginal:
+        P_eff(new=k) = P_stay · 1[prev=k] + (1 - P_stay) · P_marg(k)
+
+    The estimator's sleep likelihood (`_ordinal_log_lik`) treats
+    labels as conditionally independent given Z. This sim/est
+    asymmetry is deliberate (dev repo §gen_sleep docstring) — the
+    persistence is a generative-process correctness fix, not an
+    inference change.
     """
     rng = np.random.default_rng(seed)
     Z = trajectory[:, 1]
@@ -187,13 +220,32 @@ def gen_obs_sleep(trajectory, t_grid_days, params, seed=43):
 
     c1 = params['c_tilde']
     c2 = c1 + params['delta_c']
+    sharp = float(params.get('sleep_sharpness', 1.0))
 
-    s1 = _sigmoid(Z - c1).astype(np.float64)
-    s2 = _sigmoid(Z - c2).astype(np.float64)
+    s1 = _sigmoid(sharp * (Z - c1)).astype(np.float64)
+    s2 = _sigmoid(sharp * (Z - c2)).astype(np.float64)
 
-    draws = rng.random(size=T_len)
-    labels = np.where(draws < 1.0 - s1, 0,
-             np.where(draws < 1.0 - s2, 1, 2)).astype(np.int32)
+    p_marg = np.stack([1.0 - s1, s1 - s2, s2], axis=1)
+    p_marg = np.clip(p_marg, 0.0, 1.0)
+    p_marg = p_marg / p_marg.sum(axis=1, keepdims=True)
+
+    # t_grid is in DAYS in the bench (vs HOURS in the dev repo). Convert.
+    if T_len >= 2:
+        dt_h = float((t_grid_days[1] - t_grid_days[0]) * 24.0)
+    else:
+        dt_h = 24.0 / float(BINS_PER_DAY)
+    tau_h = float(params.get('tau_sleep_persist_h', 0.5))
+    p_stay = math.exp(-dt_h / max(tau_h, 1e-6))
+
+    labels = np.empty(T_len, dtype=np.int32)
+    cum0 = np.cumsum(p_marg[0])
+    labels[0] = int(np.searchsorted(cum0, rng.random()))
+    for k in range(1, T_len):
+        sticky = np.zeros(3, dtype=np.float64)
+        sticky[labels[k - 1]] = 1.0
+        p_eff = p_stay * sticky + (1.0 - p_stay) * p_marg[k]
+        cum = np.cumsum(p_eff)
+        labels[k] = int(np.searchsorted(cum, rng.random()))
 
     return {
         't_idx':     np.arange(T_len, dtype=np.int32),

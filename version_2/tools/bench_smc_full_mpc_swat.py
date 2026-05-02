@@ -198,16 +198,17 @@ def _pop_scenario_from_argv() -> str:
 # warm-up window and picks new schedules.
 SCENARIO_CONFIGS = {
     'pathological': {
-        # Z rescaled from 3.5 (in [0,6]) to 0.58 (in [0,1]).
-        'init_state':   np.array([0.5, 0.58, 0.5, 0.0], dtype=np.float64),
+        # Z rescaled from 3.5 (in [0,6]) to 0.583 (in [0,1]).
+        'init_state':   np.array([0.5, 0.583, 0.5, 0.0], dtype=np.float64),
         'baseline_v_h': 0.0,
         'baseline_v_n': 4.0,
         'baseline_v_c': 12.0,
     },
     'set_A': {
-        'init_state':   np.array([0.5, 0.58, 0.5, 0.5], dtype=np.float64),
+        # Healthy baseline matches dev repo INIT_STATE_A: V_n=0.2 (was 0.3).
+        'init_state':   np.array([0.5, 0.583, 0.5, 0.5], dtype=np.float64),
         'baseline_v_h': 1.0,
-        'baseline_v_n': 0.3,
+        'baseline_v_n': 0.2,
         'baseline_v_c': 0.0,
     },
 }
