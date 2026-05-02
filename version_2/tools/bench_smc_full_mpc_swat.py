@@ -800,11 +800,58 @@ def main():
     fig3.savefig(out_path3, dpi=120)
     plt.close(fig3)
 
+    # ── Dev-repo-style 3-panel set: latent_states / observations /     ─
+    #    entrainment, mirroring SWAT_model_dev/outputs/swat/<scen>/     ─
+    # The bench has 4-state + per-bin controls; the adapter in            ─
+    # models.swat.sim_plots reuses the dev plotting math against           ─
+    # those shapes so the PNGs are visually equivalent.                    ─
+    from models.swat.sim_plots import plot_swat_panels
+    v_h_pb = np.concatenate(
+        [np.asarray(a) for a in accumulated_obs['V_h']['value']])[:n_total_bins]
+    v_n_pb = np.concatenate(
+        [np.asarray(a) for a in accumulated_obs['V_n']['value']])[:n_total_bins]
+    v_c_pb = np.concatenate(
+        [np.asarray(a) for a in accumulated_obs['V_c']['value']])[:n_total_bins]
+    obs_HR_flat = {
+        't_idx':     hr_idx,
+        'obs_value': hr_val,
+    }
+    obs_sleep_flat = {
+        't_idx':     sl_idx,
+        'obs_label': sl_val,
+    }
+    obs_steps_flat = {
+        't_idx':        st_idx,
+        'log_value':    st_logval,
+        'present_mask': st_present,
+    }
+    obs_stress_flat = {
+        't_idx':     sr_idx,
+        'obs_value': sr_val,
+    }
+    p_lat, p_obs, p_ent = plot_swat_panels(
+        trajectory=traj_full,
+        t_grid_days=t_days,
+        V_h_per_bin=v_h_pb,
+        V_n_per_bin=v_n_pb,
+        V_c_per_bin=v_c_pb,
+        obs_HR=obs_HR_flat,
+        obs_sleep=obs_sleep_flat,
+        obs_steps=obs_steps_flat,
+        obs_stress=obs_stress_flat,
+        params=DEFAULT_PARAMS,
+        save_dir=run_dir,
+        suffix='',
+    )
+
     print()
     print(f"  Checkpoint: {run_dir}/manifest.json + data.npz")
     print(f"  Plot: {out_path}")
     print(f"  Plot: {out_path2}")
     print(f"  Plot: {out_path3}")
+    print(f"  Plot: {p_lat}")
+    print(f"  Plot: {p_obs}")
+    print(f"  Plot: {p_ent}")
     print("=" * 76)
 
 
