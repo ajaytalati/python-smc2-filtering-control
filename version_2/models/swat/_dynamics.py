@@ -12,8 +12,8 @@ Cross-repo consistency to floating-point precision was verified
 State vector (4 latents)
 ------------------------
     y[0] = W       wakefulness                in [0, 1]
-    y[1] = Z       sleep depth (rescaled)     in [0, A_scale = 6]
-    y[2] = a       adenosine                  >= 0
+    y[1] = Z       sleep depth (rescaled)     in [0, 1]
+    y[2] = a       adenosine                  in [0, 1]
     y[3] = T       testosterone amplitude     >= 0
 
 Control vector (3 exogenous inputs the MPC manipulates)

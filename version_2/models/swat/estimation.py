@@ -232,7 +232,7 @@ def propagate_fn(y, t, dt, params, grid_obs, k,
     channel likelihoods. GK-DPF guided proposal is a Phase 1.5
     optimisation.
     """
-    del rng_key  # not used by plain Euler proposal
+    del rng_key, sigma_diag  # sigma_diag ignored in favour of state-dep calculation
 
     # Build params dict from the indexed vector (jit-stable view)
     p_dict = {name: params[idx] for name, idx in _PI.items()}
@@ -249,8 +249,9 @@ def propagate_fn(y, t, dt, params, grid_obs, k,
 
     # Drift + diffusion step
     d_y = drift_jax(y, p_dict, t, u)
+    sigma_y = diffusion_state_dep(y, p_dict)
     sqrt_dt = jnp.sqrt(dt)
-    y_new = y + dt * d_y + sigma_diag * sqrt_dt * noise
+    y_new = y + dt * d_y + sigma_y * sqrt_dt * noise
     y_new = state_clip(y_new)
 
     pred_lw = jnp.float64(0.0)   # plain Euler proposal -> zero predictive lw
@@ -262,9 +263,14 @@ def propagate_fn(y, t, dt, params, grid_obs, k,
 # =========================================================================
 
 def diffusion_fn(params):
-    """Return the diagonal sigma vector (n_states,) given a params VECTOR."""
+    """Return the diagonal sigma vector (n_states,) given a params VECTOR.
+    Evaluated at COLD_START_INIT to ensure initial particle diversity.
+    """
     p_dict = {name: params[idx] for name, idx in _PI.items()}
-    return diffusion_state_dep(jnp.zeros(4), p_dict)
+    # Add frozen constants
+    for fname, fval in FROZEN_PARAMS.items():
+        p_dict[fname] = jnp.float64(fval)
+    return diffusion_state_dep(COLD_START_INIT, p_dict)
 
 
 # =========================================================================
@@ -444,6 +450,12 @@ def align_obs_fn(obs_data: dict, t_steps: int, dt: float) -> dict:
             mask = (idx >= 0) & (idx < t_steps)
             arr[idx[mask]] = np.asarray(ch['value'])[mask]
         out[key] = arr
+
+    # ── Combined mask (optional but recommended for speed) ────
+    # 1.0 if any channel has an observation at this bin
+    has_any = np.maximum.reduce([
+        hr_present, sleep_present, steps_present, stress_present])
+    out['has_any_obs'] = has_any.astype(np.float64)
 
     return out
 

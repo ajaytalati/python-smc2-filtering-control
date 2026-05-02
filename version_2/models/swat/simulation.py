@@ -370,8 +370,8 @@ def forward_sim_set(scenario_name: str, t_total_days: int = 14,
         # Boundary clip (replicates state_clip semantics)
         y = jnp.array([
             jnp.clip(y[0], 0.0, 1.0),
-            jnp.clip(y[1], 0.0, A_SCALE_FROZEN),
-            jnp.maximum(y[2], 0.0),
+            jnp.clip(y[1], 0.0, 1.0),
+            jnp.clip(y[2], 0.0, 1.0),
             jnp.maximum(y[3], 0.0),
         ])
         traj.append(y)
@@ -379,10 +379,20 @@ def forward_sim_set(scenario_name: str, t_total_days: int = 14,
 
     sleep_ch = gen_obs_sleep(trajectory, t_grid_days, DEFAULT_PARAMS,
                               seed=seed + 1)
+    
+    # Prepare V_h, V_n, V_c dicts for align_obs_fn
+    t_idx = np.arange(n_bins, dtype=np.int32)
+    vh_dict = {'t_idx': t_idx, 'value': u_per_bin[:, 0]}
+    vn_dict = {'t_idx': t_idx, 'value': u_per_bin[:, 1]}
+    vc_dict = {'t_idx': t_idx, 'value': u_per_bin[:, 2]}
+
     return {
         'trajectory':  trajectory,
         't_grid_days': t_grid_days,
         'u_per_bin':   u_per_bin,
+        'V_h':         vh_dict,
+        'V_n':         vn_dict,
+        'V_c':         vc_dict,
         'obs_HR':      gen_obs_hr(trajectory, t_grid_days, DEFAULT_PARAMS, seed=seed),
         'obs_sleep':   sleep_ch,
         'obs_steps':   gen_obs_steps(trajectory, t_grid_days, DEFAULT_PARAMS,
