@@ -142,6 +142,8 @@ def _build_cost_and_traj_fns(
     dt: float,
     n_substeps: int,
     schedule_from_theta,
+    init_state: np.ndarray | None = None,
+    params: dict | None = None,
     lambda_E: float = 1.0,
     seed: int = 42,
 ):
@@ -153,8 +155,25 @@ def _build_cost_and_traj_fns(
     control choice (E_dyn is algebraic in V_h/V_n/V_c, no τ_T lag).
     Both terms have aligned optima at the healthy operating point;
     lambda_E=1.0 balances their per-horizon magnitudes.
+
+    Args:
+        init_state: 4-vector (W, Z, a, T) the rollout starts from.
+            **Must be the actual current patient state** (e.g.
+            posterior-mean of the filter). Defaults to DEFAULT_INIT
+            (healthy) only as a fallback for diagnostic / unit-test
+            use; in real closed-loop control the bench MUST pass the
+            current posterior init or the rollout plans against the
+            wrong state.
+        params: SWAT param dict. **Should be the posterior-mean
+            dynamics**, not truth, in closed-loop. Falls back to
+            DEFAULT_PARAMS for diagnostics.
     """
-    p_jax = {k: jnp.asarray(float(v)) for k, v in DEFAULT_PARAMS.items()
+    if params is None:
+        params = DEFAULT_PARAMS
+    if init_state is None:
+        init_state = DEFAULT_INIT
+
+    p_jax = {k: jnp.asarray(float(v)) for k, v in params.items()
               if isinstance(v, (int, float))}
     em_step = _make_em_step_fn(p_jax, dt, n_substeps)
     lambda_E_jax = jnp.float64(lambda_E)
@@ -164,7 +183,7 @@ def _build_cost_and_traj_fns(
     )
     fixed_w = grids['wiener']    # (n_inner, n_steps, 4)
 
-    init_arr = jnp.asarray(DEFAULT_INIT, dtype=jnp.float64)
+    init_arr = jnp.asarray(init_state, dtype=jnp.float64)
 
     @jax.jit
     def cost_fn(theta: jnp.ndarray) -> jnp.ndarray:
@@ -221,6 +240,8 @@ def build_control_spec(
     n_substeps: int = 4,
     sigma_prior: float = 1.5,
     lambda_E: float = 1.0,
+    init_state: np.ndarray | None = None,
+    params: dict | None = None,
     seed: int = 42,
 ) -> ControlSpec:
     """Construct a SWAT ControlSpec for the given horizon.
@@ -238,11 +259,27 @@ def build_control_spec(
         sigma_prior: std of the Gaussian prior over θ.
         lambda_E:   weight on the ∫E_dyn dt shaping term. 0 disables;
                     1.0 (default) balances ∫T and ∫E_dyn at healthy ops.
+        init_state: 4-vector (W, Z, a, T) the cost rollout starts
+                     from. **Must be the actual current patient
+                     state** (filter posterior mean) for closed-loop
+                     planning to be coherent — the cost function
+                     bakes this into a JIT closure, so post-construction
+                     ``object.__setattr__(spec, 'initial_state', …)``
+                     does NOT update what the rollout uses. Defaults
+                     to DEFAULT_INIT for diagnostic / unit-test use.
+        params:     SWAT param dict (posterior-mean dynamics +
+                     truth obs in closed loop). Same closure caveat
+                     as ``init_state``. Defaults to DEFAULT_PARAMS.
         seed:       common-random-numbers seed for variance reduction.
 
     Returns:
         A frozen ControlSpec ready for the MPC.
     """
+    if params is None:
+        params = DEFAULT_PARAMS
+    if init_state is None:
+        init_state = DEFAULT_INIT
+
     rbf, schedule_from_theta = _make_three_schedules(
         n_steps=n_steps, dt=dt, n_anchors=n_anchors,
     )
@@ -250,18 +287,20 @@ def build_control_spec(
         n_inner=n_inner, n_steps=n_steps, dt=dt,
         n_substeps=n_substeps,
         schedule_from_theta=schedule_from_theta,
+        init_state=init_state,
+        params=params,
         lambda_E=lambda_E,
         seed=seed,
     )
 
     spec = ControlSpec(
         name="swat",
-        version="1.0.0",
+        version="1.1.0",
         dt=dt,
         n_steps=n_steps,
         n_substeps=n_substeps,
-        initial_state=jnp.asarray(DEFAULT_INIT, dtype=jnp.float64),
-        truth_params={k: float(v) for k, v in DEFAULT_PARAMS.items()
+        initial_state=jnp.asarray(init_state, dtype=jnp.float64),
+        truth_params={k: float(v) for k, v in params.items()
                        if isinstance(v, (int, float))},
         theta_dim=3 * n_anchors,
         sigma_prior=sigma_prior,

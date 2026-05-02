@@ -153,6 +153,15 @@ def _build_swat_control_spec(*, dyn_params: dict, init_state: np.ndarray,
             truth_params[k] = float(v)
 
     n_steps = plan_horizon_days * BINS_PER_DAY
+    # Pass init_state + posterior-mean params INTO build_control_spec
+    # so they are baked into the cost-fn JIT closure. A previous version
+    # set these after construction via object.__setattr__, which only
+    # updated the dataclass fields the framework reads — the cost-fn
+    # closure had already captured DEFAULT_INIT / DEFAULT_PARAMS, so the
+    # planner was rolling out from a healthy state regardless of the
+    # patient's actual posterior. That made the lambda_E·∫E_dyn shaping
+    # term inert (E saturates from a healthy init) and cancelled the
+    # closed-loop adaptivity for the dynamics parameters too.
     spec = build_control_spec(
         n_steps=n_steps,
         dt=DT,
@@ -160,12 +169,10 @@ def _build_swat_control_spec(*, dyn_params: dict, init_state: np.ndarray,
         n_inner=64,
         n_substeps=4,
         sigma_prior=1.5,
+        init_state=np.asarray(init_state, dtype=np.float64),
+        params=truth_params,
         seed=42,
     )
-    # Override the spec's truth_params + init_state with posterior-derived values
-    object.__setattr__(spec, 'truth_params', truth_params)
-    object.__setattr__(spec, 'initial_state',
-                        jnp.asarray(init_state, dtype=jnp.float64))
     return spec
 
 
