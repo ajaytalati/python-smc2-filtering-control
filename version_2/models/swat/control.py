@@ -8,16 +8,25 @@ Cost functional
 ---------------
 ::
 
-    cost(θ) = -E_w[ ∫ T(t) dt ]    # maximise integrated testosterone
+    cost(θ) = -E_w[ ∫ T(t) dt + lambda_E · ∫ E_dyn(t) dt ]
 
-That is the entire cost. **No regularisation, no operating-point
-biases**. The controller figures out optimal V_h, V_n, V_c from the
-T reward alone, subject to the bound transforms below.
+The first term is the original "maximise integrated testosterone"
+objective. The second term (added 2026-05-02) is a SHAPING reward on
+the entrainment quality E_dyn ∈ [0, 1] that drives the Stuart-Landau
+bifurcation parameter μ(E) = μ_0 + μ_E · E. Rationale:
 
-This is by user direction (2026-04-30):
-
-    "The controller does not have to be given these baselines — it
-     should figure them out by itself. cost = -∫T dt is enough."
+  - The chain (controls → E → μ → T) has a sharp bifurcation cliff at
+    E_crit = -μ_0/μ_E = 0.5: below E_crit, T flatlines (zero gradient
+    on ∫T dt); above, T climbs an exp() curve on a τ_T ≈ 2d timescale.
+  - Adding ∫E dt removes the cliff: the controller climbs a smooth
+    ramp 0 → 0.5 → 0.85 with reward at every step, and gets immediate
+    (no τ_T lag) feedback on each control choice.
+  - Both terms have aligned optima (V_h high, V_n low, V_c=0
+    maximises both E and the eventual ∫T), so this is a Lyapunov-style
+    auxiliary cost, not a different objective.
+  - Magnitude balance: at healthy operating point, ∫T dt and ∫E dt
+    are both ≈ 0.85 · t_total, so lambda_E ≈ 1 makes the two terms
+    contribute equally over the horizon. Default is 1.0.
 
 θ packing
 ---------
@@ -51,6 +60,7 @@ from version_2.models.swat._dynamics import (
     A_SCALE_FROZEN,
     diffusion_state_dep,
     drift_jax,
+    entrainment_quality,
     state_clip,
 )
 from version_2.models.swat.simulation import DEFAULT_INIT, DEFAULT_PARAMS
@@ -132,18 +142,22 @@ def _build_cost_and_traj_fns(
     dt: float,
     n_substeps: int,
     schedule_from_theta,
+    lambda_E: float = 1.0,
     seed: int = 42,
 ):
     """Build (cost_fn, traj_sample_fn) closures for SWAT control.
 
-    Cost is purely -E_w[ ∫ T(t) dt ]. No regularisation terms; the
-    bound transforms in schedule_from_theta keep V_h, V_n, V_c
-    physically valid, and the controller's only job is to maximise
-    integrated testosterone amplitude.
+    Cost is `-E_w[ ∫T dt + lambda_E · ∫E_dyn dt ]`. The shaping term
+    on E_dyn removes the bifurcation cliff (T flatlines below E_crit)
+    and gives the controller dense, immediate gradient signal on each
+    control choice (E_dyn is algebraic in V_h/V_n/V_c, no τ_T lag).
+    Both terms have aligned optima at the healthy operating point;
+    lambda_E=1.0 balances their per-horizon magnitudes.
     """
     p_jax = {k: jnp.asarray(float(v)) for k, v in DEFAULT_PARAMS.items()
               if isinstance(v, (int, float))}
     em_step = _make_em_step_fn(p_jax, dt, n_substeps)
+    lambda_E_jax = jnp.float64(lambda_E)
 
     grids = build_crn_noise_grids(
         n_inner=n_inner, n_steps=n_steps, n_channels=4, seed=seed,
@@ -158,17 +172,23 @@ def _build_cost_and_traj_fns(
 
         def trial(w_seq):
             def step(carry, k):
-                y, T_acc = carry
+                y, T_acc, E_acc = carry
                 t_k = jnp.float64(k) * dt
                 u_t = u_arr[k]
                 y_next = em_step(y, t_k, u_t, w_seq[k])
-                T_acc = T_acc + y[3] * dt        # integrate testosterone
-                return (y_next, T_acc), None
+                E_t = entrainment_quality(
+                    y[0], y[1], y[2], y[3],
+                    u_t[0], u_t[1], u_t[2], p_jax)
+                T_acc = T_acc + y[3] * dt
+                E_acc = E_acc + E_t * dt
+                return (y_next, T_acc, E_acc), None
 
-            (_, T_acc), _ = jax.lax.scan(
-                step, (init_arr, jnp.float64(0.0)), jnp.arange(n_steps),
+            (_, T_acc, E_acc), _ = jax.lax.scan(
+                step,
+                (init_arr, jnp.float64(0.0), jnp.float64(0.0)),
+                jnp.arange(n_steps),
             )
-            return -T_acc
+            return -(T_acc + lambda_E_jax * E_acc)
 
         return jnp.mean(jax.vmap(trial)(fixed_w))
 
@@ -200,13 +220,13 @@ def build_control_spec(
     n_inner: int = 64,
     n_substeps: int = 4,
     sigma_prior: float = 1.5,
+    lambda_E: float = 1.0,
     seed: int = 42,
 ) -> ControlSpec:
     """Construct a SWAT ControlSpec for the given horizon.
 
-    Cost is purely -E[∫T dt] — no regularisation terms.
-    Bound transforms in ``schedule_from_theta`` keep V_h, V_n, V_c
-    physically valid.
+    Cost is `-E[∫T dt + lambda_E · ∫E_dyn dt]`. See module docstring
+    for the rationale on the shaping term.
 
     Args:
         n_steps:    number of bins in the planning horizon.
@@ -216,6 +236,8 @@ def build_control_spec(
         n_inner:    Monte Carlo trials per cost evaluation.
         n_substeps: deterministic Euler substeps for stiffness.
         sigma_prior: std of the Gaussian prior over θ.
+        lambda_E:   weight on the ∫E_dyn dt shaping term. 0 disables;
+                    1.0 (default) balances ∫T and ∫E_dyn at healthy ops.
         seed:       common-random-numbers seed for variance reduction.
 
     Returns:
@@ -228,6 +250,7 @@ def build_control_spec(
         n_inner=n_inner, n_steps=n_steps, dt=dt,
         n_substeps=n_substeps,
         schedule_from_theta=schedule_from_theta,
+        lambda_E=lambda_E,
         seed=seed,
     )
 

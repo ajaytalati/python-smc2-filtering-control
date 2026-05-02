@@ -239,6 +239,8 @@ def _plot_observations(trajectory, t_days, V_n_per_bin,
                              gridspec_kw={'height_ratios': [3, 1, 2, 2]})
     n = len(t_days)
     W = trajectory[:, 0]
+    # External (ground-truth, V_c-independent) circadian overlay.
+    C_t_external = np.sin(2.0 * np.pi * t_days + PHI_0_FROZEN)
 
     # ── Panel 1: HR ──
     hr_idx = np.asarray(obs_HR.get('t_idx', []), dtype=np.int64)
@@ -313,7 +315,20 @@ def _plot_observations(trajectory, t_days, V_n_per_bin,
     axes[3].legend(loc='upper right', fontsize=8)
     axes[3].grid(True, alpha=0.3)
 
-    fig.suptitle('SWAT SDE  —  Observations (HR, sleep 3-level, steps, stress)',
+    # External C(t) overlay on every panel (twin axis), so each obs
+    # channel can be read against time-of-day. V_c-independent — see
+    # `simulation.circadian()` in the dev repo for why this is the
+    # objective wall-clock reference, not the V_c-shifted subject drive.
+    for axi in axes:
+        ax_c = axi.twinx()
+        ax_c.plot(t_days, C_t_external, color='grey', lw=0.5, alpha=0.4)
+        ax_c.set_ylim(-1.15, 1.15)
+        ax_c.set_yticks([-1, 0, 1])
+        ax_c.tick_params(axis='y', labelcolor='grey', labelsize=7)
+        ax_c.set_ylabel('C(t) ext', color='grey', fontsize=8)
+
+    fig.suptitle('SWAT SDE  —  Observations (HR, sleep 3-level, steps, stress)  '
+                 'with external C(t) overlay',
                  fontsize=12)
     fig.tight_layout()
     fig.savefig(save_path, dpi=150)
