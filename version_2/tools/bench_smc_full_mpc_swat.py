@@ -712,12 +712,17 @@ def main():
     plt.close(fig)
 
     # ── Diagnostic plot 1: latents + circadian overlay ──────────────────
-    # Per-bin V_c trajectory (applied controls) for the circadian phase.
+    # C(t) is the OBJECTIVE EXTERNAL light cycle — sin(2π t + φ₀), the
+    # ground-truth circadian reference (the sun). It is independent of
+    # V_c. The subject's internal shifted drive C_eff = sin(2π(t -
+    # V_c/24) + φ₀) is what enters u_W inside the SDE drift, but on a
+    # diagnostic plot the user wants to see the objective time-of-day
+    # reference, not the V_c-shifted subjective drive.
     PHI_0 = -math.pi / 3.0
     v_c_per_bin = np.concatenate(
         [np.asarray(a) for a in accumulated_obs['V_c']['value']])
     v_c_per_bin = v_c_per_bin[:n_total_bins]
-    C_t = np.sin(2.0 * np.pi * (t_days - v_c_per_bin / 24.0) + PHI_0)
+    C_t = np.sin(2.0 * np.pi * t_days + PHI_0)
 
     fig2, ax_lat = plt.subplots(figsize=(12, 5))
     ax_lat.plot(t_days, traj_full[:, 0], color='C0', lw=1.0, label='W')
