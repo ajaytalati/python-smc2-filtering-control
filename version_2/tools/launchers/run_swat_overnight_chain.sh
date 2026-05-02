@@ -22,6 +22,20 @@ LOGDIR="$HOME/bench_logs"
 REPO="$HOME/Repos/python-smc2-filtering-control"
 mkdir -p "$LOGDIR"
 
+# Activate the comfyenv conda environment (script may be launched
+# via `tmux new-session -d` from a non-interactive shell that has not
+# sourced the user's conda init).
+if ! command -v python >/dev/null 2>&1 || \
+   [ "${CONDA_DEFAULT_ENV:-}" != "comfyenv" ]; then
+    # conda's activate scripts reference unset vars under `set -u`;
+    # toggle nounset off briefly so activation succeeds.
+    set +u
+    # shellcheck disable=SC1091
+    source "$HOME/miniconda3/etc/profile.d/conda.sh"
+    conda activate comfyenv
+    set -u
+fi
+
 cd "$REPO/version_2" || { echo "REPO not found"; exit 1; }
 
 export JAX_ENABLE_X64=True
