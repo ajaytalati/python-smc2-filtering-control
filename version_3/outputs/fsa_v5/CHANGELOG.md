@@ -285,10 +285,47 @@ The post-hoc evaluator runs the legacy hard-indicator chance-constraint check on
 
 ---
 
-## Run 02 — TODO: Stage 2 controller-only verification
+## Run 10 — Stage 2 soft_fast SEDENTARY (aborted partway through sweep)
 
-(superseded by Runs 06 / 07 / 08 / 09 above)
+**2026-05-05 22:11–22:15** — sweep step interrupted before completion.
+
+`run10_stage2_soft_fast_sedentary_T14_optimized` -- only 4 of 14 replans logged before the launcher process was killed externally (no traceback in log; bench process exited cleanly mid-loop). The 4 logged replans show the controller producing **bit-identical** state evolution to Run 09 healthy at the same stride numbers (`state=[0.5, 0.45, 0.2, 0.45, 0.06, 0.07] → ... → state=[0.477, 0.429, 0.179, 0.677, 0.058, 0.076]`).
+
+**Why bit-identical:** Stage 2 driver has a structural property — `baseline_phi` is overwritten by the controller's first replan at `k=0` BEFORE it's ever applied. So `scenario` only changes the saved metadata; the controller starts planning from the trained-athlete state under truth params regardless of which scenario tag is set, and the deterministic plant + same RNG seed (42) produces identical trajectories.
+
+The "scenario" only meaningfully differentiates Stage 3 runs (where the filter sees observations from a `replan_K`-stride warm-up under `baseline_phi` before the controller takes over). The Stage 2 launcher's sedentary + overtrained sweeps would have produced bit-identical results to Run 09; aborting the sweep early was the correct call. Sedentary + overtrained Stage 2 are NOT useful additional runs. (`overtrained` was dropped from the queue without being run.)
+
+---
+
+## Run 11 — Stage 3 soft_fast HEALTHY  (v1, OOM'd at controller's first replan)
+
+**2026-05-05 22:14** — first attempt at Stage 3 with the production particle counts.
+
+- **Run dir:** `experiments/run12_stage3_soft_fast_healthy_T14_optimized/` (note: dir created but no manifest written before crash)
+- **Config:** filter n_smc=256 / n_pf=400, controller n_smc=256 / n_inner=64
+
+### What happened
+
+Filter ran fine: window 1 finished in 230 s with id_cov = 37/37. Then the controller's tempered-SMC tried to compile its kernels and OOM'd:
+
+```
+RESOURCE_EXHAUSTED: Out of memory while trying to allocate 30.85GiB
+```
+
+The 5090 has 32 GB VRAM. The filter's compiled kernels were holding ~22.86 GB after window 1; the controller wanted 30.85 GB on top of that → fragmentation, then OOM. Filter and controller can each saturate the GPU on their own (Stage 1 = filter alone uses 22.86 GB; Stage 2 = controller alone uses ~22 GB), but together they exceed the device.
+
+### Fix
+
+Reduced both filter and controller particle counts for Stage 3 (Run 12, below): `--n-pf 200 --n-smc 128 --n-inner 32` -- still GPU-saturating per CLAUDE.md, just smaller batches per kernel so they coexist in VRAM. Stage 3 specifically needs this combination; Stage 1 alone and Stage 2 alone can stay at 400/256/64.
+
+---
+
+## Run 12 — Stage 3 soft_fast HEALTHY  (v2, smaller particles)
+
+(in progress at 22:23 — entry filled in when it finishes)
+
+---
 
 ## Run 03 — TODO: Stage 3 full closed-loop SMC²-MPC verification
 
-(empty until first run)
+(superseded by Run 12 above)
