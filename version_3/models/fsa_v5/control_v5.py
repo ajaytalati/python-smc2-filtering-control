@@ -227,7 +227,7 @@ def _make_forward_rollout_fn(dt):
 # THE CHANCE-CONSTRAINT COST EVALUATION (LaTeX §9.6 eq 23/24)
 # ===========================================================================
 
-def evaluate_chance_constrained_cost(
+def _evaluate_chance_constrained_cost_legacy(
     theta_particles,        # (n_particles, theta_dim)  OR list of param dicts
     weights,                # (n_particles,) — must sum to 1
     Phi_schedule,           # (n_steps, 2)
@@ -238,7 +238,12 @@ def evaluate_chance_constrained_cost(
     truth_params_template: dict | None = None,
     initial_state=None,     # (6,) — defaults to a moderate-trained athlete
 ) -> dict:
-    """Reference evaluator for the FSA-v5 chance-constrained cost.
+    """Legacy NumPy/SciPy reference evaluator for the FSA-v5 chance-constrained cost.
+
+    KEPT AS A DEBUG / READABILITY REFERENCE. Not JIT-able (uses
+    ``scipy.optimize.brentq`` and Python loops over bins and particles).
+    Production callers should use ``evaluate_chance_constrained_cost_hard``
+    or ``evaluate_chance_constrained_cost_soft`` defined below.
 
     Takes a particle cloud over the model parameters, forward-simulates
     each particle's deterministic trajectory under the candidate Phi
@@ -392,35 +397,434 @@ def evaluate_chance_constrained_cost(
     }
 
 
+# =============================================================================
+# JIT-FRIENDLY IMPLEMENTATION  (smc2fc-port-ready)
+# =============================================================================
+# The legacy implementation above uses ``scipy.optimize.brentq`` plus Python
+# loops; that's fine for a 10-particle smoke test but is too slow to sit
+# inside a tempered-SMC outer loop or an HMC chain that calls the cost a
+# few thousand times per inference run.
+#
+# Two production-ready variants are defined below:
+#
+#   * ``evaluate_chance_constrained_cost_hard``  — uses the indicator
+#     ``(A_traj < A_sep).astype(float)``. Suitable for pure SMC$^2$
+#     architectures where the controller weights $\theta$-particles by
+#     their empirical violation rate at each tempering step.
+#     Indicator-based; not differentiable wrt $\theta$.
+#
+#   * ``evaluate_chance_constrained_cost_soft`` — uses the sigmoid
+#     surrogate ``sigmoid(beta * (A_sep - A_traj) / scale)``. Suitable
+#     for HMC architectures that need smooth gradients. Anneal $\beta$
+#     toward $\infty$ during inference to recover the hard limit.
+#
+# Both delegate to a shared inner core ``_compute_cost_internals`` that
+# is fully JIT-able and vmap-able. The user-facing alias
+# ``evaluate_chance_constrained_cost`` points to the hard variant, so
+# existing imports continue to work.
+
+import functools
+
+
+def _jax_mu_bar(A, Phi_B, Phi_S, params):
+    """JIT-friendly counterpart to the legacy ``_mu_bar``.
+
+    Computes the slow-manifold effective Stuart-Landau coefficient
+    $\\bar\\mu(A; \\Phi)$ in pure JAX. ``params`` is a dict whose values
+    are JAX scalars (or 0-d arrays). All v5 keys must be present
+    (``B_dec, S_dec, mu_dec_B, mu_dec_S, n_dec``).
+
+    Mirrors LaTeX §10.2, equation (eq:v5-mubar). Drops the legacy's
+    Python ``if mu_dec_*>0`` guard since the v5 truth parameter set
+    always has positive thresholds (``B_dec, S_dec > 0``), so
+    ``Bn + Bdn > 0`` always.
+    """
+    a_B = (1.0 + params['epsilon_AB'] * A) / (1.0 + params['epsilon_AB'] * A_TYP)
+    a_S = (1.0 + params['epsilon_AS'] * A) / (1.0 + params['epsilon_AS'] * A_TYP)
+    a_F = (1.0 + params['lambda_A']  * A) / (1.0 + params['lambda_A']  * A_TYP)
+    B   = params['tau_B'] * params['kappa_B'] * a_B * Phi_B
+    S   = params['tau_S'] * params['kappa_S'] * a_S * Phi_S
+    KFB = params['KFB_0'] + params['tau_K'] * params['mu_K'] * Phi_B
+    KFS = params['KFS_0'] + params['tau_K'] * params['mu_K'] * Phi_S
+    F   = params['tau_F'] * (KFB * Phi_B + KFS * Phi_S) / a_F
+
+    F_dev = F - F_TYP
+    n     = params['n_dec']
+    Bn    = jnp.power(jnp.maximum(B, 0.0), n)
+    Sn    = jnp.power(jnp.maximum(S, 0.0), n)
+    Bdn   = jnp.power(params['B_dec'], n)
+    Sdn   = jnp.power(params['S_dec'], n)
+    dec_B = params['mu_dec_B'] * Bdn / (Bn + Bdn)
+    dec_S = params['mu_dec_S'] * Sdn / (Sn + Sdn)
+    return (params['mu_0']
+            + params['mu_B'] * B + params['mu_S'] * S
+            - params['mu_F'] * F - params['mu_FF'] * F_dev * F_dev
+            - dec_B - dec_S)
+
+
+def _jax_find_A_sep(Phi_B, Phi_S, params,
+                     A_min: float = 1e-4,
+                     A_max: float = 2.0,
+                     n_grid: int = 64,
+                     n_bisect: int = 40):
+    """JIT-friendly separatrix root-finder.
+
+    Mathematical contract identical to the legacy ``find_A_sep_v5``:
+      * ``-inf``           — mono-stable healthy regime ($A=0$ unstable),
+                             so the constraint $A_t < A_{\\rm sep}$ is
+                             trivially satisfied for any $A_t > 0$.
+      * finite scalar in $(A_{\\rm min}, A_{\\rm max})$
+                           — bistable regime; the smaller positive root
+                             of $g(A) = \\bar\\mu(A) - \\eta A^2$.
+      * ``+inf``           — mono-stable collapsed regime; the constraint
+                             $A_t < A_{\\rm sep}$ is violated for any
+                             finite $A_t$.
+
+    Implementation: scan a 64-point grid for a sign change from negative
+    to positive, then bisect within that bracket for ``n_bisect``
+    iterations. Pure JAX, JIT-able, vmap-able, gradient-friendly.
+    """
+    eta = params['eta']
+
+    def g_at(A):
+        return _jax_mu_bar(A, Phi_B, Phi_S, params) - eta * A * A
+
+    # Sample $g$ on a uniform grid in $[A_{\rm min}, A_{\rm max}]$.
+    A_grid = jnp.linspace(A_min, A_max, n_grid)
+    g_vals = jax.vmap(g_at)(A_grid)
+
+    # Mono-stable healthy: $g(A_{\rm min}) > 0$ ⇒ $A=0$ is unstable, no separatrix.
+    is_healthy = g_vals[0] > 0.0
+
+    # Find first sign change from negative to positive (the smaller positive root).
+    sign_chg = (g_vals[:-1] < 0.0) & (g_vals[1:] > 0.0)
+    has_sep = jnp.any(sign_chg)
+    idx     = jnp.argmax(sign_chg.astype(jnp.int32))   # 0 if no change
+    a0      = A_grid[idx]
+    b0      = A_grid[idx + 1]
+
+    # Bisect within $[a_0, b_0]$.
+    def bisect_body(state, _):
+        lo, hi = state
+        mid    = 0.5 * (lo + hi)
+        g_mid  = g_at(mid)
+        # If g(mid) < 0, root is in [mid, hi]; else in [lo, mid].
+        new_lo = jnp.where(g_mid < 0.0, mid, lo)
+        new_hi = jnp.where(g_mid < 0.0, hi, mid)
+        return (new_lo, new_hi), None
+
+    (lo, hi), _ = jax.lax.scan(bisect_body, (a0, b0), None, length=n_bisect)
+    root = 0.5 * (lo + hi)
+
+    # Three-way return matches legacy semantics.
+    return jnp.where(is_healthy, -jnp.inf,
+                      jnp.where(has_sep, root, jnp.inf))
+
+
+def _stack_particle_dicts(particles_list):
+    """Convert ``[ {param:scalar, ...}, ... ]`` → ``{param: (n_particles,), ...}``.
+
+    Validates that every particle has the same keys. JAX arrays in the
+    output, dtype float64.
+    """
+    if not particles_list:
+        raise ValueError("particles_list is empty")
+    keys = list(particles_list[0].keys())
+    for i, p in enumerate(particles_list):
+        if set(p.keys()) != set(keys):
+            raise ValueError(f"particle {i} has different keys")
+    return {k: jnp.array([float(p[k]) for p in particles_list], dtype=jnp.float64)
+            for k in keys}
+
+
+def _ensure_v5_keys(theta_stacked, truth_template):
+    """Fill any missing v5 Hill / cascade keys from a template.
+
+    Estimated parameter vectors from ``smc2fc`` typically only carry the
+    37 estimated keys; the 8 frozen dynamics keys (KFB_0, KFS_0, tau_K,
+    n_dec, B_dec, S_dec, mu_dec_B, mu_dec_S) plus the 6 frozen diffusion
+    keys aren't in the particle. This helper fills them in from the
+    truth template, broadcasting to the leading particle dimension.
+    """
+    n_particles = next(iter(theta_stacked.values())).shape[0]
+    needed = TRUTH_PARAMS_V5.keys()
+    out = dict(theta_stacked)
+    for k in needed:
+        if k not in out:
+            out[k] = jnp.full((n_particles,), float(truth_template[k]),
+                               dtype=jnp.float64)
+    return out
+
+
+def _compute_cost_internals(theta_stacked, weights, Phi_schedule,
+                             initial_state, dt):
+    """Shared body for hard + soft variants — fully JIT-friendly.
+
+    Returns a tuple
+        ``(effort, A_traj_per_particle, A_sep_per_bin)``
+    where:
+      * ``effort`` is a scalar (Φ-only, deterministic).
+      * ``A_traj_per_particle`` is shape (n_particles, n_steps) — the
+        autonomic-amplitude trajectory of each particle under the
+        deterministic (drift-only) v5 dynamics.
+      * ``A_sep_per_bin`` is shape (n_steps,) — the analytical separatrix
+        evaluated at each bin's $\\Phi$ using the **first particle's**
+        parameters as a representative template (same simplification as
+        the legacy implementation; see Notes in the legacy docstring).
+    """
+    # 1. Per-bin separatrix: vmap over the schedule using particle-0 params.
+    template = jax.tree_util.tree_map(lambda x: x[0], theta_stacked)
+
+    def find_sep_at(Phi_t):
+        return _jax_find_A_sep(Phi_t[0], Phi_t[1], template)
+
+    A_sep_per_bin = jax.vmap(find_sep_at)(Phi_schedule)
+
+    # 2. Per-particle forward rollout (drift-only, RK4 inside ``rollout_fn``).
+    rollout_fn = _make_forward_rollout_fn(dt)
+
+    def single_particle_A_traj(params_single):
+        traj = rollout_fn(initial_state, params_single, Phi_schedule)
+        return traj[:, 3]    # autonomic amplitude column
+
+    A_traj_per_particle = jax.vmap(single_particle_A_traj)(theta_stacked)
+
+    # 3. Effort cost: deterministic in Φ, identical across particles.
+    effort = jnp.sum(Phi_schedule ** 2) * dt
+
+    return effort, A_traj_per_particle, A_sep_per_bin
+
+
+def _aggregate(A_traj_pp, A_sep_per_bin, weights, dt, indicator,
+                alpha, A_target, effort):
+    """Common aggregation given a per-particle-per-bin indicator array.
+
+    ``indicator`` shape: (n_particles, n_steps), values in [0, 1].
+    For the hard variant: 0/1 indicator. For the soft variant: sigmoid.
+    """
+    # Per-particle violation rate
+    vrpp = jnp.mean(indicator, axis=1)
+    weighted_vr = jnp.sum(weights * vrpp)
+
+    # Per-particle ∫A dt
+    A_int_pp = jnp.sum(A_traj_pp, axis=1) * dt
+    weighted_A_int = jnp.sum(weights * A_int_pp)
+
+    return {
+        'mean_effort':                  effort,
+        'mean_A_integral':              weighted_A_int,
+        'violation_rate_per_particle':  vrpp,
+        'weighted_violation_rate':      weighted_vr,
+        'satisfies_chance_constraint':  weighted_vr <= alpha,
+        'satisfies_target':             weighted_A_int >= A_target,
+        'A_sep_per_bin':                A_sep_per_bin,
+    }
+
+
+# ── JIT'd inner cores (one per indicator variant) ─────────────────────────
+
+@functools.partial(jax.jit, static_argnames=('dt', 'alpha', 'A_target'))
+def _cost_hard_jit(theta_stacked, weights, Phi_schedule, initial_state,
+                    dt, alpha, A_target):
+    effort, A_traj_pp, A_sep = _compute_cost_internals(
+        theta_stacked, weights, Phi_schedule, initial_state, dt)
+    indicator = (A_traj_pp < A_sep[None, :]).astype(jnp.float64)
+    return _aggregate(A_traj_pp, A_sep, weights, dt, indicator,
+                       alpha, A_target, effort)
+
+
+@functools.partial(jax.jit, static_argnames=('dt', 'alpha', 'A_target',
+                                              'beta', 'scale'))
+def _cost_soft_jit(theta_stacked, weights, Phi_schedule, initial_state,
+                    dt, alpha, A_target, beta, scale):
+    effort, A_traj_pp, A_sep = _compute_cost_internals(
+        theta_stacked, weights, Phi_schedule, initial_state, dt)
+    # Sigmoid surrogate: large beta → hard indicator. ``A_sep`` is
+    # broadcast to match ``A_traj_pp``'s (n_particles, n_steps) shape.
+    # NOTE: ``A_sep`` may be ±inf in mono-stable regimes — sigmoid
+    # handles this gracefully (sigmoid(+inf) = 1, sigmoid(-inf) = 0).
+    indicator = jax.nn.sigmoid(beta * (A_sep[None, :] - A_traj_pp) / scale)
+    return _aggregate(A_traj_pp, A_sep, weights, dt, indicator,
+                       alpha, A_target, effort)
+
+
+# ── User-facing entry points (do input coercion outside JIT) ──────────────
+
+def evaluate_chance_constrained_cost_hard(
+    theta_particles,
+    weights,
+    Phi_schedule,
+    *,
+    dt: float = 1.0 / 96,
+    alpha: float = 0.05,
+    A_target: float = 2.0,
+    truth_params_template: dict | None = None,
+    initial_state=None,
+) -> dict:
+    """JIT-friendly chance-constrained cost (hard indicator).
+
+    Architecturally suitable for **pure-SMC$^2$** controllers where each
+    parameter particle is re-weighted by its empirical violation rate
+    at each tempering step. The hard indicator
+    ``(A_traj < A_sep_per_bin)`` is non-differentiable wrt $\\theta$, so
+    this variant is NOT suitable for HMC inner kernels — use
+    ``evaluate_chance_constrained_cost_soft`` for that.
+
+    Args:
+        theta_particles: either a list of param dicts (legacy form) or
+            a dict-of-arrays where each leaf has shape (n_particles,).
+            Missing v5 frozen keys are filled from
+            ``truth_params_template``.
+        weights: shape (n_particles,) particle weights, will be
+            normalised to sum to 1.
+        Phi_schedule: shape (n_steps, 2) per-bin (Phi_B, Phi_S).
+        dt: bin width in days (default 1/96 = 15 min).
+        alpha: chance-constraint budget — fraction of bins for which
+            $A_t < A_{\\rm sep}(\\Phi_t)$ is allowed.
+        A_target: minimum required time-averaged autonomic exposure.
+        truth_params_template: dict used to fill missing keys. Default
+            ``TRUTH_PARAMS_V5``.
+        initial_state: shape (6,) start of each rollout. Default chosen
+            to be a moderate-trained athlete inside the v5 island.
+
+    Returns:
+        Same dict shape as the legacy ``evaluate_chance_constrained_cost``,
+        with all numeric values now JAX arrays (caller may cast to
+        Python floats if needed).
+    """
+    if truth_params_template is None:
+        truth_params_template = TRUTH_PARAMS_V5
+    if initial_state is None:
+        initial_state = jnp.array([0.50, 0.45, 0.20, 0.45, 0.06, 0.07],
+                                    dtype=jnp.float64)
+    else:
+        initial_state = jnp.asarray(initial_state, dtype=jnp.float64)
+
+    # Coerce theta_particles to a stacked dict of JAX arrays
+    if isinstance(theta_particles, list):
+        theta_stacked = _stack_particle_dicts(theta_particles)
+    elif isinstance(theta_particles, dict):
+        theta_stacked = {k: jnp.asarray(v, dtype=jnp.float64)
+                          for k, v in theta_particles.items()}
+    else:
+        raise ValueError(
+            "theta_particles must be a list of dicts or a dict of arrays; "
+            f"got {type(theta_particles)}.")
+
+    theta_stacked = _ensure_v5_keys(theta_stacked, truth_params_template)
+    weights = jnp.asarray(weights, dtype=jnp.float64)
+    weights = weights / jnp.sum(weights)
+    Phi_schedule = jnp.asarray(Phi_schedule, dtype=jnp.float64)
+
+    return _cost_hard_jit(theta_stacked, weights, Phi_schedule,
+                           initial_state, float(dt), float(alpha), float(A_target))
+
+
+def evaluate_chance_constrained_cost_soft(
+    theta_particles,
+    weights,
+    Phi_schedule,
+    *,
+    dt: float = 1.0 / 96,
+    alpha: float = 0.05,
+    A_target: float = 2.0,
+    beta: float = 50.0,         # surrogate temperature (large = hard limit)
+    scale: float = 0.1,         # units of A — typical separation distance
+    truth_params_template: dict | None = None,
+    initial_state=None,
+) -> dict:
+    """JIT-friendly chance-constrained cost (sigmoid surrogate).
+
+    Architecturally suitable for **HMC**-based controllers (or any
+    gradient-based optimiser). The indicator is replaced by:
+
+        sigmoid(beta * (A_sep - A_traj) / scale)
+
+    which is differentiable everywhere. As ``beta → ∞`` this recovers
+    the hard indicator. Recommended use: anneal ``beta`` upward over
+    the inference run (small β → smooth & easy gradients; large β →
+    structurally correct).
+
+    All other arguments and return shape are identical to
+    ``evaluate_chance_constrained_cost_hard``.
+    """
+    if truth_params_template is None:
+        truth_params_template = TRUTH_PARAMS_V5
+    if initial_state is None:
+        initial_state = jnp.array([0.50, 0.45, 0.20, 0.45, 0.06, 0.07],
+                                    dtype=jnp.float64)
+    else:
+        initial_state = jnp.asarray(initial_state, dtype=jnp.float64)
+
+    if isinstance(theta_particles, list):
+        theta_stacked = _stack_particle_dicts(theta_particles)
+    elif isinstance(theta_particles, dict):
+        theta_stacked = {k: jnp.asarray(v, dtype=jnp.float64)
+                          for k, v in theta_particles.items()}
+    else:
+        raise ValueError(
+            "theta_particles must be a list of dicts or a dict of arrays; "
+            f"got {type(theta_particles)}.")
+
+    theta_stacked = _ensure_v5_keys(theta_stacked, truth_params_template)
+    weights = jnp.asarray(weights, dtype=jnp.float64)
+    weights = weights / jnp.sum(weights)
+    Phi_schedule = jnp.asarray(Phi_schedule, dtype=jnp.float64)
+
+    return _cost_soft_jit(theta_stacked, weights, Phi_schedule,
+                           initial_state, float(dt), float(alpha),
+                           float(A_target), float(beta), float(scale))
+
+
+# ── Back-compat alias ─────────────────────────────────────────────────────
+# The legacy NumPy implementation lives at
+# ``_evaluate_chance_constrained_cost_legacy`` (kept as a debug
+# reference). The public name now points to the fast hard variant.
+evaluate_chance_constrained_cost = evaluate_chance_constrained_cost_hard
+
+
 # ===========================================================================
 # Smoke test
 # ===========================================================================
-# Run as ``python models/fsa_high_res/control_v5.py`` to exercise the cost
-# function on a tiny 10-particle cloud. Useful for verifying the file
-# imports cleanly and the JIT compilation succeeds.
 
 def _smoke_test():
+    """Compare legacy / hard / soft variants on a 10-particle cloud."""
     print("=== control_v5 smoke test ===")
-    # 10-particle cloud, all at TRUTH_PARAMS_V5 — same baseline.
     n_particles = 10
     particles = [dict(TRUTH_PARAMS_V5) for _ in range(n_particles)]
     weights = np.ones(n_particles) / n_particles
 
-    # 14-day moderate Phi (inside the v5 island)
     n_days = 14
     n_steps = n_days * 96
     Phi = np.tile([0.30, 0.30], (n_steps, 1))
-    out = evaluate_chance_constrained_cost(
+
+    print("\n--- Legacy NumPy reference ---")
+    out_legacy = _evaluate_chance_constrained_cost_legacy(
         particles, weights, Phi,
         dt=1.0/96, alpha=0.05, A_target=2.0,
         truth_params_template=TRUTH_PARAMS_V5,
     )
-    print(f"  mean_effort               : {out['mean_effort']:.4f}")
-    print(f"  mean_A_integral (14 days) : {out['mean_A_integral']:.4f}")
-    print(f"  weighted_violation_rate   : {out['weighted_violation_rate']:.4f}")
-    print(f"  satisfies chance constraint (alpha=0.05) : {out['satisfies_chance_constraint']}")
-    print(f"  satisfies A_target=2.0                    : {out['satisfies_target']}")
-    return out
+    print(f"  effort={out_legacy['mean_effort']:.4f}  "
+          f"A_int={out_legacy['mean_A_integral']:.4f}  "
+          f"violations={out_legacy['weighted_violation_rate']:.4f}")
+
+    print("\n--- JIT-friendly hard variant ---")
+    out_hard = evaluate_chance_constrained_cost_hard(
+        particles, weights, Phi,
+        dt=1.0/96, alpha=0.05, A_target=2.0)
+    print(f"  effort={float(out_hard['mean_effort']):.4f}  "
+          f"A_int={float(out_hard['mean_A_integral']):.4f}  "
+          f"violations={float(out_hard['weighted_violation_rate']):.4f}")
+
+    print("\n--- JIT-friendly soft variant (β=50) ---")
+    out_soft = evaluate_chance_constrained_cost_soft(
+        particles, weights, Phi,
+        dt=1.0/96, alpha=0.05, A_target=2.0, beta=50.0)
+    print(f"  effort={float(out_soft['mean_effort']):.4f}  "
+          f"A_int={float(out_soft['mean_A_integral']):.4f}  "
+          f"violations={float(out_soft['weighted_violation_rate']):.4f}")
+
+    return out_legacy, out_hard, out_soft
 
 
 if __name__ == '__main__':

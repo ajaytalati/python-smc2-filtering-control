@@ -154,14 +154,125 @@ def test_v5_chance_constrained_cost_smoke():
         f"violation_rate={out['weighted_violation_rate']:.4f}"
 
 
+# ─── JIT / vmap variants of the chance-constrained cost ────────────────────
+# Added in the post-port rewrite of control_v5.py. The legacy NumPy
+# evaluator above (``evaluate_chance_constrained_cost``) is now an alias
+# for ``evaluate_chance_constrained_cost_hard``; the slow legacy
+# implementation is preserved as the private
+# ``_evaluate_chance_constrained_cost_legacy`` for debug.
+
+def _build_smoke_cloud(n_particles=5, n_days=14):
+    """Helper: 10-particle cloud at v5 truth + 14-day moderate Phi."""
+    from version_3.models.fsa_v5 import TRUTH_PARAMS_V5
+    particles = [dict(TRUTH_PARAMS_V5) for _ in range(n_particles)]
+    weights = np.ones(n_particles) / n_particles
+    Phi = np.tile([0.30, 0.30], (n_days * 96, 1))
+    return particles, weights, Phi
+
+
+def test_v5_cost_hard_jits():
+    """Hard variant returns finite metrics inside a tight 5-particle, 1-day run."""
+    from version_3.models.fsa_v5.control_v5 import evaluate_chance_constrained_cost_hard
+
+    particles, weights, Phi = _build_smoke_cloud(n_particles=5, n_days=1)
+    out = evaluate_chance_constrained_cost_hard(
+        particles, weights, Phi, dt=1.0/96, alpha=0.05, A_target=2.0)
+    assert jnp.isfinite(out['mean_effort'])
+    assert jnp.isfinite(out['mean_A_integral'])
+    assert jnp.isfinite(out['weighted_violation_rate'])
+    # Trivially-satisfied chance constraint at v5 truth + moderate Phi.
+    assert bool(out['satisfies_chance_constraint'])
+
+
+def test_v5_cost_soft_jits():
+    """Soft variant runs and returns finite metrics."""
+    from version_3.models.fsa_v5.control_v5 import evaluate_chance_constrained_cost_soft
+
+    particles, weights, Phi = _build_smoke_cloud(n_particles=5, n_days=1)
+    out = evaluate_chance_constrained_cost_soft(
+        particles, weights, Phi, dt=1.0/96, alpha=0.05, A_target=2.0,
+        beta=50.0, scale=0.1)
+    assert jnp.isfinite(out['mean_effort'])
+    assert jnp.isfinite(out['mean_A_integral'])
+    assert jnp.isfinite(out['weighted_violation_rate'])
+    # Soft variant returns a value in [0, 1] but doesn't have to be exactly
+    # the same as hard — sigmoid is smooth, so weighted_vr can be slightly
+    # nonzero even at v5 truth.
+    assert 0.0 <= float(out['weighted_violation_rate']) <= 1.0
+
+
+def test_v5_cost_soft_grad_finite():
+    """jax.grad of soft variant wrt a single parameter returns finite, non-zero gradient."""
+    from version_3.models.fsa_v5.control_v5 import (
+        _cost_soft_jit, _stack_particle_dicts, _ensure_v5_keys,
+    )
+    from version_3.models.fsa_v5 import TRUTH_PARAMS_V5
+
+    n_particles = 5
+    particles = [dict(TRUTH_PARAMS_V5) for _ in range(n_particles)]
+    weights = jnp.ones(n_particles) / n_particles
+    Phi = jnp.tile(jnp.array([0.30, 0.30]), (96, 1))   # 1 day
+    initial_state = jnp.array([0.50, 0.45, 0.20, 0.45, 0.06, 0.07])
+
+    theta_stacked = _ensure_v5_keys(_stack_particle_dicts(particles), TRUTH_PARAMS_V5)
+
+    def scalar_cost(theta_dict):
+        out = _cost_soft_jit(theta_dict, weights, Phi, initial_state,
+                              1.0/96, 0.05, 2.0, 50.0, 0.1)
+        # Differentiable cost with a real dependency on theta:
+        # effort is Phi-only (no grad), but mean_A_integral depends on
+        # the per-particle trajectory which depends on theta.
+        return out['mean_effort'] - out['mean_A_integral']
+
+    grad_fn = jax.grad(scalar_cost)
+    grads = grad_fn(theta_stacked)
+    # Check at least one parameter has a finite, non-trivial gradient.
+    # Parameters that drive the autonomic state (mu_0, mu_B, eta, etc.)
+    # should all have non-zero gradients via the A trajectory.
+    found_finite = False
+    for k, g in grads.items():
+        assert jnp.all(jnp.isfinite(g)), f"non-finite gradient for {k}: {g}"
+        if jnp.any(jnp.abs(g) > 1e-12):
+            found_finite = True
+    assert found_finite, (
+        f"all gradients near zero — autodiff not threading through trajectory? "
+        f"max |grad| over all keys = {max(float(jnp.max(jnp.abs(g))) for g in grads.values()):.3e}")
+
+
+def test_v5_cost_soft_to_hard_limit():
+    """Soft variant with large beta approaches hard variant."""
+    from version_3.models.fsa_v5.control_v5 import (
+        evaluate_chance_constrained_cost_hard,
+        evaluate_chance_constrained_cost_soft,
+    )
+
+    particles, weights, Phi = _build_smoke_cloud(n_particles=5, n_days=1)
+
+    # At v5 truth + moderate Phi, all particles are well above A_sep
+    # (or A_sep is -inf). Both variants should return ~0 violation rate.
+    out_hard = evaluate_chance_constrained_cost_hard(
+        particles, weights, Phi, dt=1.0/96, alpha=0.05, A_target=2.0)
+    out_soft = evaluate_chance_constrained_cost_soft(
+        particles, weights, Phi, dt=1.0/96, alpha=0.05, A_target=2.0,
+        beta=10000.0, scale=0.1)
+
+    # Effort + ∫A integral are deterministic in Phi/state, identical between variants.
+    assert jnp.isclose(out_hard['mean_effort'], out_soft['mean_effort'])
+    assert jnp.isclose(out_hard['mean_A_integral'], out_soft['mean_A_integral'])
+    # Violation rates: at large beta the soft sigmoid → hard indicator.
+    diff = abs(float(out_hard['weighted_violation_rate'])
+               - float(out_soft['weighted_violation_rate']))
+    assert diff < 1e-3, f"hard vs soft (β=1e4) violation rate differs by {diff:.4e}"
+
+
 if __name__ == '__main__':
     # Allow running as a script too — avoids needing pytest for a quick check
-    test_v5_imports_clean()
-    print("PASS: imports")
-    test_v5_plant_forward_pipeline()
-    print("PASS: plant forward pipeline")
-    test_v5_estimation_propagate_fn_runs()
-    print("PASS: estimation propagate_fn")
-    test_v5_chance_constrained_cost_smoke()
-    print("PASS: chance-constrained cost")
+    test_v5_imports_clean();                        print("PASS: imports")
+    test_v5_plant_forward_pipeline();               print("PASS: plant forward pipeline")
+    test_v5_estimation_propagate_fn_runs();         print("PASS: estimation propagate_fn")
+    test_v5_chance_constrained_cost_smoke();        print("PASS: chance-constrained cost (legacy alias)")
+    test_v5_cost_hard_jits();                       print("PASS: cost hard variant")
+    test_v5_cost_soft_jits();                       print("PASS: cost soft variant")
+    test_v5_cost_soft_grad_finite();                print("PASS: soft variant gradient")
+    test_v5_cost_soft_to_hard_limit();              print("PASS: soft → hard limit")
     print("All v5 smoke tests passed.")

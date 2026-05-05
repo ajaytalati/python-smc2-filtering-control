@@ -50,6 +50,35 @@ This is informational, not a blocker for verification — Stage 1 / 2 / 3 verifi
 
 ---
 
+## Run 00b — Re-pin to FSA_model_dev `7075436` (JIT-friendly chance-constrained cost)
+
+**2026-05-05 11:30** — re-pinned to a newer FSA_model_dev SHA after the upstream author addressed Run 00's finding #6 (`evaluate_chance_constrained_cost` not JIT-able).
+
+- **New pinned SHA:** `7075436628fa8c202cf62241666fe90230c46ac1` on `claude/dev-sandbox-v4`
+- **Upstream commit:** `feat(control_v5): JIT-friendly hard/soft variants of chance-constrained cost` (+923 lines, -55, across 5 files)
+- **Files re-copied + path-fixed:**
+  - `models/fsa_high_res/control_v5.py` → `version_3/models/fsa_v5/control_v5.py`
+  - `models/fsa_high_res/__init__.py` → `version_3/models/fsa_v5/__init__.py`
+  - `tests/test_fsa_v5_smoke.py` → `version_3/tests/test_fsa_v5_smoke.py` (now 8 tests, +4 new)
+- **New symbols available at this SHA:**
+  - `_jax_mu_bar` (line 429), `_jax_find_A_sep` (465) — pure-JAX helpers
+  - `evaluate_chance_constrained_cost_hard` (line 653) — true indicator, for pure-SMC² importance weighting (Variant C)
+  - `evaluate_chance_constrained_cost_soft` (line 723) — sigmoid surrogate with `beta` knob, for HMC + temperature annealing (Variant B)
+  - `evaluate_chance_constrained_cost` is now a back-compat alias for `_hard`
+  - Legacy NumPy/SciPy implementation renamed `_evaluate_chance_constrained_cost_legacy` (line 230) — kept for debug
+- **Smoke test result:** `cd version_3 && PYTHONPATH=.:.. pytest tests/ -v` → **16/16 PASS** in 21.29s on RTX 5090 / `comfyenv`. The 4 new tests covering JIT compilation, gradient finiteness, and soft↔hard limit all green.
+- **Performance (FSA-author's measurement on the 100-particle × 84-day × 96-bin/day benchmark):**
+  - hard: 0.86s first call (incl. JIT), 0.229s cached
+  - soft: 0.67s first call, 0.157s cached
+
+  Both ≪ 2s budget — comfortably fast enough for HMC inner kernels.
+- **Run 00 finding #6 status:** RESOLVED upstream. Stage 2/3 will test BOTH `_hard` and `_soft` variants empirically per Ajay's instruction.
+
+### Note on Run 00 finding #1 (fp64 anti-pattern)
+Still open at this SHA. Ajay overrode the senior-files-immutability rule for this case (2026-05-05 ~11:00). fp32 dtype optimization scheduled for the next commit (Phase A.5), targeting `_plant.py:135`, `control.py:150,192,200,206`, `_phi_burst.py:56,89`, and any other fp64-in-inner-loop sites mirroring FSA-v2's working pattern.
+
+---
+
 ## Run 01 — TODO: Stage 1 filter+plant verification
 
 (empty until first run)

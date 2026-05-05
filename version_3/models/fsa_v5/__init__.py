@@ -63,8 +63,10 @@ from version_3.models.fsa_v5.control import (
     build_control_spec_v5,
 )
 from version_3.models.fsa_v5.control_v5 import (
-    evaluate_chance_constrained_cost,
-    find_A_sep_v5,
+    evaluate_chance_constrained_cost,        # back-compat alias = hard
+    evaluate_chance_constrained_cost_hard,   # for pure-SMC² importance weighting
+    evaluate_chance_constrained_cost_soft,   # for HMC with sigmoid surrogate
+    find_A_sep_v5,                           # legacy NumPy/Brent (debug)
 )
 
 # Closed-loop plant simulator (6D v5) ──────────────────────────────────
@@ -85,7 +87,10 @@ __all__ = [
     'PARAM_PRIOR_CONFIG', 'INIT_STATE_PRIOR_CONFIG',
     # control
     'build_control_spec', 'build_control_spec_v5',
-    'evaluate_chance_constrained_cost', 'find_A_sep_v5',
+    'evaluate_chance_constrained_cost',
+    'evaluate_chance_constrained_cost_hard',
+    'evaluate_chance_constrained_cost_soft',
+    'find_A_sep_v5',
     # plant
     'StepwisePlant',
 ]
