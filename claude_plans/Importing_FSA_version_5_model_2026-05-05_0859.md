@@ -27,14 +27,19 @@ templates. The methodology was hardened in the SWAT debugging session
 2. **`claude_plans/controller_only_test_methodology.md`** — debug the
    controller without the filter. ~3-4× faster iteration. Use this for
    any controller debugging once the model is wired up.
-3. **`claude_plans/SWAT_controller_production_validated_2026-05-05_0751.md`**
-   — final outcome of the SWAT debugging session. Demonstrates the
-   senior-files principle in action and the typical fix-candidate flow
-   (D1–D6 reasoning).
-4. **The FSA-v5 LaTeX technical guide** (in the dev-sandbox repo, link
+3. **The FSA-v5 LaTeX technical guide** (in the dev-sandbox repo, link
    below) — read end-to-end before you start writing benches. The bench
    needs to know the obs channels, control variates, default params,
    scenario presets.
+
+The full SWAT-debugging session writeups (`SWAT_controller_debug_plan_*.md`,
+`SWAT_controller_production_validated_*.md`) live on the
+`feat/import-swat-from-dev-repo` branch, not on master. If you want
+historical context on how a typical model-debug effort goes,
+`git show feat/import-swat-from-dev-repo:claude_plans/SWAT_controller_production_validated_2026-05-05_0751.md`
+gets you the production-validated summary without needing a branch
+switch. The key takeaways are condensed at the bottom of this plan
+(the "A note on respect" section).
 
 ## Sources
 
