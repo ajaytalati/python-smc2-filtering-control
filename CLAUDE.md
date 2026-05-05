@@ -206,6 +206,47 @@ os.environ.setdefault('JAX_COMPILATION_CACHE_DIR', str(Path.home() / ".jax_compi
 
 Long runs go through shell launchers in `version_2/tools/launchers/`. `run_swat_overnight_chain.sh` is the canonical chained-run pattern.
 
+### **MANDATORY: use the JAX-native compile-once SMC kernel path. NOT BlackJAX.**
+
+Every closed-loop bench in this repo MUST use the compile-once native path. The BlackJAX path tracing the SMC kernel **per window** silently leaves the GPU at ~30% utilisation while v2 production should sustain ~100%. This is the single biggest perf footgun in the codebase.
+
+**Use this** (correct, mirrors v2 production):
+
+```python
+from smc2fc.core.jax_native_smc import (
+    run_smc_window_native, run_smc_window_bridge_native,
+)
+from smc2fc.filtering.gk_dpf_v3_lite import (
+    make_gk_dpf_v3_lite_log_density_compileonce,
+)
+# Build the log_density_factory ONCE outside the rolling-window loop, then
+# bind per-stride dynamic data via jax.tree_util.Partial inside the loop:
+ld = jax.tree_util.Partial(
+    log_density_factory, grid_obs=grid_obs,
+    fixed_init_state=fixed_init_state,
+    w_start=w_start_arr, key0=key0_stride,
+)
+particles_unc, elapsed, n_temp = run_smc_window_native(
+    ld, em, T_arr, cfg=cfg, initial_particles=None, seed=...,
+)
+```
+
+**Do NOT use** (incorrect — recompiles per window, was the source of v3's 7× wall-time-vs-v2 issue):
+
+```python
+from smc2fc.core.tempered_smc import run_smc_window, run_smc_window_bridge
+from smc2fc.filtering.gk_dpf_v3_lite import make_gk_dpf_v3_lite_log_density
+# log_density rebuilt every window -> JAX retraces the SMC kernel -> GPU idle
+ld = make_gk_dpf_v3_lite_log_density(model=em, grid_obs=grid_obs, ...)
+particles_unc, elapsed, n_temp = run_smc_window(ld, em, T_arr, cfg=cfg, ...)
+```
+
+**Reference implementation:** `version_2/tools/bench_smc_full_mpc_fsa.py:150-260` and the per-stride loop body at `:317-337`. The compile-once factory + Partial-wrapped log_density combo is what makes v2 saturate the GPU.
+
+`version_2/tools/bench_smc_rolling_window_fsa.py` (the E3 open-loop reference) still uses the BlackJAX path — it pre-dates the L1-deep / Stage M migration. **Do not copy E3's filter wiring; copy `bench_smc_full_mpc_fsa.py`'s.** The two diverge precisely on this point.
+
+**Operating point (5090 + driver 590.48.01+):** N_SMC_PARTICLES=256 / N_PF_PARTICLES=400 saturates the GPU and is the right default for verification. Doubling beyond that is no longer free.
+
 ## Outputs and result conventions
 
 - Per-experiment results go under `outputs/<model>/experiments/runNN_<tag>/` with a top-level `CHANGELOG.md` summarizing each run.
