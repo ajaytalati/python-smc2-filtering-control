@@ -27,7 +27,15 @@ templates. The methodology was hardened in the SWAT debugging session
 2. **`claude_plans/controller_only_test_methodology.md`** — debug the
    controller without the filter. ~3-4× faster iteration. Use this for
    any controller debugging once the model is wired up.
-3. **The FSA-v5 LaTeX technical guide** (in the dev-sandbox repo, link
+3. **`version_2/outputs/fsa_high_res/GPU_TUNING_RTX5090.md`** — the
+   living document of hardware-specific tuning lessons learned on this
+   project's RTX 5090. **Read it before writing any bench code.** The
+   key takeaway: the 5090 is consumer Blackwell, fp64 throughput is
+   ~1/64 of fp32, so naïve all-fp64 code paths leave the silicon idle.
+   The codebase deliberately runs hot inner loops in fp32 while keeping
+   accumulators / log-weights / posteriors in fp64. See the fp32-inner
+   / fp64-outer convention summary below.
+4. **The FSA-v5 LaTeX technical guide** (in the dev-sandbox repo, link
    below) — read end-to-end before you start writing benches. The bench
    needs to know the obs channels, control variates, default params,
    scenario presets.
@@ -192,6 +200,112 @@ Empty audit trail to start. Each bench run gets an entry — same
 convention as `version_2/outputs/swat/CHANGELOG.md` and
 `version_2/outputs/fsa_high_res/RESULT.md`. Run NN, headline, plots,
 gates pass/fail.
+
+## fp32 inner loops, fp64 outer state — REQUIRED when you write benches
+
+The RTX 5090's fp64 throughput is ~1/64 of fp32. Pure-fp64 code paths
+leave most of the silicon idle. The framework infrastructure
+(`smc2fc/filtering/gk_dpf_v3_lite.py`, `smc2fc/control/...`) already
+runs hot inner loops in fp32 — you'll inherit that for free if you
+just call `run_smc_window_native(...)` and `run_tempered_smc_loop_native(...)`
+the way the existing benches do.
+
+But the **model-specific hot loops you write or copy** (any SDE rollout
+inside `lax.scan`, any `vmap`'d cost trial, any per-particle
+propagation) must follow the same convention or you'll lose the
+fp32 boost on exactly the parts that scale hardest with horizon ×
+particles × n_substeps.
+
+**The convention:**
+
+- **Run in fp32 inside hot inner loops:** particles, drifts, diffusions,
+  noise, parameter dict, time scalars, schedule arrays during the SDE
+  step.
+- **Keep in fp64 (never cast down):** accumulators (`∫T dt`,
+  `∫A dt`, etc.), SMC log-weights, ESS computations, log-likelihood
+  sums, posterior particle clouds, mass-matrix Cholesky, parameter
+  posteriors. These suffer catastrophic cancellation in fp32 when many
+  small log-likelihoods are summed, or when the dynamic range across
+  parameters spans many orders of magnitude.
+
+**The cast pattern** (read it from `smc2fc/filtering/gk_dpf_v3_lite.py:132-160`
+for the filter and the FSA-v2 controller's L8 path for the cost rollout):
+
+```python
+# Outer state stays in caller's dtype (fp64 by default with JAX_ENABLE_X64=True).
+def cost_fn(theta):                     # theta is fp64
+    u_arr = schedule_from_theta(theta)  # outer schedule, fp64 OK
+
+    # Cast once before the inner scan
+    params_f32 = jax.tree_util.tree_map(
+        lambda v: v.astype(jnp.float32), p_jax_dict)
+    init_f32 = init_state.astype(jnp.float32)
+
+    def trial(w_seq):
+        # All inner work is fp32: particles, drift, diffusion, noise, time
+        def step(carry, k):
+            y_f32, T_acc = carry          # y_f32 fp32; T_acc stays fp64
+            t_k = jnp.asarray(k * dt, dtype=jnp.float32)
+            u_t = u_arr[k].astype(jnp.float32)
+            w_t = w_seq[k].astype(jnp.float32)
+            y_next_f32 = em_step_f32(y_f32, t_k, u_t, w_t, params_f32)
+            T_acc = T_acc + jnp.float64(y_f32[3]) * dt   # fp32 -> fp64 promote
+            return (y_next_f32, T_acc), None
+
+        (_, T_acc), _ = jax.lax.scan(step, (init_f32, jnp.float64(0.0)),
+                                       jnp.arange(n_steps))
+        return -T_acc                     # fp64 cost output
+
+    return jnp.mean(jax.vmap(trial)(fixed_w))
+```
+
+**What to copy from existing reference code:**
+
+- **Filter / inner-PF propagation:** `smc2fc/filtering/gk_dpf_v3_lite.py:132-160`
+  is the reference. The framework already does this — you should NOT
+  need to touch it. Just verify your model's `propagate_fn` is
+  fp32-friendly (accepts fp32 inputs and stays in fp32 internally).
+- **Plant integration:** `version_2/models/fsa_high_res/_plant.py`
+  shows fp32-inner pattern for `_plant_em_step`. Use as template.
+- **Controller cost rollout:** the FSA-v2 controller's L8 path
+  (commit `aa114e8`) is the reference for the `cost_fn` pattern shown
+  above.
+
+**Anti-pattern to watch out for:** explicit `jnp.float64` annotations
+inside SDE inner loops (e.g. `noise = jax.random.normal(..., dtype=jnp.float64)`,
+`y0_jax = jnp.asarray(state, dtype=jnp.float64)`). This is what the
+SWAT model files currently do — they explicitly request fp64 throughout
+and miss the fp32 boost on a 2–5× wall-clock-relevant code path.
+
+**What to do if the FSA-v5 model files have this pattern.** The
+FSA-v5 model files come from `FSA_model_dev/claude/dev-sandbox-v4`
+**unchanged** — the senior-files principle (CLAUDE.md) is in force.
+You do **not** silently edit them on the import branch. Instead:
+
+1. **Inspect them** as part of step 1 of your import. Grep for
+   `jnp.float64` and `dtype=jnp.float64` inside `_plant.py`,
+   `_dynamics.py`, `control.py`. Note explicit fp64 in any inner
+   `lax.scan` or `vmap`'d trial.
+2. **If the files are fp32-clean** (no explicit fp64 in inner loops,
+   default-dtype-friendly): great. Copy as-is and the fp32-inner
+   pattern works automatically because `JAX_ENABLE_X64=True` only
+   sets the **default** dtype, while explicit `astype(jnp.float32)`
+   casts inside the bench still take effect.
+3. **If the files have explicit fp64 in inner loops:** flag it to
+   Ajay before doing anything else. The fix is upstream — open an
+   issue / PR against `FSA_model_dev` to drop the explicit fp64 casts
+   in the inner-loop hot paths and let the bench's cast-once-to-fp32
+   pattern govern. Do **not** modify the imported files in
+   `version_3/models/fsa_v5/`.
+4. **Bench-side write up the cast-once pattern in your own bench code**
+   regardless of (2) vs (3). The bench is yours to write; that's where
+   the cast-once-to-fp32 belongs anyway.
+
+**Why this matters for FSA-v5 specifically.** FSA-v2 ships with the
+fp32-inner pattern and gets the speedup. SWAT (still on the feature
+branch) does not, and pays a 2–5× wall-clock penalty on its closed-loop
+bench. Catching this at the FSA-v5 import — by inspection — is much
+cheaper than discovering it after a slow production run.
 
 ## Things you DO NOT do
 

@@ -101,6 +101,26 @@ Each model directory follows the **3-file convention** carried from sibling repo
 
 Plant and estimator share `_dynamics.py` to enforce bit-equivalence; diverging them silently is the single biggest source of bugs (see SWAT changelog).
 
+## GPU dtype convention — fp32 inner loops, fp64 outer state
+
+The project's reference hardware is the RTX 5090 (consumer Blackwell). Its **fp64 throughput is ~1/64 of fp32** — naïve all-fp64 code paths leave most of the silicon idle. The codebase deliberately runs hot inner loops in fp32 while keeping accumulators / log-weights / posteriors in fp64. This applies to **every model**, not just FSA-v2.
+
+The convention:
+
+- `JAX_ENABLE_X64=True` is set in every bench driver so the **default** dtype is fp64. Don't disable it. It governs default-dtype outer state (posterior particles, log-weights, accumulators) and is what you want for stability.
+- **Cast to fp32 explicitly inside hot inner loops** — particles, drifts, diffusions, noise, parameter dict, time scalars, schedule arrays during the SDE step. Cast back to the caller's dtype when the result enters an accumulator. Pattern: `parts_f32 = parts.astype(jnp.float32)` → propagate in fp32 → `astype(u.dtype)` on the way out.
+- **Never cast down to fp32:** SMC log-weights, ESS computations, log-likelihood sums, posterior particle clouds (across many strides), mass-matrix Cholesky, parameter posteriors. Catastrophic cancellation in fp32 when many small log-likelihoods are summed; fp32 Cholesky is unstable on near-degenerate covariances; parameter posteriors span many orders of magnitude.
+
+**Reference implementations** (use as templates; do not copy SWAT's pattern, which misses the boost):
+
+- Filter inner-PF propagation: `smc2fc/filtering/gk_dpf_v3_lite.py:132-160` and `:253-265`. Cast-once-before-scan, vmap, cast-back at the end.
+- Plant integration: `version_2/models/fsa_high_res/_plant.py:_plant_em_step` runs in fp32. Mirror this.
+- Controller cost rollout: FSA-v2 control's L8 path (commit `aa114e8 Stage L8: FP32 controller cost-MC SDE rollout`).
+
+**Anti-pattern to avoid:** explicit `dtype=jnp.float64` annotations inside SDE inner loops or per-particle propagation. They request fp64 for code that should be fp32. The SWAT model files (`version_2/models/swat/*`) currently have this pattern and pay a 2–5× wall-clock penalty for it.
+
+Full hardware-specific tuning rationale (memory caps, preallocation, parallel-horizon multi-process, etc.) is in [`version_2/outputs/fsa_high_res/GPU_TUNING_RTX5090.md`](version_2/outputs/fsa_high_res/GPU_TUNING_RTX5090.md). That doc is FSA-named for historical reasons but its content is model-independent — read it once when porting any new model.
+
 ## Debug the controller WITHOUT the filter
 
 When debugging the controller side (RBF transforms, cost composition, prior structure, integrator settings, tempering schedule, etc.), **do not run the full closed-loop SMC²-MPC bench every iteration**. The filter is expensive (~125 s per stride at T=2) and pays for nothing diagnostic when the suspected bug is intrinsic to the controller code.
