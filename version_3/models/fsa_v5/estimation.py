@@ -239,16 +239,18 @@ def _make_propagate_fn(frozen_dynamics):
 
         # ── Observation Jacobian H (4 Gaussian channels × 6D state) ──────
         # Linear-in-state observation model. Rows: [HR, Stress, Steps, VL].
-        H = jnp.zeros((4, 6))
-        H = H.at[0, 0].set(-p['kappa_B_HR'])
-        H = H.at[0, 3].set( p['alpha_A_HR'])
-        H = H.at[1, 2].set( p['k_F'])
-        H = H.at[1, 3].set(-p['k_A_S'])
-        H = H.at[2, 0].set( p['beta_B_st'])
-        H = H.at[2, 2].set(-p['beta_F_st'])
-        H = H.at[2, 3].set( p['beta_A_st'])
-        H = H.at[3, 1].set( p['beta_S_VL'])
-        H = H.at[3, 2].set(-p['beta_F_VL'])
+        # Built inline (NOT via jnp.zeros + .at[].set) so the dtype is
+        # inherited from the caller's `p` dict. The framework's filter
+        # casts `params` to fp32 (gk_dpf_v3_lite.py:132-139); using
+        # jnp.zeros((4,6)) here would default to fp64 and create a
+        # carry-type mismatch in the Kalman scan below. Mirrors the
+        # v2 estimation.py:194 pattern.
+        H = jnp.array([
+            [-p['kappa_B_HR'], 0.0,                0.0,             p['alpha_A_HR'], 0.0, 0.0],
+            [ 0.0,             0.0,                p['k_F'],       -p['k_A_S'],      0.0, 0.0],
+            [ p['beta_B_st'],  0.0,               -p['beta_F_st'],  p['beta_A_st'],  0.0, 0.0],
+            [ 0.0,             p['beta_S_VL'],    -p['beta_F_VL'],  0.0,             0.0, 0.0],
+        ])
 
         # Channel-specific bias (intercept + circadian regressor).
         bias = jnp.array([
@@ -281,12 +283,21 @@ def _make_propagate_fn(frozen_dynamics):
             lp    = lp   + pres_i * ll_i
             return (mu_, P, lp), None
 
+        # Carry init: cast `0.0` to caller dtype so the scan body's input
+        # carry types match its output. Without this, `0.0` is a Python
+        # fp64 literal and the scan crashes when called with fp32 inputs
+        # by the framework's filter (gk_dpf_v3_lite.py casts to fp32).
+        zero_lp = jnp.asarray(0.0, dtype=y_pred_det.dtype)
         (mu_fused, P_fused, log_pred_total), _ = jax.lax.scan(
-            _kalman_step, (y_pred_det, P_prior, 0.0),
+            _kalman_step, (y_pred_det, P_prior, zero_lp),
             (H, bias, R_diag, obs_vals, obs_pres))
 
         # Sample from the Kalman posterior — perturb mean by Cholesky(P) * noise.
-        P_safe = P_fused + 1e-10 * jnp.eye(6)
+        # dtype-match the regulariser so an fp32 hot-loop call stays fp32
+        # (mirrors v2 estimation.py:239 pattern).
+        eye6 = jnp.eye(6, dtype=P_fused.dtype)
+        eps  = jnp.asarray(1e-10, dtype=P_fused.dtype)
+        P_safe = P_fused + eps * eye6
         L = jnp.linalg.cholesky(P_safe)
         x_new = mu_fused + L @ noise
 

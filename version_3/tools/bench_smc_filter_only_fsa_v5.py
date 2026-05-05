@@ -47,13 +47,56 @@ os.environ.setdefault('JAX_COMPILATION_CACHE_DIR', str(_CACHE_DIR))
 os.environ.setdefault('JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES', '0')
 os.environ.setdefault('JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS', '1')
 
+import json
 import sys
 import time
+from pathlib import Path
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import matplotlib.pyplot as plt
+
+
+# ── Per-run output layout: outputs/fsa_v5/experiments/runNN_<tag>/ ────
+# Each run writes manifest.json + posterior.npz + trajectory.npz + plots
+# into its own folder. The CHANGELOG (one level up) only summarises;
+# reproducible details live in the per-run folder. Mirrors
+# version_2/outputs/swat/experiments/runNN_<tag>/.
+
+def _pop_run_tag_from_argv(default: str) -> str:
+    if '--run-tag' in sys.argv:
+        i = sys.argv.index('--run-tag')
+        if i + 1 >= len(sys.argv):
+            raise SystemExit("--run-tag requires a value")
+        val = sys.argv[i + 1]
+        del sys.argv[i:i + 2]
+        return val
+    return default
+
+
+def _next_run_number(experiments_dir: Path) -> int:
+    if not experiments_dir.exists():
+        return 1
+    nums = []
+    for p in experiments_dir.iterdir():
+        if p.is_dir() and p.name.startswith('run'):
+            stem = p.name[3:].split('_', 1)[0]
+            try:
+                nums.append(int(stem))
+            except ValueError:
+                pass
+    return max(nums, default=0) + 1
+
+
+def _allocate_run_dir(repo_root: Path, run_tag: str) -> tuple[Path, int]:
+    """Make outputs/fsa_v5/experiments/runNN_<tag>/ and return (path, NN)."""
+    exp_dir = repo_root / "outputs" / "fsa_v5" / "experiments"
+    exp_dir.mkdir(parents=True, exist_ok=True)
+    n = _next_run_number(exp_dir)
+    out_dir = exp_dir / f"run{n:02d}_{run_tag}"
+    out_dir.mkdir(exist_ok=True)
+    return out_dir, n
 
 
 # ── Window structure (matches v2's E3 reference; LaTeX §6 confirms 15-min grid)
@@ -145,17 +188,24 @@ def _simulate_synthetic_full(seed: int = 42,
 
 
 def main():
-    # CLI: optional first arg = output suffix (e.g. "g1_no_infoaware",
-    # "g2_infoaware"). If suffix contains "infoaware" without "no_",
-    # automatically enable sf_info_aware=True. Mirrors v2 E3 convention.
+    # CLI:
+    #   --run-tag <str>      override the auto-tag for the experiment folder.
+    #                         Default = "stage1_filter_only_T14_healthy".
+    #   <suffix>             optional positional arg, propagated into plots.
+    #                         "infoaware" enables sf_info_aware=True.
+    run_tag = _pop_run_tag_from_argv("stage1_filter_only_T14_healthy")
     out_suffix = sys.argv[1] if len(sys.argv) > 1 else ''
     sf_info_aware_on = ('infoaware' in out_suffix
                          and 'no_infoaware' not in out_suffix)
+
+    repo_root = Path(__file__).resolve().parent.parent  # version_3/
+    out_dir, run_num = _allocate_run_dir(repo_root, run_tag)
 
     print("=" * 76)
     print("  Stage 1 (FSA-v5) -- rolling-window SMC2 filter, 14d at "
           f"Phi=({DEFAULT_PHI_B},{DEFAULT_PHI_S})"
           + (f"  [{out_suffix}]" if out_suffix else ''))
+    print(f"  run dir:  {out_dir.relative_to(repo_root.parent)}")
     print("=" * 76)
 
     n_windows = (N_DAYS_TOTAL * 96 - WINDOW_BINS) // STRIDE_BINS + 1
@@ -326,19 +376,107 @@ def main():
     all_pass = gate1 and gate2
     print(f"  {'ALL GATES PASS' if all_pass else 'ONE OR MORE GATES FAIL'}")
 
-    # ── Diagnostic plots ──
-    out_dir = "outputs/fsa_v5"
-    os.makedirs(out_dir, exist_ok=True)
-    base_path = (f"{out_dir}/Stage1_filter_only_traces"
-                  + (f"_{out_suffix}" if out_suffix else ''))
-
-    # Plot 1: ALL 37 estimable params in a 5x8 grid (or whatever fits)
+    # ── Save reproducible artifacts into out_dir ──
     n_params_all = len(all_param_names)
+    posterior_array = np.stack([
+        r['particles_constrained'] for r in all_results
+    ])  # (n_windows, n_smc_particles, n_params)
+    elapsed_per_window = np.array([r['elapsed_s'] for r in all_results])
+    id_covered_per_window = np.array([r['id_covered'] for r in all_results])
+    n_temp_per_window = np.array([r['n_temp'] for r in all_results])
+    truth_vec = np.array([truth[n] for n in all_param_names])
+
+    np.savez(
+        out_dir / "posterior.npz",
+        posterior=posterior_array,
+        param_names=np.array(all_param_names, dtype=object),
+        truth_vec=truth_vec,
+        elapsed_s=elapsed_per_window,
+        id_covered=id_covered_per_window,
+        n_temp=n_temp_per_window,
+    )
+
+    np.savez(
+        out_dir / "trajectory.npz",
+        trajectory=traj,
+        state_names=np.array(state_names, dtype=object),
+    )
+
+    # Manifest -- mirrors version_2/outputs/swat/experiments/runNN/manifest.json
+    manifest = {
+        "schema_version": 1,
+        "stage": 1,
+        "bench": "bench_smc_filter_only_fsa_v5",
+        "run_tag": run_tag,
+        "run_number": run_num,
+        "out_suffix": out_suffix,
+        "fsa_model_dev_pin": "7075436628fa8c202cf62241666fe90230c46ac1",
+        "T_total_days": N_DAYS_TOTAL,
+        "step_minutes": 15,
+        "BINS_PER_DAY": 96,
+        "WINDOW_BINS": WINDOW_BINS,
+        "STRIDE_BINS": STRIDE_BINS,
+        "DT": DT,
+        "n_windows": n_windows,
+        "scenario": {
+            "name": "healthy_island_LaTeX_test2",
+            "phi_B": DEFAULT_PHI_B,
+            "phi_S": DEFAULT_PHI_S,
+            "init_state": TRAINED_ATHLETE_STATE.tolist(),
+            "init_state_label": "trained_athlete_LaTeX_test1",
+        },
+        "param_names": all_param_names,
+        "n_estimable_params": n_id,
+        "truth_params": {k: float(v) for k, v in truth.items()},
+        "smc_cfg": {
+            "n_smc_particles": smc_cfg.n_smc_particles,
+            "n_pf_particles": smc_cfg.n_pf_particles,
+            "target_ess_frac": smc_cfg.target_ess_frac,
+            "max_lambda_inc": smc_cfg.max_lambda_inc,
+            "bridge_type": smc_cfg.bridge_type,
+            "sf_q1_mode": smc_cfg.sf_q1_mode,
+            "sf_use_q0_cov": smc_cfg.sf_use_q0_cov,
+            "sf_blend": smc_cfg.sf_blend,
+            "sf_annealed_n_stages": smc_cfg.sf_annealed_n_stages,
+            "sf_annealed_n_mh_steps": smc_cfg.sf_annealed_n_mh_steps,
+            "sf_info_aware": smc_cfg.sf_info_aware,
+            "num_mcmc_steps": smc_cfg.num_mcmc_steps,
+            "hmc_step_size": smc_cfg.hmc_step_size,
+            "hmc_num_leapfrog": smc_cfg.hmc_num_leapfrog,
+            "num_mcmc_steps_bridge": smc_cfg.num_mcmc_steps_bridge,
+            "max_lambda_inc_bridge": smc_cfg.max_lambda_inc_bridge,
+        },
+        "summary": {
+            "total_compute_s": total_elapsed,
+            "total_compute_min": total_elapsed / 60.0,
+            "device": jax.devices()[0].platform.upper(),
+            "n_windows_pass_id_cov": n_pass,
+            "id_cov_threshold": cov_thresh,
+            "pass_threshold_windows": pass_thresh,
+            "trajectory_summary": {
+                f"{name}_final": float(traj[-1, i])
+                for i, name in enumerate(state_names)
+            },
+            "gates": {
+                f"id_cov_geq_{cov_thresh}_for_geq_{pass_thresh}_windows": gate1,
+                "compute_leq_60min": gate2,
+                "all_pass": all_pass,
+            },
+        },
+    }
+    with open(out_dir / "manifest.json", 'w') as f:
+        json.dump(manifest, f, indent=2)
+
+    # ── Diagnostic plots ──
+    base_name = "Stage1_filter_only_traces" + (f"_{out_suffix}" if out_suffix else '')
+
+    # Plot 1: all 37 estimable params -- posterior 90% CI per window vs truth
     n_cols = 6
     n_rows = (n_params_all + n_cols - 1) // n_cols
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(20, 3 * n_rows))
     axes = axes.flatten()
     x = np.arange(n_windows)
+    per_param_cov_frac = []
     for i, name in enumerate(all_param_names):
         ax = axes[i]
         means = [r['particles_constrained'][:, i].mean() for r in all_results]
@@ -346,19 +484,17 @@ def main():
                  for r in all_results]
         q95s  = [np.quantile(r['particles_constrained'][:, i], 0.95)
                  for r in all_results]
-        # Coverage indicator: was THIS param covered in each window?
-        per_window_cov = []
-        for r in all_results:
-            q05 = np.quantile(r['particles_constrained'][:, i], 0.05)
-            q95 = np.quantile(r['particles_constrained'][:, i], 0.95)
-            per_window_cov.append(q05 <= truth[name] <= q95)
-        cov_frac = np.mean(per_window_cov)
+        per_window_cov = [
+            (np.quantile(r['particles_constrained'][:, i], 0.05) <= truth[name]
+             <= np.quantile(r['particles_constrained'][:, i], 0.95))
+            for r in all_results
+        ]
+        cov_frac = float(np.mean(per_window_cov))
+        per_param_cov_frac.append(cov_frac)
         color = 'steelblue' if cov_frac >= 0.5 else 'darkorange'
         ax.plot(x, means, 'o-', color=color, markersize=2, lw=0.8)
         ax.fill_between(x, q05s, q95s, alpha=0.25, color=color)
-        truth_val = truth.get(name, None)
-        if truth_val is not None:
-            ax.axhline(truth_val, color='red', linestyle='--', lw=0.8)
+        ax.axhline(truth[name], color='red', linestyle='--', lw=0.8)
         ax.set_title(f'{name}  cov={cov_frac:.0%}', fontsize=9)
         ax.tick_params(labelsize=7)
         ax.grid(True, alpha=0.3)
@@ -371,11 +507,43 @@ def main():
         + f'{total_elapsed/60:.0f} min on {jax.devices()[0].platform.upper()}',
         fontsize=12, y=1.0)
     plt.tight_layout()
-    plt.savefig(f"{base_path}.png", dpi=120)
+    plt.savefig(out_dir / f"{base_name}.png", dpi=120)
     plt.close()
 
+    # Plot 2: latent trajectory (6 states + 5 obs channels-ish)
+    fig, axes = plt.subplots(2, 3, figsize=(15, 8))
+    axes = axes.flatten()
+    t_days = np.arange(traj.shape[0]) * DT
+    for i, name in enumerate(state_names):
+        ax = axes[i]
+        ax.plot(t_days, traj[:, i], color='steelblue', lw=1.0)
+        ax.set_xlabel('days')
+        ax.set_ylabel(name)
+        ax.set_title(f'{name} (truth simulator)')
+        ax.grid(True, alpha=0.3)
+    plt.suptitle(
+        f'Stage 1 (FSA-v5) -- 14-day truth trajectory at '
+        f'Phi=({DEFAULT_PHI_B}, {DEFAULT_PHI_S})',
+        fontsize=12, y=1.0)
+    plt.tight_layout()
+    plt.savefig(out_dir / "latent_trajectory.png", dpi=120)
+    plt.close()
+
+    # Persist per-param coverage fractions back into the manifest summary.
+    manifest["summary"]["per_param_coverage_frac"] = {
+        name: per_param_cov_frac[i] for i, name in enumerate(all_param_names)
+    }
+    with open(out_dir / "manifest.json", 'w') as f:
+        json.dump(manifest, f, indent=2)
+
     print()
-    print(f"  Plot: {base_path}.png  (all {n_params_all} estimable params)")
+    print(f"  Artifacts written:")
+    print(f"    {out_dir}/manifest.json")
+    print(f"    {out_dir}/posterior.npz       (n_windows={n_windows}, "
+          f"n_smc={smc_cfg.n_smc_particles}, n_params={n_params_all})")
+    print(f"    {out_dir}/trajectory.npz")
+    print(f"    {out_dir}/{base_name}.png   (all {n_params_all} estimable params)")
+    print(f"    {out_dir}/latent_trajectory.png")
     print("=" * 76)
 
 
