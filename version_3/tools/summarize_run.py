@@ -29,6 +29,11 @@ def summarise_stage1(m: dict) -> str:
     per_param = s.get("per_param_coverage_frac", {})
     well = sum(1 for v in per_param.values() if v >= 0.5) if per_param else None
     poorly = sum(1 for v in per_param.values() if v < 0.5) if per_param else None
+    # Stage 1's manifest doesn't have scenario['description']; fall back
+    # to phi values + init-state label.
+    description = sce.get('description') or (
+        f"init={sce.get('init_state_label', '?')}, "
+        f"Phi=({sce.get('phi_B', '?')}, {sce.get('phi_S', '?')})")
 
     lines = [
         f"**Run {m['run_number']:02d} -- Stage 1 verification "
@@ -37,7 +42,7 @@ def summarise_stage1(m: dict) -> str:
         f"  Driver: `bench_smc_filter_only_fsa_v5.py`",
         f"  Run dir: `experiments/run{m['run_number']:02d}_{m['run_tag']}/`",
         f"  Pin: `{m['fsa_model_dev_pin'][:7]}` (FSA_model_dev/claude/dev-sandbox-v4)",
-        f"  Scenario: {sce['description']}",
+        f"  Scenario: {description}",
         f"  T={m['T_total_days']}d, window={m['WINDOW_BINS']}b, stride={m['STRIDE_BINS']}b, "
         f"{n_w} rolling windows on {s['device']}",
         f"  Compute: {s['total_compute_s']:.0f}s = {s['total_compute_min']:.1f}min",
