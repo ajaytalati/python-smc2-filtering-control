@@ -138,7 +138,56 @@ This also means CLAUDE.md's claim "Plant integration: `version_2/models/fsa_high
 
 ---
 
-## Run 01 — TODO: Stage 1 filter+plant verification
+## Run 04 — Stage 1 filter+plant verification PASSED (healthy island, T=14d)
+
+**2026-05-05 16:43–17:31** — first successful end-to-end Stage 1 verification.
+
+- **Run dir:** `experiments/run04_stage1_filter_only_T14_healthy_sat/`
+- **Pin:** `7075436` (FSA_model_dev `claude/dev-sandbox-v4`) + local commits `dcfb73b` (Kalman-scan dtype patch), `9e6df28` (Ajay's full fp32-inner / fp64-outer dtype path completion in propagate_fn -- 20 fp64 leaks plugged), `1cbd9b6` (5090 saturation config N=256/K=400)
+- **Scenario:** healthy island per LaTeX §8 Test 2 — trained-athlete init `[0.50, 0.45, 0.20, 0.45, 0.06, 0.07]`, fixed Phi=(0.30, 0.30) for 14 d
+- **Cadence:** 1-d window / 12-h stride / 27 rolling windows on RTX 5090
+- **SMC config:** n_smc_particles=256, n_pf_particles=400 — the 5090 saturation point per CLAUDE.md "GPU saturated post-driver update"
+
+### Final state (end of 14 d trajectory)
+
+`B=0.401, S=0.400, F=0.152, A=0.936, K_FB=0.058, K_FS=0.071` — well inside the v5 healthy island (A > 0.4 per LaTeX Test 2 pass criterion).
+
+### Both acceptance gates PASS
+
+- ✅ **id_cov gate:** 25/27 windows have ≥30/37 estimable params covered at 90% CI (threshold: ≥22/27 windows)
+- ✅ **compute gate:** 2890 s = 48.2 min total (threshold: ≤60 min)
+
+### Per-window timing (all on RTX 5090)
+
+| Window | Wall-clock | Note |
+|---|---|---|
+| 1 (cold + JIT) | 244.3 s | One-time JIT compile cost |
+| 2 (bridge JIT) | 105.0 s | One-time bridge-path JIT |
+| 3–27 (cached) | 91–107 s avg | Steady-state native path |
+
+### Per-param coverage breakdown (fraction of 27 windows with truth in 90% CI)
+
+- **100% covered (12 params):** `kappa_B, epsilon_AB, epsilon_AS, tau_F, mu_K, mu_F, mu_FF, eta, c_tilde, k_A_S, beta_B_st, beta_F_st, beta_S_VL`
+- **>92% covered (10 params):** `tau_B, tau_S, kappa_S, lambda_A, kappa_B_HR, S_base, beta_C_S, beta_A_st, beta_F_VL, sigma_VL`
+- **>85% covered (5 params):** `mu_0, mu_B, alpha_A_HR, k_C, k_A, k_F, sigma_st`
+- **>80% covered (3 params):** `mu_S, HR_base, beta_C_HR, sigma_S, mu_step0`
+- **<80% but still covered most windows (2 params):** `beta_C_st` (74%), `sigma_HR` (63%)
+
+The bottom two are observation-noise / circadian-coefficient parameters — typically harder to identify from short data on a single steady-state regime. They're still being recovered, just less consistently.
+
+### Performance footnote -- root-cause of the GPU underutilization
+
+The first attempt with v2's E3 dev-config (n_smc=128/n_pf=200, BlackJAX recompile-per-window path) gave nvtop ~31% util oscillating to 0%. Two issues were stacked:
+
+1. **20 fp64 leaks in v5's `propagate_fn` Kalman-fusion hot path** (Ajay diagnosed via JAX jaxpr inspection at fp32 input, fixed in commit `9e6df28`). The Hill keys in `_FROZEN_V5_DYNAMICS`, the `EPS_*_FROZEN` constants, and several Python literals were arriving as fp64 and forcing fp32↔fp64 promotion-thrashing inside the inner scan.
+
+2. **Driver was using v2's E3 dev-config** (128/200, BlackJAX path) instead of v2's saturation config (256/400, native compile-once path). 5090 saturates at N=256/K=400 per CLAUDE.md; smaller is wasted parallelism, larger is wasted wall-clock.
+
+After both fixes: GPU saturated, wall-clock manageable, all gates pass.
+
+---
+
+## Run 02 — TODO: Stage 2 controller-only verification
 
 (empty until first run)
 
