@@ -298,12 +298,11 @@ def main():
     lam_phi        = _pop_named_arg('--lam-phi', DEFAULT_LAM_PHI, float)
     lam_chance     = _pop_named_arg('--lam-chance', DEFAULT_LAM_CHANCE, float)
     n_anchors      = _pop_named_arg('--n-anchors', 8, int)
-    # v2-production controller particle counts: n_smc=1024, n_inner=128.
-    # Smaller numbers (e.g. v2 dev-config 256/32) under-saturate the
-    # RTX 5090. Per CLAUDE.md "GPU saturated post-driver update": these
-    # are the values that hit 97% util / 80% VRAM.
-    n_smc          = _pop_named_arg('--n-smc', 1024, int)
-    n_inner        = _pop_named_arg('--n-inner', 128, int)
+    # 5090-saturation point per CLAUDE.md (N=256/K=400 saturates; bigger
+    # is just more wall-clock). Override via --n-smc / --n-inner if you
+    # want the slower production controller posterior (1024/128).
+    n_smc          = _pop_named_arg('--n-smc', 256, int)
+    n_inner        = _pop_named_arg('--n-inner', 64, int)
     auto_tag = (f"stage2_controller_{cost}_{scenario_key}_"
                  f"T{T_total_days}d_K{replan_K}")
     run_tag        = _pop_named_arg('--run-tag', auto_tag, str)

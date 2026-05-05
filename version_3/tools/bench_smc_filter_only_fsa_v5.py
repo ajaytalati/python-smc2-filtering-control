@@ -249,12 +249,15 @@ def main():
     em = HIGH_RES_FSA_V5_ESTIMATION
     truth = dict(DEFAULT_PARAMS_V5)
 
-    # v2-production particle counts: n_smc=1024 outer, n_pf=800 inner.
-    # These saturate the RTX 5090 (97% util / 80% VRAM per CLAUDE.md).
-    # The v2 E3 dev-config (128/200) under-saturates the GPU; we match
-    # the production E5 numbers for Stage 1.
+    # 5090-saturation point per CLAUDE.md "GPU saturated post-driver
+    # update": "the GPU saturates at N=256/K=400 post-driver-update.
+    # Doubling N_SMC_PARTICLES is no longer 'free'." So 256/400 is the
+    # right operating point for verification: GPU saturated AND wall-
+    # clock manageable. v2 production uses 1024/800 for a tighter
+    # posterior at the cost of ~16x wall-clock; we don't need that for
+    # Stage 1 gate-checking.
     smc_cfg = SMCConfig(
-        n_smc_particles=1024, n_pf_particles=800,
+        n_smc_particles=256, n_pf_particles=400,
         target_ess_frac=0.5, max_lambda_inc=0.10,
         bridge_type='schrodinger_follmer',
         sf_q1_mode='annealed',

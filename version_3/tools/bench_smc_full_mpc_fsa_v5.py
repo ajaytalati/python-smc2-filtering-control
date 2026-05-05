@@ -287,12 +287,12 @@ def main():
     lam_phi        = _pop_named_arg('--lam-phi', DEFAULT_LAM_PHI, float)
     lam_chance     = _pop_named_arg('--lam-chance', DEFAULT_LAM_CHANCE, float)
     n_anchors      = _pop_named_arg('--n-anchors', 8, int)
-    # v2-production particle counts (mirrors bench_smc_full_mpc_fsa.py:163-191).
-    # Smaller numbers (e.g. v2 dev-config 128/200/32) under-saturate the
-    # RTX 5090; production 1024/800/128 hits 97% util / 80% VRAM.
-    n_smc          = _pop_named_arg('--n-smc', 1024, int)   # filter outer + controller
-    n_pf           = _pop_named_arg('--n-pf', 800, int)     # filter inner
-    n_inner        = _pop_named_arg('--n-inner', 128, int)  # controller cost-MC
+    # 5090-saturation point per CLAUDE.md (N=256/K=400 saturates; bigger
+    # is just more wall-clock). Override via --n-smc / --n-pf / --n-inner
+    # if you want the slower production posterior (1024/800/128).
+    n_smc          = _pop_named_arg('--n-smc', 256, int)    # filter outer + controller
+    n_pf           = _pop_named_arg('--n-pf', 400, int)     # filter inner
+    n_inner        = _pop_named_arg('--n-inner', 64, int)   # controller cost-MC
     auto_tag = (f"stage3_full_mpc_{cost}_{scenario_key}_"
                  f"T{T_total_days}d_K{replan_K}")
     run_tag        = _pop_named_arg('--run-tag', auto_tag, str)
