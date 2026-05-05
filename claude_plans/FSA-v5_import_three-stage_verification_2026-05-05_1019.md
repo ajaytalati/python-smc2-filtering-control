@@ -11,32 +11,67 @@
 > Updated: 2026-05-05 12:05 — Per Ajay's question on output layout, Stage 1 driver updated to use `outputs/fsa_v5/experiments/runNN_<tag>/{manifest.json, posterior.npz, trajectory.npz, *.png}` (mirrors `version_2/outputs/swat/experiments/`). Auto-allocates next available run number; CLI flag `--run-tag <str>` overrides default.
 > Updated: 2026-05-05 12:10 — Stage 1 first-attempt run crashed inside window 1 (commit `dcfb73b` patches). Carry-type mismatch in v5's Kalman-fusion scan: `propagate_fn` constructs `H = jnp.zeros((4,6))` (defaults fp64) which fights the framework's fp32 cast. Patched 3 sites in `version_3/models/fsa_v5/estimation.py` to mirror v2's inline `jnp.array([[...]])` H construction + dtype-matched eye/regulariser. 16/16 standalone tests still PASS. **Stage 1 NOT yet re-run end-to-end — the next session should do this first.** Real upstream bug; CHANGELOG Run 00c records the recommended fix for `FSA_model_dev/tests/test_fsa_v5_smoke.py`.
 
-## Resume-state for the next session (2026-05-05 12:15)
+## Resume-state for the next session
 
 **Branch:** `importing_FSA_version_5` on `~/Repos/python-smc2-filtering-control/`. NOT pushed to remote.
 
-**Commits (most recent first):**
-1. `dcfb73b` Stage 1 dtype patch + experiments/runNN layout
-2. `010b62a` Stage 1 filter-only bench driver (Phase B.1)
-3. `a4ed4e4` fp64-finding correction (Phase A.5 no-op)
-4. `e112a29` Re-pin to FSA_model_dev `7075436` (Phase A.6, JIT-friendly cost variants)
-5. `9345832` Initial import from FSA_model_dev `d8f20c6` (Phase A)
+**Commits as of 2026-05-05 13:00 (most recent first):**
+1. `7cb61cd` summarize_run.py helper (CHANGELOG-ready manifest reader)
+2. `c337d5f` bench-level smoke test (11 tests) -- Phase B.4
+3. `cfd795d` Stage 3 full-MPC bench driver -- Phase B.3
+4. `352f4d0` Stage 2 controller-only bench driver -- Phase B.2
+5. `dcf2788` handoff state for next session
+6. `dcfb73b` Stage 1 dtype patch + experiments/runNN layout
+7. `010b62a` Stage 1 filter-only bench driver -- Phase B.1
+8. `a4ed4e4` fp64-finding correction -- Phase A.5 no-op
+9. `e112a29` re-pin to FSA_model_dev `7075436` -- Phase A.6 JIT-friendly cost variants
+10. `9345832` initial import from FSA_model_dev `d8f20c6` -- Phase A
 
-**Immediate next step:** re-run Stage 1.
+**Phase status:**
+- Phase A (import): DONE -- 9345832
+- Phase A.6 (re-pin to JIT-friendly cost): DONE -- e112a29
+- Phase A.5 (fp32 dtype): DONE no-op (v5 already matches v2) -- a4ed4e4
+- Phase B.1 (Stage 1 driver + dtype patch): DONE -- 010b62a + dcfb73b
+- Phase B.2 (Stage 2 driver): DONE -- 352f4d0
+- Phase B.3 (Stage 3 driver): DONE -- cfd795d
+- Phase B.4 (bench smoke test): DONE -- c337d5f
+- Phase C.1 (Stage 1 verification): IN-PROGRESS -- run started 2026-05-05 12:15, ~25 min, results pending
+- Phase C.2 / C.3 (Stage 2 soft + hard × 3 scenarios): pending
+- Phase C.4 / C.5 (Stage 3 soft + hard): pending
 
+**How to re-run any stage:**
+
+Stage 1 (filter only):
 ```bash
 cd ~/Repos/python-smc2-filtering-control/version_3
 conda activate comfyenv
-PYTHONPATH=.:.. python tools/bench_smc_filter_only_fsa_v5.py --run-tag stage1_filter_only_T14_healthy
+PYTHONPATH=.:.. python tools/bench_smc_filter_only_fsa_v5.py \
+    --run-tag stage1_filter_only_T14_healthy
 ```
 
-Expected: ~15-45 min on RTX 5090. Outputs land in `outputs/fsa_v5/experiments/run01_stage1_filter_only_T14_healthy/` (manifest.json, posterior.npz, trajectory.npz, two PNGs).
+Stage 2 (controller only -- pick cost variant + scenario):
+```bash
+PYTHONPATH=.:.. python tools/bench_controller_only_fsa_v5.py \
+    --cost soft --scenario healthy --T-days 14 --replan-K 2
+PYTHONPATH=.:.. python tools/bench_controller_only_fsa_v5.py \
+    --cost hard --scenario healthy --T-days 14 --replan-K 2
+```
 
-**After Stage 1 passes:**
-- Add a Run 01 entry to `version_3/outputs/fsa_v5/CHANGELOG.md` with gate results.
-- Then write Phase B.2 (Stage 2 controller-only bench) with `--cost {soft|hard|gradient_ot}` switch. Open design question: how to wire Variant C (`_hard`) into smc2fc's tempered-SMC controller, which has HMC inside (`SMCControlConfig.num_mcmc_steps>0`). Likely answer: set `num_mcmc_steps=0` when `--cost hard` to skip HMC; verify by reading `smc2fc/control/tempered_smc_loop.py`.
-- Then Phase B.3 (Stage 3 full-MPC bench) — same `--cost` switch, plus filter posterior particles feeding the cost.
-- Then Phase B.4 (bench-level smoke test), then Phases C.1-C.5 (verification runs).
+Stage 3 (full closed-loop):
+```bash
+PYTHONPATH=.:.. python tools/bench_smc_full_mpc_fsa_v5.py \
+    --cost soft --scenario healthy --T-days 14 --replan-K 2
+PYTHONPATH=.:.. python tools/bench_smc_full_mpc_fsa_v5.py \
+    --cost hard --scenario healthy --T-days 14 --replan-K 2
+```
+
+**Post-run results dump:**
+```bash
+PYTHONPATH=.:.. python tools/summarize_run.py \
+    outputs/fsa_v5/experiments/runNN_<tag>/
+```
+
+Outputs are markdown ready to paste under a `## Run NN` header in `outputs/fsa_v5/CHANGELOG.md`.
 
 ## Context
 
