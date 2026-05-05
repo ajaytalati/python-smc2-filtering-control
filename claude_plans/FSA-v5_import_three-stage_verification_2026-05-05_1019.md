@@ -4,6 +4,9 @@
 > Updated: 2026-05-05 10:35 — Phase A done (8 model files + 3 test files copied, paths fixed, package imports clean, 12/12 tests pass). Plan annotated with import-time findings: __init__.py slim resolved to no-slim, test count 12 not 13, fp64 anti-pattern flagged in CHANGELOG. Ready to write bench drivers.
 > Updated: 2026-05-05 10:50 — Cost-architecture finding (#6): `evaluate_chance_constrained_cost` is NOT JAX-jittable (uses scipy.brentq + Python loops). Resolution mirrors SWAT precedent: use `build_control_spec_v5` for the jittable controller cost; call `evaluate_chance_constrained_cost` post-hoc as a verification gate. Cadence + scenario decisions also recorded.
 > Updated: 2026-05-05 11:05 — Ajay overrode TWO decisions after reading [`Advice_on_smc2fc_Port_Cost_Function_Architecture_2026-05-05_1055.md`](Advice_on_smc2fc_Port_Cost_Function_Architecture_2026-05-05_1055.md): (a) issue 7 (fp64 anti-pattern) — apply fp32 dtype optimization in version_3/models/fsa_v5/ mirroring FSA-v2's choices. Senior-files-immutability rule dropped for this case. (b) issue 6 (cost-architecture) — gradient-OT path is rejected as production cost. Use the upcoming JIT-friendly chance-constrained cost variants from the upstream rewrite, and TEST BOTH (`_soft` for HMC = Option B, `_hard` for pure-SMC² = Option C) in Stages 2 and 3. Open question on who does the upstream rewrite is in the plan.
+> Updated: 2026-05-05 11:15 — Ajay reports (via `Ajays Notes 4 - Guiding on the Cost function.md`) that the FSA-author has ALREADY done the upstream rewrite. Verified the new symbols and 4 new tests are present in `~/Repos/FSA_model_dev/` working tree (HEAD still `d8f20c6`, changes uncommitted). Plan now waits on Ajay's choice of sub-option β.1 / β.2 / β.3 (commit upstream first vs courier-commit vs working-tree copy). Phase A already committed (`9345832`); Phase A.5 (fp32 dtype) is unblocked and can start once β.x is decided. Ajay's mathematical preference is C (hard) but BOTH must be tested empirically.
+> Updated: 2026-05-05 11:30 — Phase A.6 done. Re-pinned to 7075436 (FSA-author committed + pushed), re-copied 3 modified files (control_v5.py, __init__.py, test_fsa_v5_smoke.py), path-fixed, **16/16 tests pass** (was 12; +4 new variant tests). Committed as `e112a29 version_3: re-pin to FSA_model_dev 7075436`. CHANGELOG Run 00b documents the re-pin and the new symbol surface.
+> Updated: 2026-05-05 11:45 — **Phase A.5 RESOLVED AS NO-OP.** Verification of v2 vs v5 model files: identical dtype usage (both fp64 inside SDE scan + cost rollout). v2's fp32 boost is in the BENCH file (`tools/bench_smc_closed_loop_fsa.py:_build_phase2_control_spec`, commit aa114e8 "Stage L8"), NOT in the model files. v5 already matches v2; no model-file edits needed. fp32 cast-once pattern moves to Phase B (my bench drivers). CHANGELOG corrected. CLAUDE.md's "v2 plant runs in fp32" assertion is factually inaccurate; out-of-scope correction needed separately.
 
 ## Context
 
@@ -148,26 +151,17 @@ And all three parse `--step-minutes` via `_pop_step_minutes_from_argv()` BEFORE 
 
 ### C-pre — Two prerequisite work items before benches
 
-#### Pre-1. Apply fp32 dtype optimization to `version_3/models/fsa_v5/`
+#### Pre-1. Apply fp32 dtype optimization — RESOLVED AS NO-OP (2026-05-05 11:45)
 
-**Ajay's override (2026-05-05 ~11:00):** drop the senior-files-immutability rule for the dtype anti-pattern. Optimize the dtype usage in the imported model files, mirroring FSA-v2's choices (FSA-v2 behaves well, so its fp32-inner / fp64-outer split is the proven pattern).
+**Verification flipped this finding.** I had originally claimed v5's model files had an fp64 anti-pattern "relative to v2's fp32 pattern". Actual diff of v2 vs v5 model files:
 
-Lines to change (target: fp32 inside `lax.scan` step bodies and per-trial cost rollouts; keep fp64 for accumulators, log-weights, posteriors, host-side IO):
-- `_plant.py:135` — `noise = jax.random.normal(sub, (6,), dtype=jnp.float32)` (was fp64) inside the EM step body
-- `_plant.py:276-285` — cast `p_jax`, `sigma_jax`, `Phi_jax`, `y0_jax`, and `dt` to fp32 BEFORE the scan; the scan body runs fp32. Final state cast back to fp64 on output (line 289 already does this)
-- `control.py:150,192` — controller cost-rollout noise to fp32
-- `control.py:200,206` — `Phi_const`, `Phi_zero` to fp32
-- `_phi_burst.py:56,89` — `h` arange and `daily_phi` cast inputs to fp32
-- `simulation.py:229` — `p_jax = {k: jnp.float32(v) for k, v in params.items()}` IF this dict feeds an inner SDE loop (verify by reading context)
+- v2 `_plant.py:_plant_em_step` line 95: `noise = jax.random.normal(sub, (3,), dtype=jnp.float64)` — fp64 inside the SDE scan, just like v5.
+- v2 `control.py:_build_cost_and_traj_fns` line 180: `w_seq = jax.random.normal(key, (n_steps, 3), dtype=jnp.float64)` — fp64, just like v5.
+- v2 `_phi_burst.py` and `simulation.py` dtype usage: byte-identical to v5.
 
-LEAVE fp64:
-- `control.py:141` — accumulator `init_carry` (these are accumulators, MUST stay fp64)
-- `_plant.py:104-106` — `EPS_*` (one-time, doesn't matter)
-- All log-likelihood / log-weight / posterior accumulation in `estimation.py`
+**v5 model files match v2 model files exactly for dtype.** There is no anti-pattern to fix in `version_3/models/fsa_v5/`. CLAUDE.md's "Plant integration: `version_2/models/fsa_high_res/_plant.py:_plant_em_step` runs in fp32. Mirror this." is factually inaccurate. The fp32 boost lives in v2's BENCH file (`version_2/tools/bench_smc_closed_loop_fsa.py:_build_phase2_control_spec`, commit `aa114e8` "Stage L8"), NOT in v2's model files.
 
-Reference template: [`../version_2/models/fsa_high_res/_plant.py`](../version_2/models/fsa_high_res/_plant.py) `_plant_em_step` (FSA-v2's working fp32-inner pattern).
-
-The plan still records the original fp64-anti-pattern finding in CHANGELOG; it just adds an entry "Run 00b — fp32 optimization applied" so the dtype change is auditable.
+**Action:** none in `version_3/models/fsa_v5/`. The fp32 cast-once pattern goes in MY bench drivers in Phase B (the cost wrappers I'll write for Stage 2 / 3).
 
 #### Pre-2. Upstream rewrite of `control_v5.py` in `FSA_model_dev`
 
@@ -179,12 +173,22 @@ Per the advice doc, the rewrite produces:
 - Back-compat alias `evaluate_chance_constrained_cost` → `_hard` so existing imports keep working
 - 4 new tests in `tests/test_fsa_v5_smoke.py`: `_jits`, `_jits` (soft), `_grad_finite`, `_soft_to_hard_limit`
 
-**Open question for Ajay:** who does the upstream rewrite? Three options (asking before doing):
-- **Option α:** I do it now in `~/Repos/FSA_model_dev/` on `claude/dev-sandbox-v4`, push, re-pin to the new SHA, re-copy `control_v5.py` and the new tests into `version_3/`. Adds ~1-2 hours to Phase A.
-- **Option β:** the FSA-author / a separate dev-sandbox-Claude does it. I wait. Re-pin once it lands.
-- **Option γ:** I do a "shim" version IN-PLACE in `version_3/models/fsa_v5/control_v5.py` (violates senior-files but pragmatic), get Stage 2/3 running, and the upstream rewrite is reconciled later when it lands.
+**Status (2026-05-05 ~11:25): rewrite landed upstream as `7075436`.** Ajay confirmed the FSA-author session committed + pushed the rewrite. Verified locally: `git fetch` on `~/Repos/FSA_model_dev/` brings in `7075436628fa8c202cf62241666fe90230c46ac1` on `origin/claude/dev-sandbox-v4`. Single commit `feat(control_v5): JIT-friendly hard/soft variants of chance-constrained cost` (+923 lines, -55, across 5 files) covering everything the advice doc specified.
 
-I'll wait for Ajay's choice before doing either. My recommendation: **α**, because the user said I do "all the coding and technical work and github administration" and α keeps the audit trail clean.
+**Plan now: re-pin and re-copy.** Concrete steps for Phase A.6 — "pull the rewrite into `version_3/`":
+
+1. Update `version_3/outputs/fsa_v5/CHANGELOG.md` Run-00 entry — change pin from `d8f20c6` to `7075436` (the new "feat(control_v5): JIT-friendly hard/soft variants" commit).
+2. Re-copy 3 modified files from `~/Repos/FSA_model_dev/` (now at `7075436`) into `version_3/`:
+   - `models/fsa_high_res/control_v5.py` → `version_3/models/fsa_v5/control_v5.py` (overwrite)
+   - `models/fsa_high_res/__init__.py` → `version_3/models/fsa_v5/__init__.py` (overwrite)
+   - `tests/test_fsa_v5_smoke.py` → `version_3/tests/test_fsa_v5_smoke.py` (overwrite, now 8 tests)
+   - The LaTeX guide is NOT copied — it lives in `FSA_model_dev` only.
+3. Apply path-fix to the re-copied files (same as Phase A): `from models.fsa_high_res.<x>` → `from version_3.models.fsa_v5.<x>` (the new code mostly imports from `_dynamics` so most lines were already path-fixed in Phase A; just diff and re-do whatever new imports landed).
+4. Run `cd version_3 && PYTHONPATH=.:.. pytest tests/ -v` — expect 16 tests green (was 12; +4 new in smoke file).
+5. Add CHANGELOG Run 01 entry: "Re-pinned to `7075436`. Chance-constrained cost is now JIT-friendly. 16/16 tests green."
+6. Commit Phase A.6 separately so the diff is auditable: "version_3: re-pin to FSA_model_dev 7075436 — JIT-friendly chance-constrained cost variants".
+
+Performance (FSA-author's measurement): hard 0.229s/call cached, soft 0.157s/call cached on 100-particle × 84-day × 96-bin/day cloud — comfortably fast enough for HMC inner kernels (which call cost thousands of times per replan).
 
 ### C2 — `version_3/tools/bench_controller_only_fsa_v5.py` (Stage 2)
 **Template:** the methodology doc recipe (no concrete SWAT controller-only bench exists to copy). Lift the `_build_phase2_control_spec` helper structure from [`../version_2/tools/bench_smc_full_mpc_fsa.py`](../version_2/tools/bench_smc_full_mpc_fsa.py) and the controller-only loop pattern from [`controller_only_test_methodology.md`](controller_only_test_methodology.md):

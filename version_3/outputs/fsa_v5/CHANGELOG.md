@@ -74,8 +74,21 @@ This is informational, not a blocker for verification — Stage 1 / 2 / 3 verifi
   Both ≪ 2s budget — comfortably fast enough for HMC inner kernels.
 - **Run 00 finding #6 status:** RESOLVED upstream. Stage 2/3 will test BOTH `_hard` and `_soft` variants empirically per Ajay's instruction.
 
-### Note on Run 00 finding #1 (fp64 anti-pattern)
-Still open at this SHA. Ajay overrode the senior-files-immutability rule for this case (2026-05-05 ~11:00). fp32 dtype optimization scheduled for the next commit (Phase A.5), targeting `_plant.py:135`, `control.py:150,192,200,206`, `_phi_burst.py:56,89`, and any other fp64-in-inner-loop sites mirroring FSA-v2's working pattern.
+### Note on Run 00 finding #1 (fp64 anti-pattern) — REVISED 2026-05-05 11:45
+
+The original Run 00 finding said "v5 has an fp64 anti-pattern relative to v2's fp32 pattern". **That claim was based on CLAUDE.md's text, not on actually reading v2's code.** Verification:
+
+- v2's `_plant.py:_plant_em_step` (line 95): `noise = jax.random.normal(sub, (3,), dtype=jnp.float64)` — **also fp64 inside the SDE scan**.
+- v2's `control.py:_build_cost_and_traj_fns` (line 180): `w_seq = jax.random.normal(key, (n_steps, 3), dtype=jnp.float64)` — **also fp64 inside the cost rollout**.
+- v2's `_phi_burst.py` and `simulation.py` dtype usage: byte-identical to v5's.
+
+**v5 model files MATCH v2 model files for dtype.** No fp64 anti-pattern in `version_3/models/fsa_v5/` relative to the working v2 pattern.
+
+The fp32 boost in v2 lives in the BENCH file `version_2/tools/bench_smc_closed_loop_fsa.py:_build_phase2_control_spec` (commit `aa114e8` "Stage L8: FP32 controller cost-MC SDE rollout"). Specifically, lines 351-404 cast `p_jax`, `sub_dt`, `sqrt_dt`, `fixed_w`, `init_arr`, `F_max`, `Phi_arr` to fp32 BEFORE the `cost_fn` `vmap`'d `lax.scan`, with accumulators (`A_acc`, `barrier_acc`) staying fp64 via `jnp.float64(...)` promotion at the accumulation site.
+
+**Phase A.5 (model-file dtype optimization) is therefore a NO-OP.** Phase B will deliver the fp32 boost in the version_3 bench drivers' `_build_phase2_control_spec`-equivalent cost wrappers, mirroring v2's L8 pattern.
+
+This also means CLAUDE.md's claim "Plant integration: `version_2/models/fsa_high_res/_plant.py:_plant_em_step` runs in fp32. Mirror this." is factually inaccurate — it is fp64 in v2. CLAUDE.md is aspirational at that line; the real reference for fp32 controller-cost is the bench's L8 path. Worth a separate CLAUDE.md correction PR; out of scope here.
 
 ---
 
