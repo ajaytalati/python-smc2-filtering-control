@@ -1,6 +1,8 @@
 # FSA-v5 — Stage 2 / Stage 3 verification + `soft_fast` controller variant
 
 > Archived from plan mode: 2026-05-05 20:46.
+> Updated: 2026-05-05 23:30 — Step 1 fully done + committed (commit `b70b6fc`: control_v5_fast.py + bench wiring + 14/14 tests + basin_overlay plot + GPU sanity at T=2d / 51s / all 6 artifacts). XLA preallocation flag added to all v3 drivers + CLAUDE.md (commit `b70b6fc`).
+> Updated: 2026-05-05 23:50 — Ajay redirected after Gemini's RTX 5090 fp64 dark-silicon observation (claude_plans/Geminis_observation_on_why_fp64_is_the_bottleneck_on_RTX_5090.md): treat `soft_fast` as the production default, drop the strict-soft runs at sedentary / overtrained / Stage 3 from the sweep. Saves ~5h GPU. Strict-soft healthy A/B point is covered by Ajay's separately-running PID 1731233. Launcher trimmed from 8 runs (~10h) to 5 runs (~2h). See commit `ecac981`.
 
 ## Where we are (1 paragraph)
 
