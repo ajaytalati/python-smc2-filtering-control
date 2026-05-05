@@ -298,8 +298,12 @@ def main():
     lam_phi        = _pop_named_arg('--lam-phi', DEFAULT_LAM_PHI, float)
     lam_chance     = _pop_named_arg('--lam-chance', DEFAULT_LAM_CHANCE, float)
     n_anchors      = _pop_named_arg('--n-anchors', 8, int)
-    n_smc          = _pop_named_arg('--n-smc', 256, int)
-    n_inner        = _pop_named_arg('--n-inner', 32, int)
+    # v2-production controller particle counts: n_smc=1024, n_inner=128.
+    # Smaller numbers (e.g. v2 dev-config 256/32) under-saturate the
+    # RTX 5090. Per CLAUDE.md "GPU saturated post-driver update": these
+    # are the values that hit 97% util / 80% VRAM.
+    n_smc          = _pop_named_arg('--n-smc', 1024, int)
+    n_inner        = _pop_named_arg('--n-inner', 128, int)
     auto_tag = (f"stage2_controller_{cost}_{scenario_key}_"
                  f"T{T_total_days}d_K{replan_K}")
     run_tag        = _pop_named_arg('--run-tag', auto_tag, str)
@@ -360,11 +364,14 @@ def main():
         lam_phi=lam_phi, lam_chance=lam_chance,
     )
 
+    # v2-production controller config (mirrors
+    # version_2/tools/bench_smc_full_mpc_fsa.py:184-191):
     base_cfg = dict(
-        n_smc=n_smc, target_ess_frac=0.5, max_lambda_inc=0.5,
-        max_temp_steps=200, n_inner=n_inner, sigma_prior=1.5,
-        beta_max_target_nats=8.0, n_calibration_samples=256,
-        num_mcmc_steps=5, hmc_step_size=0.2, hmc_num_leapfrog=10,
+        n_smc=n_smc, n_inner=n_inner, sigma_prior=1.5,
+        target_ess_frac=0.5, max_lambda_inc=0.10,
+        num_mcmc_steps=10, hmc_step_size=0.2, hmc_num_leapfrog=16,
+        beta_max_target_nats=8.0, max_temp_steps=30,
+        n_calibration_samples=256,
         log_every_n_steps=5,
     )
     base_cfg.update(cfg_overrides)

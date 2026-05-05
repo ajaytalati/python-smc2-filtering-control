@@ -287,9 +287,12 @@ def main():
     lam_phi        = _pop_named_arg('--lam-phi', DEFAULT_LAM_PHI, float)
     lam_chance     = _pop_named_arg('--lam-chance', DEFAULT_LAM_CHANCE, float)
     n_anchors      = _pop_named_arg('--n-anchors', 8, int)
-    n_smc          = _pop_named_arg('--n-smc', 128, int)
-    n_pf           = _pop_named_arg('--n-pf', 200, int)
-    n_inner        = _pop_named_arg('--n-inner', 32, int)
+    # v2-production particle counts (mirrors bench_smc_full_mpc_fsa.py:163-191).
+    # Smaller numbers (e.g. v2 dev-config 128/200/32) under-saturate the
+    # RTX 5090; production 1024/800/128 hits 97% util / 80% VRAM.
+    n_smc          = _pop_named_arg('--n-smc', 1024, int)   # filter outer + controller
+    n_pf           = _pop_named_arg('--n-pf', 800, int)     # filter inner
+    n_inner        = _pop_named_arg('--n-inner', 128, int)  # controller cost-MC
     auto_tag = (f"stage3_full_mpc_{cost}_{scenario_key}_"
                  f"T{T_total_days}d_K{replan_K}")
     run_tag        = _pop_named_arg('--run-tag', auto_tag, str)
@@ -324,12 +327,14 @@ def main():
     from smc2fc.control import SMCControlConfig
     from smc2fc.control.tempered_smc_loop import run_tempered_smc_loop_native
     from smc2fc.core.config import SMCConfig
+    # v2-production native path: compile-once factory + Partial-wrapped
+    # log_density per stride. Avoids per-window JIT recompile.
     from smc2fc.core.jax_native_smc import (
         run_smc_window_native, run_smc_window_bridge_native,
     )
     from smc2fc.transforms.unconstrained import unconstrained_to_constrained
     from smc2fc.filtering.gk_dpf_v3_lite import (
-        make_gk_dpf_v3_lite_log_density,
+        make_gk_dpf_v3_lite_log_density_compileonce,
     )
 
     truth = dict(DEFAULT_PARAMS_V5)
@@ -355,9 +360,11 @@ def main():
           f"controller n_smc={n_smc}, n_inner={n_inner}")
     print()
 
-    # Filter SMC config (matches Stage 1)
+    # v2-production filter config (mirrors bench_smc_full_mpc_fsa.py:163-176).
+    # Critical: n_smc_particles=1024 outer + n_pf_particles=800 inner is the
+    # GPU-saturating point; smaller numbers leave the 5090 idle.
     smc_filter_cfg = SMCConfig(
-        n_smc_particles=128, n_pf_particles=n_pf,
+        n_smc_particles=n_smc, n_pf_particles=n_pf,
         target_ess_frac=0.5, max_lambda_inc=0.10,
         bridge_type='schrodinger_follmer',
         sf_q1_mode='annealed', sf_use_q0_cov=True, sf_blend=0.7,
@@ -367,13 +374,15 @@ def main():
         num_mcmc_steps_bridge=3, max_lambda_inc_bridge=0.15,
     )
 
-    # Initial controller config (overrides applied per-replan based on
-    # which cost variant -- hard sets num_mcmc_steps=0 there).
+    # v2-production controller config (mirrors bench_smc_full_mpc_fsa.py:184-191).
+    # `num_mcmc_steps=0` override is applied per-replan when --cost hard
+    # (indicator gradient is zero -> HMC inside leapfrog is wasted).
     base_ctrl_cfg = dict(
-        n_smc=n_smc, target_ess_frac=0.5, max_lambda_inc=0.5,
-        max_temp_steps=200, n_inner=n_inner, sigma_prior=1.5,
-        beta_max_target_nats=8.0, n_calibration_samples=256,
-        num_mcmc_steps=5, hmc_step_size=0.2, hmc_num_leapfrog=10,
+        n_smc=n_smc, n_inner=n_inner, sigma_prior=1.5,
+        target_ess_frac=0.5, max_lambda_inc=0.10,
+        num_mcmc_steps=10, hmc_step_size=0.2, hmc_num_leapfrog=16,
+        beta_max_target_nats=8.0, max_temp_steps=30,
+        n_calibration_samples=256,
         log_every_n_steps=5,
     )
 
@@ -388,6 +397,20 @@ def main():
     applied_phi_per_stride = np.zeros((n_strides, 2))
     plant_state_per_stride = np.zeros((n_strides + 1, 6))
     plant_state_per_stride[0] = plant.state.copy()
+
+    # ── Build the compile-once log-density factory ONCE before the loop ──
+    # v2 production pattern (bench_smc_full_mpc_fsa.py:250-260).
+    log_density_factory = make_gk_dpf_v3_lite_log_density_compileonce(
+        model=em, n_particles=smc_filter_cfg.n_pf_particles,
+        bandwidth_scale=smc_filter_cfg.bandwidth_scale,
+        ot_ess_frac=smc_filter_cfg.ot_ess_frac,
+        ot_temperature=smc_filter_cfg.ot_temperature,
+        ot_max_weight=smc_filter_cfg.ot_max_weight,
+        ot_rank=smc_filter_cfg.ot_rank, ot_n_iter=smc_filter_cfg.ot_n_iter,
+        ot_epsilon=smc_filter_cfg.ot_epsilon,
+        dt=DT, t_steps=WINDOW_BINS,
+    )
+    T_arr = log_density_factory._transforms
 
     # Initial schedule = baseline. The first replan (after window 1
     # is full) updates this.
@@ -443,36 +466,27 @@ def main():
               end='', flush=True)
         window_obs = extract_window(obs_data_full, start_bin, end_bin)
         grid_obs = em.align_obs_fn(window_obs, WINDOW_BINS, DT)
-        ld = make_gk_dpf_v3_lite_log_density(
-            model=em, grid_obs=grid_obs,
-            n_particles=smc_filter_cfg.n_pf_particles,
-            bandwidth_scale=smc_filter_cfg.bandwidth_scale,
-            ot_ess_frac=smc_filter_cfg.ot_ess_frac,
-            ot_temperature=smc_filter_cfg.ot_temperature,
-            ot_max_weight=smc_filter_cfg.ot_max_weight,
-            ot_rank=smc_filter_cfg.ot_rank, ot_n_iter=smc_filter_cfg.ot_n_iter,
-            ot_epsilon=smc_filter_cfg.ot_epsilon,
-            dt=DT, seed=42 + s,
-            fixed_init_state=fixed_init_state,
-            window_start_bin=int(start_bin),
-        )
-        T_arr = ld._transforms
 
-        # Use Stage 1's BlackJAX path (run_smc_window) since the v5 test
-        # config matches Stage 1's; the native path requires an
-        # additional Partial wrapping step that's not yet validated here.
-        from smc2fc.core.tempered_smc import (
-            run_smc_window, run_smc_window_bridge,
+        # v2-production native path: bind dynamic data via Partial; the
+        # underlying jitted scan caches across strides.
+        key0_stride = jax.random.PRNGKey(42 + s * 1000)
+        w_start_arr = jnp.asarray(start_bin, dtype=jnp.int32)
+        ld = jax.tree_util.Partial(
+            log_density_factory,
+            grid_obs=grid_obs,
+            fixed_init_state=fixed_init_state,
+            w_start=w_start_arr,
+            key0=key0_stride,
         )
         if prev_particles is None:
             init_tag = 'cold'
-            particles_unc, elapsed_f, n_temp_f = run_smc_window(
+            particles_unc, elapsed_f, n_temp_f = run_smc_window_native(
                 ld, em, T_arr, cfg=smc_filter_cfg,
                 initial_particles=None, seed=42 + s * 1000,
             )
         else:
             init_tag = 'bridge'
-            particles_unc, elapsed_f, n_temp_f = run_smc_window_bridge(
+            particles_unc, elapsed_f, n_temp_f = run_smc_window_bridge_native(
                 new_ld=ld, prev_particles=prev_particles,
                 model=em, T_arr=T_arr, cfg=smc_filter_cfg,
                 seed=42 + s * 1000,
@@ -491,14 +505,22 @@ def main():
               f"id={n_id_covered}/{len(all_param_names)}", end='', flush=True)
         prev_particles = particles_unc
 
-        # Smoothed end-of-window state for next window's PF init AND control plan
+        # vmap-batched smoothed state extract via the compile-once factory.
+        # Same Partial wraps the dynamic data as the bridge log_density
+        # so the cache hits.
         n_extract = min(10, particles_unc.shape[0])
-        extracted = []
-        for ei in range(n_extract):
-            u_draw = jnp.array(particles_unc[ei])
-            st = ld.extract_state_at_step(u_draw, STRIDE_BINS)
-            extracted.append(np.array(st))
-        smoothed_state = np.mean(extracted, axis=0)
+        us_extract = jnp.asarray(particles_unc[:n_extract])
+        target_step_arr = jnp.asarray(STRIDE_BINS, dtype=jnp.int32)
+        extract_partial = jax.tree_util.Partial(
+            log_density_factory.extract_state_at_step,
+            grid_obs=grid_obs,
+            fixed_init_state=fixed_init_state,
+            w_start=w_start_arr,
+            key0=key0_stride,
+            target_step=target_step_arr,
+        )
+        states = jax.vmap(extract_partial)(us_extract)
+        smoothed_state = np.asarray(jnp.mean(states, axis=0))
         fixed_init_state = jnp.asarray(smoothed_state)
 
         window_records.append({

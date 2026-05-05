@@ -234,16 +234,27 @@ def main():
     )
     from version_3.models.fsa_v5.simulation import DEFAULT_PARAMS_V5
     from smc2fc.core.config import SMCConfig
-    from smc2fc.core.tempered_smc import run_smc_window, run_smc_window_bridge
+    # v2-production native path: compile-once factory + Partial-wrapped per-stride
+    # log_density. Avoids the per-window JIT recompile that the BlackJAX path
+    # paid (and that left the GPU idle most of the time). Mirrors
+    # version_2/tools/bench_smc_full_mpc_fsa.py:150-260,317-337.
+    from smc2fc.core.jax_native_smc import (
+        run_smc_window_native, run_smc_window_bridge_native,
+    )
     from smc2fc.transforms.unconstrained import unconstrained_to_constrained
-    from smc2fc.filtering.gk_dpf_v3_lite import make_gk_dpf_v3_lite_log_density
+    from smc2fc.filtering.gk_dpf_v3_lite import (
+        make_gk_dpf_v3_lite_log_density_compileonce,
+    )
 
     em = HIGH_RES_FSA_V5_ESTIMATION
     truth = dict(DEFAULT_PARAMS_V5)
 
-    # Bridge config: same SF Path B-fixed pattern that ships in v2's E3 reference.
+    # v2-production particle counts: n_smc=1024 outer, n_pf=800 inner.
+    # These saturate the RTX 5090 (97% util / 80% VRAM per CLAUDE.md).
+    # The v2 E3 dev-config (128/200) under-saturates the GPU; we match
+    # the production E5 numbers for Stage 1.
     smc_cfg = SMCConfig(
-        n_smc_particles=128, n_pf_particles=200,
+        n_smc_particles=1024, n_pf_particles=800,
         target_ess_frac=0.5, max_lambda_inc=0.10,
         bridge_type='schrodinger_follmer',
         sf_q1_mode='annealed',
@@ -263,6 +274,23 @@ def main():
     identifiable_subset = set(all_param_names)
     name_to_idx = {n: i for i, n in enumerate(all_param_names)}
     n_id = len(identifiable_subset)
+
+    # ── Build the compile-once log-density factory ONCE before the loop ──
+    # The factory takes per-stride dynamic data (grid_obs, fixed_init_state,
+    # w_start, key0) as ARGUMENTS; per-stride we wrap it in jax.tree_util.Partial
+    # so JAX's JIT cache hits across strides. v2 production pattern from
+    # `bench_smc_full_mpc_fsa.py:250-260`.
+    log_density_factory = make_gk_dpf_v3_lite_log_density_compileonce(
+        model=em, n_particles=smc_cfg.n_pf_particles,
+        bandwidth_scale=smc_cfg.bandwidth_scale,
+        ot_ess_frac=smc_cfg.ot_ess_frac,
+        ot_temperature=smc_cfg.ot_temperature,
+        ot_max_weight=smc_cfg.ot_max_weight,
+        ot_rank=smc_cfg.ot_rank, ot_n_iter=smc_cfg.ot_n_iter,
+        ot_epsilon=smc_cfg.ot_epsilon,
+        dt=DT, t_steps=WINDOW_BINS,
+    )
+    T_arr = log_density_factory._transforms
 
     all_results = []
     prev_particles = None
@@ -290,27 +318,30 @@ def main():
         print(f"  obs={n_obs_w:>3} ", end='', flush=True)
 
         grid_obs = em.align_obs_fn(window_obs, WINDOW_BINS, DT)
-        ld = make_gk_dpf_v3_lite_log_density(
-            model=em, grid_obs=grid_obs, n_particles=smc_cfg.n_pf_particles,
-            bandwidth_scale=smc_cfg.bandwidth_scale,
-            ot_ess_frac=smc_cfg.ot_ess_frac, ot_temperature=smc_cfg.ot_temperature,
-            ot_max_weight=smc_cfg.ot_max_weight,
-            ot_rank=smc_cfg.ot_rank, ot_n_iter=smc_cfg.ot_n_iter,
-            ot_epsilon=smc_cfg.ot_epsilon,
-            dt=DT, seed=42 + w,
-            fixed_init_state=fixed_init_state, window_start_bin=int(start),
+
+        # Per-stride: bind dynamic data to the compile-once factory via
+        # jax.tree_util.Partial. The Partial is a stable JAX pytree -> the
+        # underlying jitted function's cache hits across strides (no
+        # per-window recompile of the SDE scan).
+        key0_stride = jax.random.PRNGKey(42 + w)
+        w_start_arr = jnp.asarray(start, dtype=jnp.int32)
+        ld = jax.tree_util.Partial(
+            log_density_factory,
+            grid_obs=grid_obs,
+            fixed_init_state=fixed_init_state,
+            w_start=w_start_arr,
+            key0=key0_stride,
         )
-        T_arr = ld._transforms
 
         if prev_particles is None:
             init_tag = 'cold'
-            particles, elapsed, n_temp = run_smc_window(
+            particles, elapsed, n_temp = run_smc_window_native(
                 ld, em, T_arr, cfg=smc_cfg,
                 initial_particles=None, seed=42 + w * 1000,
             )
         else:
             init_tag = 'bridge'
-            particles, elapsed, n_temp = run_smc_window_bridge(
+            particles, elapsed, n_temp = run_smc_window_bridge_native(
                 new_ld=ld, prev_particles=prev_particles,
                 model=em, T_arr=T_arr, cfg=smc_cfg,
                 seed=42 + w * 1000,
@@ -345,14 +376,22 @@ def main():
         })
         prev_particles = particles
 
-        # Smoothed init state at t=STRIDE_BINS for next window's PF
+        # Smoothed end-of-stride state for next window's PF init.
+        # vmap-batched extract via the compile-once factory (v2 production
+        # pattern from bench_smc_full_mpc_fsa.py:354-367).
         n_extract = min(10, particles.shape[0])
-        extracted = []
-        for ei in range(n_extract):
-            u_draw = jnp.array(particles[ei])
-            st = ld.extract_state_at_step(u_draw, STRIDE_BINS)
-            extracted.append(np.array(st))
-        fixed_init_state = jnp.array(np.mean(extracted, axis=0))
+        us_extract = jnp.asarray(particles[:n_extract])
+        target_step_arr = jnp.asarray(STRIDE_BINS, dtype=jnp.int32)
+        extract_partial = jax.tree_util.Partial(
+            log_density_factory.extract_state_at_step,
+            grid_obs=grid_obs,
+            fixed_init_state=fixed_init_state,
+            w_start=w_start_arr,
+            key0=key0_stride,
+            target_step=target_step_arr,
+        )
+        states = jax.vmap(extract_partial)(us_extract)
+        fixed_init_state = jnp.asarray(jnp.mean(states, axis=0))
 
     total_elapsed = time.time() - total_t0
     print()
