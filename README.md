@@ -17,10 +17,15 @@ python-smc2-filtering-control/
 │   └── README.md            # ← per-stage RESULT.md + headline plots
 ├── version_2/               # Stage E — closed-loop MPC: filter + 27-window
 │   │                        #   rolling SMC² + Stage-D controller + step-wise
-│   │                        #   simulator-as-plant on FSA-v2.
+│   │                        #   simulator-as-plant. Two models:
+│   │                        #     models/fsa_high_res/  — FSA-v2 (shipped, +17%)
+│   │                        #     models/swat/          — 4-state SWAT (in development)
 │   └── README.md
 └── README.md                (you are here)
 ```
+
+Project conventions, debugging methodology, and per-model gotchas live in
+[`CLAUDE.md`](CLAUDE.md) — read that first if you're new to the repo.
 
 ## What's in v1 (`version_1/`)
 
@@ -91,8 +96,15 @@ Window structure matches the validated reference
 fsa_high_res C0: 98.5% mean coverage, 27-of-27 PASS): **1-day windows
 × 12-hour stride × 14-day total = 27 windows**.
 
-Once shipped, full narrative in
-[`version_2/README.md`](version_2/README.md).
+Full narrative in [`version_2/README.md`](version_2/README.md).
+
+A second v2 model — **SWAT** (4-state Sleep-Wake-Adenosine-Testosterone
+SDE with three exogenous control variates V_h vitality, V_n chronic load,
+V_c phase shift) — is being ported into the same closed-loop framework
+under [`version_2/models/swat/`](version_2/models/swat/). Active
+development happens on `feat/import-swat-from-dev-repo`; periodic checkpoints
+land on master. Reuses the same outer SMC² engine, plant adapter, and
+controller as FSA-v2.
 
 ## Adjacent repos
 
