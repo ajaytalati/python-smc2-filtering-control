@@ -2,6 +2,8 @@
 
 > Plan written 2026-05-05 08:59 by the SWAT-debugging-session Claude in response to Ajay's note `Ajays Notes 1- Importing the FSA version 5 model.md`. Hand this to a fresh Claude session that will do the actual import.
 
+> **This is the broad-process plan. Read it together with [`Importing_FSA_version_5_model_specific_notes_2026-05-05_0935.md`](Importing_FSA_version_5_model_specific_notes_2026-05-05_0935.md), the companion model-specific notes from the FSA-v5 dev-sandbox author.** The companion covers the file-copy mechanics (folder rename `fsa_high_res` → `fsa_v5`, two control files, the `simulator/` import-path footgun, the SHA pin `d8f20c6`), the technical-guide §9 footguns (`sigma_S` name collision, `DEFAULT_PARAMS_V5` vs `TRUTH_PARAMS_V5` for the plant, Hill-key `KeyError` on direct `drift_jax` calls), the structural diff from FSA-v2 (6D state, 2D control, 5 obs channels, dict-returning chance-constrained cost), and a recommendation to copy 13 existing tests verbatim. Without those notes the bench-side code will not run on the first attempt.
+
 ## Context for the incoming agent
 
 Ajay (the user) is bringing a new, more advanced FSA-v5 model into the
@@ -19,26 +21,35 @@ templates. The methodology was hardened in the SWAT debugging session
 
 ## Read these first, in this order
 
-1. **[`CLAUDE.md`](../CLAUDE.md)** at the repo root — junior-engineer
+1. **This document, end-to-end** — broad process: branch, layout, write,
+   verify in three stages, fp32/fp64 convention, what not to do.
+2. **[`Importing_FSA_version_5_model_specific_notes_2026-05-05_0935.md`](Importing_FSA_version_5_model_specific_notes_2026-05-05_0935.md)**
+   — companion model-specific notes from the FSA-v5 dev-sandbox author.
+   Covers things this document **cannot** tell you because I (the SWAT-
+   session author) haven't read FSA-v5: folder rename, two control
+   files, `simulator/` import-path footgun, SHA pin, technical-guide
+   §9 footguns, structural diff from v2, 13 reusable tests, minimum
+   `__init__.py` surface. **You will write broken code on the first
+   attempt without this doc.** Read it next.
+3. **[`CLAUDE.md`](../CLAUDE.md)** at the repo root — junior-engineer
    stance, "verify before assert", senior-files principle, plans-archive
-   policy, conda env (`comfyenv`), `PYTHONPATH=.:..` invocation pattern,
-   per-model gotchas. **This is mandatory reading before you touch any
-   code.** Don't skip.
-2. **`claude_plans/controller_only_test_methodology.md`** — debug the
-   controller without the filter. ~3-4× faster iteration. Use this for
-   any controller debugging once the model is wired up.
-3. **`version_2/outputs/fsa_high_res/GPU_TUNING_RTX5090.md`** — the
-   living document of hardware-specific tuning lessons learned on this
-   project's RTX 5090. **Read it before writing any bench code.** The
-   key takeaway: the 5090 is consumer Blackwell, fp64 throughput is
-   ~1/64 of fp32, so naïve all-fp64 code paths leave the silicon idle.
-   The codebase deliberately runs hot inner loops in fp32 while keeping
-   accumulators / log-weights / posteriors in fp64. See the fp32-inner
-   / fp64-outer convention summary below.
-4. **The FSA-v5 LaTeX technical guide** (in the dev-sandbox repo, link
-   below) — read end-to-end before you start writing benches. The bench
-   needs to know the obs channels, control variates, default params,
-   scenario presets.
+   policy, GPU dtype convention (fp32 inner / fp64 outer), conda env
+   (`comfyenv`), `PYTHONPATH=.:..` invocation pattern, per-model gotchas.
+   **Mandatory reading before you touch any code.**
+4. **`claude_plans/controller_only_test_methodology.md`** — debug the
+   controller without the filter. ~3-4× faster iteration. Used in
+   Stage 2 verification and for any controller-side debugging.
+5. **`version_2/outputs/fsa_high_res/GPU_TUNING_RTX5090.md`** — the
+   living document of hardware-specific tuning lessons on this
+   project's RTX 5090. Key takeaway: the 5090 is consumer Blackwell,
+   fp64 is ~1/64 of fp32, the codebase runs hot inner loops in fp32
+   and keeps accumulators / log-weights / posteriors in fp64. See the
+   fp32-inner / fp64-outer convention summary below.
+6. **The FSA-v5 LaTeX technical guide** (in the dev-sandbox repo, link
+   below) — read end-to-end before writing benches. Cost functional,
+   identifiable subset, scenario presets, acceptance gates all live
+   here. The companion model-specific notes (item 2) reference §9
+   "Common bugs and gotchas" of this guide explicitly.
 
 The full SWAT-debugging session writeups (`SWAT_controller_debug_plan_*.md`,
 `SWAT_controller_production_validated_*.md`) live on the
@@ -166,33 +177,29 @@ know them:
   if the model has a slow-growth state, id-cov, compute-budget. Don't
   copy SWAT's gates blindly; they are SWAT-specific.
 
-### 3. Smoke test (`version_3/tests/test_fsa_v5_smoke.py`)
+### 3. Tests (`version_3/tests/`)
 
-A quick test the bench can be loaded and stepped:
+The companion model-specific notes (§5) tells you to **copy the 13
+existing tests from the dev-sandbox verbatim**, changing only import
+paths. Do that — those tests are far more thorough than anything you'd
+write by hand:
 
-```python
-"""Smoke test: model imports, plant advances, controller plans."""
-import os
-os.environ.setdefault('FSA_STEP_MINUTES', '15')
-os.environ.setdefault('JAX_ENABLE_X64', 'True')
+- `tests/test_fsa_v5_smoke.py` (4 tests) — imports, plant pipeline,
+  propagate_fn, chance-constrained cost.
+- `tests/test_obs_consistency_v5.py` (6 tests) — one per obs channel,
+  pins each formula bit-equivalently between simulator and estimator.
+- `tests/test_reconciliation_v5.py` (2 tests) — plant ↔ estimator
+  drift parity (< 1e-10 Euler step) + plant 1-bin smoke.
 
-import numpy as np
-from version_3.models.fsa_v5._plant import StepwisePlant
-from version_3.models.fsa_v5.simulation import DEFAULT_INIT, DEFAULT_PARAMS
-from version_3.models.fsa_v5.control import build_control_spec
+Then add a thin **bench-level smoke test** on top —
+`version_3/tests/test_fsa_v5_bench_smoke.py` — that imports your new
+bench module(s) without running them, verifies CLI parsing works
+(`--scenario`, `--step-minutes`), verifies the bench can build a
+controller spec from `DEFAULT_PARAMS_V5` + `DEFAULT_INIT` without
+crashing, and asserts the manifest schema is what downstream tools
+(`plot_param_traces.py` etc.) expect.
 
-def test_plant_advance_one_stride():
-    plant = StepwisePlant(state=DEFAULT_INIT.copy())
-    obs = plant.advance(stride_bins=12, ...)   # bench-equivalent call
-    assert obs['trajectory'].shape == (12, <n_states>)
-
-def test_controller_one_plan():
-    spec = build_control_spec(n_steps=96, dt=1.0/96, ..., params=dict(DEFAULT_PARAMS))
-    # Run a tiny tempered-SMC pass on the controller; just verify it
-    # produces a finite cost and a non-degenerate schedule.
-```
-
-Run with `cd version_3 && PYTHONPATH=.:.. pytest tests/ -v`.
+Run all together with `cd version_3 && PYTHONPATH=.:.. pytest tests/ -v`.
 
 ### 4. `version_3/outputs/fsa_v5/CHANGELOG.md`
 
@@ -323,23 +330,130 @@ cheaper than discovering it after a slow production run.
   the project's `.gitignore` excludes those. Only the CHANGELOG.md
   should be tracked from outputs.
 
-## Test sequence (recommended order)
+## Three-stage verification framework
 
-1. **Smoke** — run `pytest version_3/tests/test_fsa_v5_smoke.py`. Should
-   pass before any GPU work.
-2. **Controller-only at small horizon** — `bench_controller_only_fsa_v5.py`
-   at the smallest horizon that exercises the dynamics meaningfully. Use
-   truth params (no filter). Verify the controller produces a
-   non-degenerate schedule and the integrand cost is finite. ~10 min GPU.
-3. **Full closed-loop at small horizon** — `bench_smc_full_mpc_fsa_v5.py`
-   at the same horizon. Verify the filter runs to completion and the
-   posterior-mean states are sane. ~30 min GPU.
-4. **Promote to production horizon** — full closed-loop at the canonical
-   horizon (whatever the LaTeX technical guide says is "production" for
-   FSA-v5). Acceptance-gate readout.
+Once the model is imported and the bench scripts are written, verify the
+work in **three stages, in this order**. Each stage has a clear success
+criterion. This is the senior decision on how an FSA-family import gets
+signed off — do not skip stages or run them out of order.
 
-If anything fails, **debug on the controller-only bench first**, not the
-full closed-loop bench. The methodology doc explains why.
+### Stage 1 — Filter + plant only (controller NOT run)
+
+**Goal:** recover the ground-truth model parameters from a synthetic
+trajectory generated by the plant under fixed test controls.
+
+**What to do:**
+1. Run the plant under a sensible fixed-controls scenario (the
+   FSA-family analog of "set_A" — a healthy operating-point fixed
+   schedule). No controller; controls are constants. The plant produces
+   a trajectory of latent states and per-channel observations.
+2. Run the rolling-window SMC² filter on those observations. The
+   filter recovers a posterior over (parameters, latent state).
+3. Compare the posterior mean / 90% CI against the **truth** values
+   from `_dynamics.TRUTH_PARAMS` / `simulation.DEFAULT_PARAMS`.
+
+**Success criterion:** posterior 90% CI covers truth on the
+identifiable subset of parameters. Identifiable subset comes from
+FSA-v5's LaTeX technical guide (or its identifiability analysis in
+`FSA_model_dev`); typically obs-side params + slow dynamics params
+that the horizon is long enough to identify.
+
+**Tool:** there isn't a pre-built "filter-only" bench in the repo
+yet. Either:
+- adapt `version_2/tools/bench_smc_rolling_window_fsa.py` (open-loop
+  rolling window for FSA-v2 — exactly this structure, just different
+  model), or
+- write a thin `version_3/tools/bench_smc_filter_only_fsa_v5.py`
+  that lifts the filter loop from `bench_smc_full_mpc_fsa_v5.py` and
+  drops the controller call.
+
+**Why it goes first:** if the filter cannot recover truth from clean
+synthetic data under fixed controls, no amount of controller work will
+help. Bugs in `_dynamics`, `_plant`, `estimation`, or the obs samplers
+all surface here. Catching them at Stage 1 is much cheaper than debugging
+them inside a closed-loop run.
+
+**Compute:** roughly the closed-loop wall-clock minus the controller
+time per replan. For FSA-v2 at T=14 d, ~30–60 min on RTX 5090.
+
+### Stage 2 — Controller only (filter NOT run)
+
+**Goal:** sensible qualitative behavior of the controller against truth
+params + actual plant state.
+
+**What to do:** use `version_3/tools/bench_controller_only_fsa_v5.py`
+(the controller-only methodology bench) at the smallest horizon that
+exercises the controller's decisions meaningfully. The controller
+plans, plant advances under those plans, plant.state at the end of each
+stride feeds the next replan. No filter.
+
+**Success criterion:** sensible qualitative targets, e.g.
+- The applied schedule stays inside physical bounds (no controller
+  flailing — see SWAT Run 09 for the failure mode).
+- Mean of the cost-relevant state (e.g. `∫A dt` for FSA, `∫T dt` for
+  SWAT) at end-of-horizon is at or above the constant-baseline
+  reference under truth params.
+- The controller adapts to plant state changes (replans differ
+  meaningfully across windows).
+
+The exact thresholds are FSA-v5-specific — set them from the LaTeX
+technical guide. Do **not** copy SWAT's gates (`mean_T ≥ 0.95×
+baseline`, `T-floor ≤ 5%`); those are SWAT thresholds, not FSA.
+
+**Compute:** matches Stage 3 controller cost roughly, since the
+controller is the bottleneck. Saves ~30% by skipping the filter.
+
+**Iteration speed boost:** read
+`claude_plans/controller_only_test_methodology.md`. The controller-only
+bench is ~3–4× faster *to debug iterate on* than the full closed-loop
+bench because it skips the filter — that's the point. Use this stage
+both for verification (the gate above) and for any controller-side
+debugging that comes up.
+
+### Stage 3 — Full closed-loop SMC²-MPC
+
+**Goal:** end-to-end verification of the integrated pipeline.
+
+**What to do:** run `version_3/tools/bench_smc_full_mpc_fsa_v5.py` at
+the canonical production horizon (whatever the LaTeX technical guide
+says is "production"). Filter recovers posterior every window;
+controller plans from posterior-mean every K windows; plant advances
+under applied controls.
+
+**Success criterion:** all four standard gates:
+1. Mean of cost-relevant state ≥ α × baseline (α set from FSA-v5 spec).
+2. Constraint-violation gate (FSA's analog of T-floor or F-cap).
+3. Filter id-cov: posterior 90% CI covers truth on the identifiable
+   subset for at least N of M windows.
+4. Compute ≤ 4 h on RTX 5090.
+
+This stage tests things Stages 1 and 2 cannot:
+- Filter posterior uncertainty entering the controller's plan (the
+  controller now sees a *cloud*, not point estimates).
+- Posterior-mean bias on slow params propagating into controller
+  plans.
+- Window-to-window bridge handoff drift (the filter's covariance
+  evolution).
+
+**If Stage 3 fails but Stage 1 and Stage 2 pass:** the bug is in the
+integration, not in either pillar. Check the bench's posterior →
+controller wiring (`_build_fsa_v5_control_spec` or equivalent), the
+filter posterior summary extraction, the bridge handoff config.
+
+**If Stage 3 fails AND Stage 1 or 2 also fails:** fix the failing
+upstream stage first. Don't try to debug Stage 3 in isolation when
+upstream pieces are broken.
+
+**Compute:** ~2–4 h on RTX 5090 at the canonical horizon, depending on
+horizon length and the controller's tempering schedule.
+
+## Smoke test before any of the three stages
+
+Before Stage 1, run `pytest version_3/tests/test_fsa_v5_smoke.py`. The
+smoke test confirms that imports resolve, plant advances cleanly, the
+controller can build a spec from truth params, and the basic data
+shapes line up. Catches typo-level mistakes in your bench code before
+they waste GPU time.
 
 ## Plan-archive policy
 
