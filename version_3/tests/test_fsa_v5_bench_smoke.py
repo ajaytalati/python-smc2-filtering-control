@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import jax
 import jax.numpy as jnp
 import pytest
 
@@ -187,6 +188,102 @@ def test_stage3_spec_builds_with_posterior_cloud(cost_kind):
     assert np.isfinite(val) and val < 0.0
     if cost_kind == 'hard':
         assert overrides == {'num_mcmc_steps': 0}
+
+
+# ── soft_fast variant tests (per Gemini's optimisation plan) ──
+
+def test_soft_fast_jits():
+    """`_cost_soft_fast_jit` compiles + runs on a 5-particle, 1-day cloud."""
+    from version_3.models.fsa_v5.control_v5 import (
+        TRUTH_PARAMS_V5, _stack_particle_dicts, _ensure_v5_keys,
+    )
+    from version_3.models.fsa_v5.control_v5_fast import _cost_soft_fast_jit
+
+    n_p, n_steps = 5, 96
+    particles = [dict(TRUTH_PARAMS_V5) for _ in range(n_p)]
+    theta_stacked = _stack_particle_dicts(particles)
+    theta_stacked = _ensure_v5_keys(theta_stacked, TRUTH_PARAMS_V5)
+    theta_stacked = {k: v.astype(jnp.float32) for k, v in theta_stacked.items()}
+    weights = jnp.full((n_p,), 1.0 / n_p, dtype=jnp.float32)
+    Phi = jnp.tile(jnp.array([0.30, 0.30], dtype=jnp.float32), (n_steps, 1))
+    init_state = jnp.array([0.50, 0.45, 0.20, 0.45, 0.06, 0.07], dtype=jnp.float32)
+    out = _cost_soft_fast_jit(theta_stacked, weights, Phi, init_state,
+                               1.0/96, 0.05, 2.0, 50.0, 0.1, 4)
+    assert jnp.isfinite(out['mean_effort'])
+    assert jnp.isfinite(out['mean_A_integral'])
+    assert jnp.isfinite(out['weighted_violation_rate'])
+    # output dtype is fp32 (the optimisation point)
+    assert out['mean_effort'].dtype == jnp.float32, (
+        f"mean_effort dtype {out['mean_effort'].dtype} - soft_fast should be fp32")
+
+
+def test_soft_fast_grad_finite():
+    """`jax.grad` of soft_fast cost wrt mu_0 returns finite, non-zero gradient."""
+    from version_3.models.fsa_v5.control_v5 import (
+        TRUTH_PARAMS_V5, _stack_particle_dicts, _ensure_v5_keys,
+    )
+    from version_3.models.fsa_v5.control_v5_fast import _cost_soft_fast_jit
+
+    n_p, n_steps = 5, 96
+    particles = [dict(TRUTH_PARAMS_V5) for _ in range(n_p)]
+    theta_stacked = _stack_particle_dicts(particles)
+    theta_stacked = _ensure_v5_keys(theta_stacked, TRUTH_PARAMS_V5)
+    theta_stacked = {k: v.astype(jnp.float32) for k, v in theta_stacked.items()}
+    weights = jnp.full((n_p,), 1.0 / n_p, dtype=jnp.float32)
+    # mid-Phi schedule -> non-trivial cost surface
+    Phi = jnp.tile(jnp.array([0.50, 0.30], dtype=jnp.float32), (n_steps, 1))
+    init_state = jnp.array([0.50, 0.45, 0.20, 0.45, 0.06, 0.07], dtype=jnp.float32)
+
+    def scalar(mu0_val):
+        new_stack = dict(theta_stacked)
+        new_stack['mu_0'] = jnp.full_like(theta_stacked['mu_0'], mu0_val)
+        out = _cost_soft_fast_jit(new_stack, weights, Phi, init_state,
+                                   1.0/96, 0.05, 2.0, 50.0, 0.1, 4)
+        return out['mean_A_integral']
+
+    g = jax.grad(scalar)(jnp.float32(TRUTH_PARAMS_V5['mu_0']))
+    assert jnp.isfinite(g), f"gradient non-finite: {g}"
+    assert abs(float(g)) > 1e-8, (
+        f"gradient is essentially zero ({float(g)}) - soft_fast should have "
+        f"non-trivial gradient signal")
+
+
+def test_soft_fast_agrees_with_soft_at_healthy_island():
+    """`soft_fast` matches `soft` within 5% on mean_A_integral / mean_effort
+    at the trained-athlete + Phi=(0.30, 0.30) corner (LaTeX §8 Test 2 healthy
+    island). At this corner both have zero violations so the chance-constraint
+    term is identical zero in both."""
+    from version_3.models.fsa_v5.control_v5 import (
+        evaluate_chance_constrained_cost_soft, TRUTH_PARAMS_V5,
+    )
+    from version_3.models.fsa_v5.control_v5_fast import (
+        evaluate_chance_constrained_cost_soft_fast,
+    )
+
+    n_p = 5
+    particles = [dict(TRUTH_PARAMS_V5) for _ in range(n_p)]
+    weights = np.ones(n_p) / n_p
+    n_steps = 14 * 96
+    Phi = np.tile([0.30, 0.30], (n_steps, 1))
+
+    out_s = evaluate_chance_constrained_cost_soft(
+        particles, weights, Phi, dt=1/96, alpha=0.05, A_target=2.0, beta=50.0)
+    out_f = evaluate_chance_constrained_cost_soft_fast(
+        particles, weights, Phi, dt=1/96, alpha=0.05, A_target=2.0, beta=50.0,
+        bin_stride=4)
+
+    mai_s, mai_f = float(out_s['mean_A_integral']), float(out_f['mean_A_integral'])
+    me_s, me_f   = float(out_s['mean_effort']),     float(out_f['mean_effort'])
+
+    rel_mai = abs(mai_f - mai_s) / abs(mai_s) if abs(mai_s) > 1e-9 else 0.0
+    rel_me  = abs(me_f  - me_s)  / abs(me_s)  if abs(me_s)  > 1e-9 else 0.0
+
+    assert rel_mai < 0.05, (
+        f"mean_A_integral disagrees by {rel_mai*100:.2f}%: "
+        f"soft={mai_s}, soft_fast={mai_f}")
+    assert rel_me < 0.05, (
+        f"mean_effort disagrees by {rel_me*100:.2f}%: "
+        f"soft={me_s}, soft_fast={me_f}")
 
 
 # ── Cross-bench sanity: soft and hard agree on a healthy-island theta ──

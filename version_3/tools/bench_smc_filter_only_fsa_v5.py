@@ -38,6 +38,10 @@ from __future__ import annotations
 
 import os
 os.environ.setdefault('JAX_ENABLE_X64', 'True')
+# Disable JAX/XLA pre-allocating ~75% of GPU memory at first JIT (Ajay's
+# request: nvtop should show actual per-PID demand, not the preallocated
+# block). Mirrors the v2 launchers in version_2/tools/launchers/.
+os.environ.setdefault('XLA_PYTHON_CLIENT_PREALLOCATE', 'false')
 
 # JAX persistent compilation cache (matches v2 driver pattern)
 import pathlib as _pathlib

@@ -42,6 +42,10 @@ from __future__ import annotations
 
 import os
 os.environ.setdefault('JAX_ENABLE_X64', 'True')
+# Disable JAX/XLA pre-allocating ~75% of GPU memory at first JIT (Ajay's
+# request: nvtop should show actual per-PID demand, not the preallocated
+# block). Mirrors the v2 launchers in version_2/tools/launchers/.
+os.environ.setdefault('XLA_PYTHON_CLIENT_PREALLOCATE', 'false')
 
 # JAX persistent compilation cache (matches v2 driver pattern)
 import pathlib as _pathlib
@@ -140,9 +144,11 @@ def _allocate_run_dir(repo_root: Path, run_tag: str) -> tuple[Path, int]:
 # Each returns a (cost_fn, schedule_from_theta, theta_dim, ctrl_cfg_overrides)
 # tuple for the requested cost variant.
 
+_CACHE_COST_FNS = {}
+
 def _build_cost_chance_constrained(
     *,
-    cost_kind: str,            # 'soft' or 'hard'
+    cost_kind: str,            # 'soft', 'hard', or 'soft_fast'
     n_steps: int,
     n_anchors: int,
     init_state: np.ndarray,
@@ -154,81 +160,102 @@ def _build_cost_chance_constrained(
     lam_phi: float,
     lam_chance: float,
     n_truth_particles: int = 1,
+    bin_stride: int = 4,        # only used by 'soft_fast'
 ):
-    """Wrap evaluate_chance_constrained_cost_{soft,hard} as a smc2fc cost_fn.
+    """Wrap evaluate_chance_constrained_cost_{soft,hard,soft_fast} as smc2fc cost_fn."""
+    cache_key = (cost_kind, n_steps, n_anchors, dt, alpha, A_target, beta,
+                 lam_phi, lam_chance, n_truth_particles, bin_stride)
 
-    Lagrangian aggregation per LaTeX §5.5:
-
-        J = lam_phi * mean_effort - mean_A_integral
-            + lam_chance * max(0, weighted_violation_rate - alpha)**2
-
-    For Stage 2 (controller-only): theta_particles = N copies of the
-    truth-params dict (n_truth_particles, default 1). The
-    chance-constrained cost averages over these; with truth-only it
-    collapses to a single deterministic forward rollout.
-    """
     from version_3.models.fsa_v5.control_v5 import (
         _cost_soft_jit, _cost_hard_jit, _stack_particle_dicts,
         _ensure_v5_keys,
     )
+    from version_3.models.fsa_v5.control_v5_fast import _cost_soft_fast_jit
     from version_3.models.fsa_v5._dynamics import TRUTH_PARAMS_V5
     from smc2fc.control import RBFSchedule
 
-    # RBF schedule (output_dim=2 for bimodal Phi)
-    Phi_default, Phi_max = 0.30, 3.0
-    rbf = RBFSchedule(n_steps=n_steps, dt=dt, n_anchors=n_anchors, output='identity')
-    Phi_design = rbf.design_matrix()
-    p_ratio = Phi_default / Phi_max
-    c_Phi = float(math.log(p_ratio / (1.0 - p_ratio)))
+    if cache_key not in _CACHE_COST_FNS:
+        # RBF schedule (output_dim=2 for bimodal Phi)
+        Phi_default, Phi_max = 0.30, 3.0
+        rbf = RBFSchedule(n_steps=n_steps, dt=dt, n_anchors=n_anchors, output='identity')
+        Phi_design = rbf.design_matrix()
+        p_ratio = Phi_default / Phi_max
+        c_Phi = float(math.log(p_ratio / (1.0 - p_ratio)))
 
-    @jax.jit
-    def schedule_from_theta(theta):
-        theta_B = theta[:n_anchors]
-        theta_S = theta[n_anchors:]
-        raw_B = c_Phi + jnp.einsum('a,ta->t', theta_B, Phi_design)
-        raw_S = c_Phi + jnp.einsum('a,ta->t', theta_S, Phi_design)
-        out_B = Phi_max * jax.nn.sigmoid(raw_B)
-        out_S = Phi_max * jax.nn.sigmoid(raw_S)
-        return jnp.stack([out_B, out_S], axis=1)
+        @jax.jit
+        def schedule_from_theta(theta):
+            theta_B = theta[:n_anchors]
+            theta_S = theta[n_anchors:]
+            raw_B = c_Phi + jnp.einsum('a,ta->t', theta_B, Phi_design)
+            raw_S = c_Phi + jnp.einsum('a,ta->t', theta_S, Phi_design)
+            out_B = Phi_max * jax.nn.sigmoid(raw_B)
+            out_S = Phi_max * jax.nn.sigmoid(raw_S)
+            return jnp.stack([out_B, out_S], axis=1)
 
-    # Pre-stack the truth-only particle cloud once. Outside cost_fn so JIT
-    # treats it as a closed-over constant.
-    truth_list = [dict(truth_params) for _ in range(n_truth_particles)]
-    theta_stacked = _stack_particle_dicts(truth_list)
-    theta_stacked = _ensure_v5_keys(theta_stacked, TRUTH_PARAMS_V5)
-    weights = jnp.full((n_truth_particles,), 1.0 / n_truth_particles,
-                       dtype=jnp.float64)
+        truth_list = [dict(truth_params) for _ in range(n_truth_particles)]
+        theta_stacked = _stack_particle_dicts(truth_list)
+        theta_stacked = _ensure_v5_keys(theta_stacked, TRUTH_PARAMS_V5)
+        weights = jnp.full((n_truth_particles,), 1.0 / n_truth_particles,
+                           dtype=jnp.float64)
+
+        if cost_kind == 'soft':
+            scale = 0.1
+            @jax.jit
+            def _cost_fn_base(init_state_val, theta_ctrl):
+                Phi_schedule = schedule_from_theta(theta_ctrl)
+                out = _cost_soft_jit(theta_stacked, weights, Phi_schedule,
+                                      init_state_val, dt, alpha, A_target,
+                                      beta, scale)
+                violation_excess = jnp.maximum(
+                    0.0, out['weighted_violation_rate'] - alpha)
+                return (lam_phi * out['mean_effort']
+                        - out['mean_A_integral']
+                        + lam_chance * violation_excess ** 2)
+
+        elif cost_kind == 'soft_fast':
+            # Variant: fp32 + relaxed bisection + sub-sampled bins.
+            # See version_3/models/fsa_v5/control_v5_fast.py.
+            scale = 0.1
+            theta_stacked_f32 = {k: v.astype(jnp.float32)
+                                 for k, v in theta_stacked.items()}
+            weights_f32 = weights.astype(jnp.float32)
+
+            @jax.jit
+            def _cost_fn_base(init_state_val, theta_ctrl):
+                init_state_f32 = init_state_val.astype(jnp.float32)
+                Phi_schedule = schedule_from_theta(theta_ctrl).astype(jnp.float32)
+                out = _cost_soft_fast_jit(theta_stacked_f32, weights_f32,
+                                           Phi_schedule, init_state_f32,
+                                           dt, alpha, A_target,
+                                           beta, scale, bin_stride)
+                violation_excess = jnp.maximum(
+                    0.0, out['weighted_violation_rate'] - alpha)
+                # Promote scalar back to fp64 so it composes cleanly with the
+                # fp64 outer SMC log-weights.
+                return jnp.float64(lam_phi * out['mean_effort']
+                                    - out['mean_A_integral']
+                                    + lam_chance * violation_excess ** 2)
+
+        elif cost_kind == 'hard':
+            @jax.jit
+            def _cost_fn_base(init_state_val, theta_ctrl):
+                Phi_schedule = schedule_from_theta(theta_ctrl)
+                out = _cost_hard_jit(theta_stacked, weights, Phi_schedule,
+                                      init_state_val, dt, alpha, A_target)
+                violation_excess = jnp.maximum(
+                    0.0, out['weighted_violation_rate'] - alpha)
+                return (lam_phi * out['mean_effort']
+                        - out['mean_A_integral']
+                        + lam_chance * violation_excess ** 2)
+        else:
+            raise ValueError(
+                f"cost_kind must be 'soft' / 'soft_fast' / 'hard', got {cost_kind!r}")
+
+        _CACHE_COST_FNS[cache_key] = (_cost_fn_base, schedule_from_theta)
+
+    _cost_fn_base, schedule_from_theta = _CACHE_COST_FNS[cache_key]
     init_state_jax = jnp.asarray(init_state, dtype=jnp.float64)
-
-    if cost_kind == 'soft':
-        scale = 0.1   # units of A; typical separatrix distance
-
-        @jax.jit
-        def cost_fn(theta_ctrl):
-            Phi_schedule = schedule_from_theta(theta_ctrl)
-            out = _cost_soft_jit(theta_stacked, weights, Phi_schedule,
-                                  init_state_jax, dt, alpha, A_target,
-                                  beta, scale)
-            violation_excess = jnp.maximum(
-                0.0, out['weighted_violation_rate'] - alpha)
-            return (lam_phi * out['mean_effort']
-                    - out['mean_A_integral']
-                    + lam_chance * violation_excess ** 2)
-
-    elif cost_kind == 'hard':
-        @jax.jit
-        def cost_fn(theta_ctrl):
-            Phi_schedule = schedule_from_theta(theta_ctrl)
-            out = _cost_hard_jit(theta_stacked, weights, Phi_schedule,
-                                  init_state_jax, dt, alpha, A_target)
-            violation_excess = jnp.maximum(
-                0.0, out['weighted_violation_rate'] - alpha)
-            return (lam_phi * out['mean_effort']
-                    - out['mean_A_integral']
-                    + lam_chance * violation_excess ** 2)
-    else:
-        raise ValueError(f"cost_kind must be 'soft' or 'hard', got {cost_kind!r}")
-
+    cost_fn = jax.tree_util.Partial(_cost_fn_base, init_state_jax)
     theta_dim = 2 * n_anchors
     return cost_fn, schedule_from_theta, theta_dim
 
@@ -238,17 +265,19 @@ def _build_spec_for_cost_variant(
     init_state: np.ndarray, truth_params: dict,
     dt: float, alpha: float, A_target: float, beta: float,
     lam_phi: float, lam_chance: float,
+    bin_stride: int = 4,
 ):
     """Return (ControlSpec, ctrl_cfg_overrides) tuple for the requested cost."""
     from smc2fc.control import ControlSpec
 
-    if cost in ('soft', 'hard'):
+    if cost in ('soft', 'hard', 'soft_fast'):
         cost_fn, schedule_from_theta, theta_dim = _build_cost_chance_constrained(
             cost_kind=cost,
             n_steps=n_steps, n_anchors=n_anchors,
             init_state=init_state, truth_params=truth_params,
             dt=dt, alpha=alpha, A_target=A_target, beta=beta,
             lam_phi=lam_phi, lam_chance=lam_chance,
+            bin_stride=bin_stride,
         )
         spec = ControlSpec(
             name=f'fsa_v5_stage2_{cost}',
@@ -260,10 +289,19 @@ def _build_spec_for_cost_variant(
             cost_fn=cost_fn, schedule_from_theta=schedule_from_theta,
             acceptance_gates={},
         )
-        # Variant C ('hard'): skip HMC inside leapfrog (indicator has zero
-        # gradients). Tempering alone drives the outer SMC.
         if cost == 'hard':
+            # Indicator gradient is zero; HMC inside leapfrog is wasted.
             ctrl_cfg_overrides = {'num_mcmc_steps': 0}
+        elif cost == 'soft_fast':
+            # Gemini's bucket #4: trim HMC since the soft surface is
+            # smooth and the cost is 4x cheaper per evaluation already.
+            # Also drop n_smc 256 -> 128 (controller doesn't need that
+            # many particles when the cost is well-conditioned).
+            ctrl_cfg_overrides = {
+                'num_mcmc_steps':   5,
+                'hmc_num_leapfrog': 8,
+                'n_smc':            128,
+            }
         else:
             ctrl_cfg_overrides = {}
         return spec, ctrl_cfg_overrides
@@ -303,14 +341,15 @@ def main():
     # want the slower production controller posterior (1024/128).
     n_smc          = _pop_named_arg('--n-smc', 256, int)
     n_inner        = _pop_named_arg('--n-inner', 64, int)
+    bin_stride     = _pop_named_arg('--bin-stride', 4, int)   # only used by --cost soft_fast
     auto_tag = (f"stage2_controller_{cost}_{scenario_key}_"
                  f"T{T_total_days}d_K{replan_K}")
     run_tag        = _pop_named_arg('--run-tag', auto_tag, str)
 
     if scenario_key not in SCENARIOS:
         raise SystemExit(f"--scenario must be one of {list(SCENARIOS)}; got {scenario_key!r}")
-    if cost not in ('soft', 'hard', 'gradient_ot'):
-        raise SystemExit(f"--cost must be one of soft/hard/gradient_ot; got {cost!r}")
+    if cost not in ('soft', 'soft_fast', 'hard', 'gradient_ot'):
+        raise SystemExit(f"--cost must be one of soft/soft_fast/hard/gradient_ot; got {cost!r}")
 
     scenario = SCENARIOS[scenario_key]
     init_state = scenario['init_state'].astype(np.float64).copy()
@@ -361,6 +400,7 @@ def main():
         init_state=plant.state.copy(), truth_params=truth,
         dt=DT, alpha=alpha, A_target=A_target, beta=beta,
         lam_phi=lam_phi, lam_chance=lam_chance,
+        bin_stride=bin_stride,
     )
 
     # v2-production controller config (mirrors
@@ -376,8 +416,16 @@ def main():
     base_cfg.update(cfg_overrides)
     ctrl_cfg = SMCControlConfig(**base_cfg)
 
-    print(f"  num_mcmc_steps: {ctrl_cfg.num_mcmc_steps}"
-          + (" (HMC skipped for hard variant)" if cost == 'hard' else ''))
+    suffix = ''
+    if cost == 'hard':
+        suffix = " (HMC skipped for hard variant)"
+    elif cost == 'soft_fast':
+        suffix = (" (trimmed for soft_fast: num_mcmc_steps=5, "
+                  "hmc_num_leapfrog=8, n_smc=128)")
+    print(f"  num_mcmc_steps: {ctrl_cfg.num_mcmc_steps}{suffix}")
+    if cost == 'soft_fast':
+        print(f"  bin_stride:     {bin_stride}  (separatrix sub-sampled every "
+              f"{bin_stride * 15} min)")
     print()
 
     # ── Closed-loop controller-only run ──
@@ -401,6 +449,7 @@ def main():
                 init_state=plant.state.copy(), truth_params=truth,
                 dt=DT, alpha=alpha, A_target=A_target, beta=beta,
                 lam_phi=lam_phi, lam_chance=lam_chance,
+                bin_stride=bin_stride,
             )
             result = run_tempered_smc_loop_native(
                 spec=spec, cfg=ctrl_cfg, seed=42 + k * 1000,
@@ -552,7 +601,8 @@ def main():
         "cost_kwargs": {
             "alpha":         alpha,
             "A_target":      A_target,
-            "beta":          beta if cost == 'soft' else None,
+            "beta":          beta if cost in ('soft', 'soft_fast') else None,
+            "bin_stride":    bin_stride if cost == 'soft_fast' else None,
             "lam_phi":       lam_phi,
             "lam_chance":    lam_chance,
         },
@@ -640,6 +690,27 @@ def main():
     plt.savefig(out_dir / "applied_schedule.png", dpi=120)
     plt.close()
 
+    # Plot 3: basin overlay -- the diagnostic-by-eye plot. Daily-mean
+    # (Phi_B, Phi_S) path on top of the closed-island regime classification.
+    # Compute daily means from the per-stride applied phi (2 strides per day).
+    n_days_run = max(1, n_strides * STRIDE_BINS // BINS_PER_DAY)
+    n_strides_per_day = max(1, BINS_PER_DAY // STRIDE_BINS)
+    truncated = applied_phi_per_stride[:n_days_run * n_strides_per_day]
+    if truncated.shape[0] < applied_phi_per_stride.shape[0]:
+        # if uneven, append the leftover strides as a last partial day
+        leftover = applied_phi_per_stride[n_days_run * n_strides_per_day:].mean(axis=0, keepdims=True)
+    daily_phi = truncated.reshape(n_days_run, n_strides_per_day, 2).mean(axis=1)
+    try:
+        from version_3.tools.plot_basin_overlay import plot_basin_overlay
+        plot_basin_overlay(
+            daily_phi, out_dir / "basin_overlay.png",
+            title=f"{run_tag}\ncost={cost}, scenario={scenario_key}",
+            baseline_phi=tuple(baseline_phi),
+        )
+        basin_status = f"    {out_dir}/basin_overlay.png"
+    except Exception as e:
+        basin_status = f"    basin_overlay.png FAILED: {e}"
+
     print()
     print(f"  Artifacts written:")
     print(f"    {out_dir}/manifest.json")
@@ -647,6 +718,7 @@ def main():
     print(f"    {out_dir}/replan_records.npz")
     print(f"    {out_dir}/latent_trajectory.png")
     print(f"    {out_dir}/applied_schedule.png")
+    print(basin_status)
     print("=" * 76)
 
 

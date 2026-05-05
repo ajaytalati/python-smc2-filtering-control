@@ -199,8 +199,11 @@ All v2 driver scripts (`tools/bench_smc_*.py`) prepend the same JAX setup:
 
 ```python
 os.environ.setdefault('JAX_ENABLE_X64', 'True')
+os.environ.setdefault('XLA_PYTHON_CLIENT_PREALLOCATE', 'false')   # see below
 os.environ.setdefault('JAX_COMPILATION_CACHE_DIR', str(Path.home() / ".jax_compilation_cache"))
 ```
+
+**`XLA_PYTHON_CLIENT_PREALLOCATE=false` is mandatory** per Ajay's instruction. By default JAX/XLA pre-allocates ~75% of GPU memory at first JIT — this masks per-PID memory usage in `nvtop`, making it impossible to see what each running bench is actually using. Set the flag in every driver, before any JAX import. Mirror the v2 launchers (`version_2/tools/launchers/run_swat_horizon.sh`, `run_t42_only.sh`).
 
 `--step-minutes` is **parsed before model imports** because `FSA_STEP_MINUTES` env var is read at module-import time to set `BINS_PER_DAY`. Reordering this breaks the whole pipeline silently.
 
