@@ -181,10 +181,18 @@ def _build_dynamics_params(params, frozen_dynamics):
     """Merge estimated parameter array + frozen dynamics dict → flat dict.
 
     Returns a dict containing every key the canonical ``drift_jax`` expects.
+
+    NOTE on dtype: ``params`` arrives with whatever dtype the caller cast
+    to (fp32 inside the framework's filter inner loop, fp64 in the SMC²
+    outer cost). The frozen_dynamics dict has Python-float values which
+    JAX defaults to fp64. If we naively merge them in we leak fp64 into
+    every fp32 hot path (Hill term in drift, etc.). Cast them to match
+    ``params`` dtype so the path stays consistent.
     """
     p = {name: params[_PI[name]] for name in _PK if name in _PI}
+    target_dtype = params.dtype
     for fkey, fval in frozen_dynamics.items():
-        p[fkey] = fval
+        p[fkey] = jnp.asarray(fval, dtype=target_dtype)
     return p
 
 
@@ -225,17 +233,32 @@ def _make_propagate_fn(frozen_dynamics):
         # ── Prior covariance: state-dependent diffusion squared, scaled by dt ──
         # Same diagonal structure as _dynamics.diffusion_state_dep, with frozen
         # sigma scales (these never change during inference).
-        B_cl = jnp.clip(B, EPS_B_FROZEN, 1.0 - EPS_B_FROZEN)
-        S_cl = jnp.clip(S, EPS_S_FROZEN, 1.0 - EPS_S_FROZEN)
+        # dtype-cast all scalar literals to the caller dtype so an fp32
+        # filter inner loop stays fp32 throughout.
+        s_dt = y.dtype
+        eps_b = jnp.asarray(EPS_B_FROZEN, dtype=s_dt)
+        eps_s = jnp.asarray(EPS_S_FROZEN, dtype=s_dt)
+        eps_a = jnp.asarray(EPS_A_FROZEN, dtype=s_dt)
+        one   = jnp.asarray(1.0, dtype=s_dt)
+        zero_st = jnp.asarray(0.0, dtype=s_dt)
+        sB2 = jnp.asarray(SIGMA_B_FROZEN ** 2, dtype=s_dt)
+        sS2 = jnp.asarray(SIGMA_S_FROZEN ** 2, dtype=s_dt)
+        sF2 = jnp.asarray(SIGMA_F_FROZEN ** 2, dtype=s_dt)
+        sA2 = jnp.asarray(SIGMA_A_FROZEN ** 2, dtype=s_dt)
+        sK2 = jnp.asarray(SIGMA_K_FROZEN ** 2, dtype=s_dt)
+        var_floor = jnp.asarray(1e-12, dtype=s_dt)
+
+        B_cl = jnp.clip(B, eps_b, one - eps_b)
+        S_cl = jnp.clip(S, eps_s, one - eps_s)
         var_diag = jnp.array([
-            SIGMA_B_FROZEN**2 * B_cl * (1.0 - B_cl) * dt,
-            SIGMA_S_FROZEN**2 * S_cl * (1.0 - S_cl) * dt,
-            SIGMA_F_FROZEN**2 * jnp.maximum(F, 0.0)               * dt,
-            SIGMA_A_FROZEN**2 * (jnp.maximum(A, 0.0) + EPS_A_FROZEN) * dt,
-            SIGMA_K_FROZEN**2 * jnp.maximum(KFB, 0.0)             * dt,
-            SIGMA_K_FROZEN**2 * jnp.maximum(KFS, 0.0)             * dt,
+            sB2 * B_cl * (one - B_cl) * dt,
+            sS2 * S_cl * (one - S_cl) * dt,
+            sF2 * jnp.maximum(F, zero_st)               * dt,
+            sA2 * (jnp.maximum(A, zero_st) + eps_a)     * dt,
+            sK2 * jnp.maximum(KFB, zero_st)             * dt,
+            sK2 * jnp.maximum(KFS, zero_st)             * dt,
         ])
-        P_prior = jnp.diag(jnp.maximum(var_diag, 1e-12))
+        P_prior = jnp.diag(jnp.maximum(var_diag, var_floor))
 
         # ── Observation Jacobian H (4 Gaussian channels × 6D state) ──────
         # Linear-in-state observation model. Rows: [HR, Stress, Steps, VL].
@@ -302,12 +325,14 @@ def _make_propagate_fn(frozen_dynamics):
         x_new = mu_fused + L @ noise
 
         # State clipping — keep particle on the physical manifold.
-        B_n   = jnp.clip(x_new[0], EPS_B_FROZEN, 1.0 - EPS_B_FROZEN)
-        S_n   = jnp.clip(x_new[1], EPS_S_FROZEN, 1.0 - EPS_S_FROZEN)
-        F_n   = jnp.maximum(x_new[2], 0.0)
-        A_n   = jnp.maximum(x_new[3], 0.0)
-        KFB_n = jnp.maximum(x_new[4], 0.0)
-        KFS_n = jnp.maximum(x_new[5], 0.0)
+        # Re-use the dtype-cast eps_*/one/zero_st from above so the post-
+        # clip stays at the caller's dtype (no fp32 -> fp64 promotion).
+        B_n   = jnp.clip(x_new[0], eps_b, one - eps_b)
+        S_n   = jnp.clip(x_new[1], eps_s, one - eps_s)
+        F_n   = jnp.maximum(x_new[2], zero_st)
+        A_n   = jnp.maximum(x_new[3], zero_st)
+        KFB_n = jnp.maximum(x_new[4], zero_st)
+        KFS_n = jnp.maximum(x_new[5], zero_st)
         y_new = jnp.array([B_n, S_n, F_n, A_n, KFB_n, KFS_n])
 
         # Log-weight correction: actual obs-likelihood evaluated at the
