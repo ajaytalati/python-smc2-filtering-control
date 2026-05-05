@@ -7,6 +7,36 @@
 > Updated: 2026-05-05 11:15 — Ajay reports (via `Ajays Notes 4 - Guiding on the Cost function.md`) that the FSA-author has ALREADY done the upstream rewrite. Verified the new symbols and 4 new tests are present in `~/Repos/FSA_model_dev/` working tree (HEAD still `d8f20c6`, changes uncommitted). Plan now waits on Ajay's choice of sub-option β.1 / β.2 / β.3 (commit upstream first vs courier-commit vs working-tree copy). Phase A already committed (`9345832`); Phase A.5 (fp32 dtype) is unblocked and can start once β.x is decided. Ajay's mathematical preference is C (hard) but BOTH must be tested empirically.
 > Updated: 2026-05-05 11:30 — Phase A.6 done. Re-pinned to 7075436 (FSA-author committed + pushed), re-copied 3 modified files (control_v5.py, __init__.py, test_fsa_v5_smoke.py), path-fixed, **16/16 tests pass** (was 12; +4 new variant tests). Committed as `e112a29 version_3: re-pin to FSA_model_dev 7075436`. CHANGELOG Run 00b documents the re-pin and the new symbol surface.
 > Updated: 2026-05-05 11:45 — **Phase A.5 RESOLVED AS NO-OP.** Verification of v2 vs v5 model files: identical dtype usage (both fp64 inside SDE scan + cost rollout). v2's fp32 boost is in the BENCH file (`tools/bench_smc_closed_loop_fsa.py:_build_phase2_control_spec`, commit aa114e8 "Stage L8"), NOT in the model files. v5 already matches v2; no model-file edits needed. fp32 cast-once pattern moves to Phase B (my bench drivers). CHANGELOG corrected. CLAUDE.md's "v2 plant runs in fp32" assertion is factually inaccurate; out-of-scope correction needed separately.
+> Updated: 2026-05-05 12:00 — Phase B.1 done: Stage 1 driver `bench_smc_filter_only_fsa_v5.py` written + committed (commit `010b62a`). Mirrors v2 E3 with v5 adaptations (6D state, 5 obs channels, bimodal Phi, 37 estimable params). Default scenario: 14d at Phi=(0.30, 0.30) under trained-athlete init. Plant-only sanity check: A end-of-horizon=0.936 (LaTeX healthy threshold > 0.4). Imports clean.
+> Updated: 2026-05-05 12:05 — Per Ajay's question on output layout, Stage 1 driver updated to use `outputs/fsa_v5/experiments/runNN_<tag>/{manifest.json, posterior.npz, trajectory.npz, *.png}` (mirrors `version_2/outputs/swat/experiments/`). Auto-allocates next available run number; CLI flag `--run-tag <str>` overrides default.
+> Updated: 2026-05-05 12:10 — Stage 1 first-attempt run crashed inside window 1 (commit `dcfb73b` patches). Carry-type mismatch in v5's Kalman-fusion scan: `propagate_fn` constructs `H = jnp.zeros((4,6))` (defaults fp64) which fights the framework's fp32 cast. Patched 3 sites in `version_3/models/fsa_v5/estimation.py` to mirror v2's inline `jnp.array([[...]])` H construction + dtype-matched eye/regulariser. 16/16 standalone tests still PASS. **Stage 1 NOT yet re-run end-to-end — the next session should do this first.** Real upstream bug; CHANGELOG Run 00c records the recommended fix for `FSA_model_dev/tests/test_fsa_v5_smoke.py`.
+
+## Resume-state for the next session (2026-05-05 12:15)
+
+**Branch:** `importing_FSA_version_5` on `~/Repos/python-smc2-filtering-control/`. NOT pushed to remote.
+
+**Commits (most recent first):**
+1. `dcfb73b` Stage 1 dtype patch + experiments/runNN layout
+2. `010b62a` Stage 1 filter-only bench driver (Phase B.1)
+3. `a4ed4e4` fp64-finding correction (Phase A.5 no-op)
+4. `e112a29` Re-pin to FSA_model_dev `7075436` (Phase A.6, JIT-friendly cost variants)
+5. `9345832` Initial import from FSA_model_dev `d8f20c6` (Phase A)
+
+**Immediate next step:** re-run Stage 1.
+
+```bash
+cd ~/Repos/python-smc2-filtering-control/version_3
+conda activate comfyenv
+PYTHONPATH=.:.. python tools/bench_smc_filter_only_fsa_v5.py --run-tag stage1_filter_only_T14_healthy
+```
+
+Expected: ~15-45 min on RTX 5090. Outputs land in `outputs/fsa_v5/experiments/run01_stage1_filter_only_T14_healthy/` (manifest.json, posterior.npz, trajectory.npz, two PNGs).
+
+**After Stage 1 passes:**
+- Add a Run 01 entry to `version_3/outputs/fsa_v5/CHANGELOG.md` with gate results.
+- Then write Phase B.2 (Stage 2 controller-only bench) with `--cost {soft|hard|gradient_ot}` switch. Open design question: how to wire Variant C (`_hard`) into smc2fc's tempered-SMC controller, which has HMC inside (`SMCControlConfig.num_mcmc_steps>0`). Likely answer: set `num_mcmc_steps=0` when `--cost hard` to skip HMC; verify by reading `smc2fc/control/tempered_smc_loop.py`.
+- Then Phase B.3 (Stage 3 full-MPC bench) — same `--cost` switch, plus filter posterior particles feeding the cost.
+- Then Phase B.4 (bench-level smoke test), then Phases C.1-C.5 (verification runs).
 
 ## Context
 

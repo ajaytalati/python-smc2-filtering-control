@@ -74,6 +74,52 @@ This is informational, not a blocker for verification — Stage 1 / 2 / 3 verifi
   Both ≪ 2s budget — comfortably fast enough for HMC inner kernels.
 - **Run 00 finding #6 status:** RESOLVED upstream. Stage 2/3 will test BOTH `_hard` and `_soft` variants empirically per Ajay's instruction.
 
+## Run 00c — Stage 1 first-attempt + dtype patch (2026-05-05 12:10)
+
+First attempt to run Stage 1 (`bench_smc_filter_only_fsa_v5.py
+--run-tag stage1_filter_only_T14_healthy`) crashed inside window 1 of the rolling-window filter:
+
+```
+TypeError: scan body function carry input and carry output must have equal types:
+  carry[0] is float32[6] (input) but float64[6] (output)
+```
+
+**Root cause:** v5's `propagate_fn` (in `version_3/models/fsa_v5/estimation.py`) constructs the observation Jacobian as `H = jnp.zeros((4, 6))` — which defaults to fp64 (because `JAX_ENABLE_X64=True`). The framework's filter casts particles + params + grid_obs to fp32 before calling `propagate_fn`; the fp64 H matrix then promotes the carry from fp32 to fp64 inside the Kalman scan, breaking the input/output type-equality requirement.
+
+This is a real upstream bug in FSA_model_dev — its standalone tests pass because they call `propagate_fn_v5` with fp64 inputs explicitly, never exercising the framework's fp32 cast path.
+
+**Patch applied locally (commit `dcfb73b`):**
+- `H` constructed inline as `jnp.array([[...]])` (dtype inferred from `p`, mirrors v2)
+- Kalman-scan carry init `0.0` cast to `y_pred_det.dtype`
+- `P_safe` regulariser `1e-10 * jnp.eye(6)` cast to `P_fused.dtype`
+
+**Standalone tests after patch:** 16/16 PASS in 20.70s — the patch doesn't regress the dev-sandbox tests.
+
+**Stage 1 status:** still NOT executed end-to-end. Patch resolves the carry-type crash; the full ~15-45 min rolling-window run is the next thing to do.
+
+### Recommended upstream follow-up (out of scope for this branch)
+
+Add an explicit fp32-input test to `FSA_model_dev/tests/test_fsa_v5_smoke.py` so the framework integration is exercised in the dev sandbox:
+
+```python
+def test_v5_propagate_fn_runs_in_fp32():
+    theta = jnp.asarray(get_init_theta(), dtype=jnp.float32)
+    grid_obs_fp32 = jax.tree_util.tree_map(
+        lambda v: v.astype(jnp.float32) if hasattr(v, 'dtype') else v, grid_obs)
+    y0 = jnp.array([...], dtype=jnp.float32)
+    dt = jnp.float32(1.0/96)
+    sigma_diag = jnp.zeros(6, dtype=jnp.float32)
+    noise = jnp.zeros(6, dtype=jnp.float32)
+    y_new, log_w = propagate_fn_v5(y0, jnp.float32(0.0), dt, theta,
+                                    grid_obs_fp32, 0, sigma_diag, noise, key)
+    assert y_new.dtype == jnp.float32
+    assert log_w.dtype == jnp.float32
+```
+
+Once the upstream rewrite lands, this branch can be re-pinned and the local patch dropped.
+
+---
+
 ### Note on Run 00 finding #1 (fp64 anti-pattern) — REVISED 2026-05-05 11:45
 
 The original Run 00 finding said "v5 has an fp64 anti-pattern relative to v2's fp32 pattern". **That claim was based on CLAUDE.md's text, not on actually reading v2's code.** Verification:
