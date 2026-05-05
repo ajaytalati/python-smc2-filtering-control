@@ -35,15 +35,23 @@ entries parameterise V_h, the next ``n_anchors`` parameterise V_n,
 the final ``n_anchors`` parameterise V_c. Each chunk passes through
 an RBF basis + a variate-specific bound transform.
 
-Bounds (from the OT-Control adapter)
+Bounds
 ------
-    V_h ∈ [0, 4],  V_n ∈ [0, 5],  V_c ∈ [-12, 12] hours.
+    V_h ∈ [0, 4],  V_n ∈ [0, 5],  V_c ∈ [-3, +3] hours.
 
-Bound transforms (no logit bias — controller starts from the
-sigmoid/tanh midpoint):
-- V_h: V_h_max · sigmoid(θ·rbf)            θ=0 → V_h = 2.0
-- V_n: V_n_max · sigmoid(θ·rbf)            θ=0 → V_n = 2.5
-- V_c: V_c_max · tanh(θ·rbf)               θ=0 → V_c = 0
+V_h and V_n bounds come from `_v_schedule.V_H_BOUNDS / V_N_BOUNDS`
+(shared with the plant's daily-clip path). The V_c bound follows
+`_dynamics.V_C_MAX_HOURS = 3` and matches what the estimator uses
+(`estimation.FROZEN_PARAMS['V_c_max'] = V_C_MAX_HOURS`). The dynamics'
+`entrainment_quality()` clamps |V_c| to V_C_MAX_HOURS and the phase
+term hits zero at exactly that boundary, so any planned |V_c| > 3 has
+no gradient on the cost (and actively collapses T via μ = -E_crit).
+
+Bound transforms (logit-biased so θ=0 sits at the bench `set_A`
+healthy operating point V_h=1.0, V_n=0.2, V_c=0):
+- V_h: V_h_max · sigmoid(c_h + θ·rbf)      θ=0 → V_h = 1.0,  c_h = logit(0.25)
+- V_n: V_n_max · sigmoid(c_n + θ·rbf)      θ=0 → V_n = 0.2,  c_n = logit(0.04)
+- V_c: V_c_max · tanh(θ·rbf)               θ=0 → V_c = 0     (symmetric, no bias)
 """
 from __future__ import annotations
 
@@ -58,6 +66,7 @@ from smc2fc.control.calibration import build_crn_noise_grids
 
 from version_2.models.swat._dynamics import (
     A_SCALE_FROZEN,
+    V_C_MAX_HOURS,
     diffusion_state_dep,
     drift_jax,
     entrainment_quality,
@@ -67,7 +76,6 @@ from version_2.models.swat.simulation import DEFAULT_INIT, DEFAULT_PARAMS
 from version_2.models.swat._v_schedule import (
     V_H_BOUNDS,
     V_N_BOUNDS,
-    V_C_BOUNDS,
 )
 
 
@@ -78,17 +86,41 @@ from version_2.models.swat._v_schedule import (
 def _make_three_schedules(*, n_steps: int, dt: float, n_anchors: int):
     """Build (rbf, schedule_from_theta) for the three SWAT controls.
 
-    No logit bias — at θ=0 the schedule sits at the sigmoid/tanh
-    midpoint of each variate's bounds. Controller figures out the
-    right V_h, V_n, V_c values from the T reward.
+    Logit-bias the V_h and V_n sigmoids so that θ=0 sits at the
+    bench's `set_A` healthy operating point (V_h=1.0, V_n=0.2, V_c=0)
+    — i.e. the prior cloud is centred on a clinically reasonable
+    starting state, not on the sigmoid mid-range default
+    (V_h=2.0, V_n=2.5) which is strictly worse than every scenario
+    baseline. V_c is symmetric about 0 so it stays unbiased.
     """
     rbf = RBFSchedule(n_steps=n_steps, dt=dt, n_anchors=n_anchors,
                        output='identity')
     design = rbf.design_matrix()        # (n_steps, n_anchors)
 
-    V_h_max = V_H_BOUNDS[1]   # 4
-    V_n_max = V_N_BOUNDS[1]   # 5
-    V_c_max = V_C_BOUNDS[1]   # 12
+    V_h_max = V_H_BOUNDS[1]    # 4
+    V_n_max = V_N_BOUNDS[1]    # 5
+    V_c_max = V_C_MAX_HOURS    # 3 — match _dynamics.entrainment_quality and
+                                 #     estimation.FROZEN_PARAMS, which clamp
+                                 #     and parametrise V_c on [-3, +3] hours.
+                                 #     Outside that range the dynamics' phase
+                                 #     term saturates at zero, killing the
+                                 #     cost gradient on V_c.
+
+    # Logit biases so θ=0 → set_A healthy operating point.
+    #   sigmoid(c_h) = V_h_target / V_h_max → c_h = logit(0.25) = -ln(3)
+    #   sigmoid(c_n) = V_n_target / V_n_max → c_n = logit(0.04) = -ln(24)
+    c_h = float(jnp.log(jnp.asarray(0.25 / 0.75)))   # ≈ -1.0986
+    c_n = float(jnp.log(jnp.asarray(0.04 / 0.96)))   # ≈ -3.1781
+
+    # D4: tighter effective prior on V_c. The engine's sigma_prior is a
+    # single scalar across all 24 θ-dims (`tempered_smc_loop.py:83`
+    # casts to float; per-variate σ would need an engine change which
+    # is out of scope — escalate per the senior-files principle).
+    # Equivalent workaround: scale the V_c-block raw RBF output by
+    # (sigma_eff_V_c / sigma_prior). With sigma_eff_V_c = 0.5 and
+    # sigma_prior = 1.5, that's a factor of 1/3. Effect: V_c stays
+    # closer to the unbiased centre 0 unless the data really pulls it.
+    v_c_prior_scale = 1.0 / 3.0
 
     @jax.jit
     def schedule_from_theta(theta: jnp.ndarray) -> jnp.ndarray:
@@ -101,9 +133,9 @@ def _make_three_schedules(*, n_steps: int, dt: float, n_anchors: int):
         raw_n = jnp.einsum('a,ta->t', theta_n, design)
         raw_c = jnp.einsum('a,ta->t', theta_c, design)
 
-        V_h = V_h_max * jax.nn.sigmoid(raw_h)
-        V_n = V_n_max * jax.nn.sigmoid(raw_n)
-        V_c = V_c_max * jnp.tanh(raw_c)
+        V_h = V_h_max * jax.nn.sigmoid(c_h + raw_h)
+        V_n = V_n_max * jax.nn.sigmoid(c_n + raw_n)
+        V_c = V_c_max * jnp.tanh(v_c_prior_scale * raw_c)
 
         return jnp.stack([V_h, V_n, V_c], axis=-1)
 

@@ -58,116 +58,79 @@ HALF_LOG_2PI = 0.5 * math.log(2.0 * math.pi)
 # FROZEN CONSTANTS
 # =========================================================================
 # Three operating-point references (A_SCALE, phi_0, V_c_max) plus two
-# pinning fixes from the Repo C identifiability analysis (see
-# `Python-Model-Validation/identifiability/swat/fisher_information_analysis.md`):
+# pinning fixes from the Repo C identifiability analysis:
 #
-# - **tau_T = 2.0 days (= 48 h)** — pinned to break the (mu_0, mu_E,
-#   eta, tau_T) Stuart-Landau time-vs-rate scaling degeneracy. Without
-#   this, the FIM is rank 24/27 with condition number ~10^36 — mu_0
-#   and mu_E are not separately identifiable.
-# - **lambda_amp_Z = 8.0** — pinned because (lambda_amp_W,
-#   lambda_amp_Z) only enter E_dyn through the product
-#   amp_W * amp_Z, so only one of the two is identifiable from data.
-#
-# After both pins applied, the analysis confirms FIM rank 25/25
-# (condition 4.77e9 — borderline but identifiable). mu_0 and mu_E
-# are then both individually identifiable — the F_max-from-data
-# experiment is well-posed.
+# - **tau_T = 2.0 days (= 48 h)** — pinned to break the Stuart-Landau
+#   time-vs-rate scaling degeneracy.
+# - **lambda_amp_Z = 8.0** — pinned because (lambda_amp_W, lambda_amp_Z)
+#   only enter E_dyn through their product.
 
 FROZEN_PARAMS = dict(
+    # Dynamics (synchronized with _dynamics.py:TRUTH_PARAMS)
+    kappa=6.67,
+    lmbda=32.0,
+    gamma_3=8.0,
+    beta_Z=4.0,
+    tau_W=2.0 / 24.0,
+    tau_Z=0.25 / 24.0,           # Matches fixed _dynamics.py
+    tau_a=10.0 / 24.0,           # Matches fixed _dynamics.py
+    tau_T=48.0 / 24.0,           # 2.0 days (pinned)
+    eta=0.5,
+    mu_E=1.0,
+    lambda_amp_W=5.0,
+    lambda_amp_Z=8.0,            # pinned
+    
+    # Diffusion temperatures (per day)
+    T_W=0.01 * 24.0,
+    T_Z=0.05 * 24.0,
+    T_a=0.01 * 24.0,
+    T_T=0.0001 * 24.0,
+
+    # Observation Constants (synchronized with simulation.py:_OBS_PARAMS)
+    HR_base=50.0,
+    s_base=30.0,
+    alpha_HR=25.0,
+    alpha_s=40.0,
+    beta_W_steps=0.8,
+    beta_s=10.0,
+    
     A_scale=A_SCALE_FROZEN,
     phi_0=PHI_0_FROZEN,
     V_c_max=V_C_MAX_HOURS,
-    # Pinned per Repo C FIM analysis 2026-04-27:
-    tau_T=48.0 / 24.0,            # 2.0 days
-    lambda_amp_Z=8.0,
-    # Phase 3.6 sim-side / sigmoid-shape constants (frozen by design,
-    # not by FIM rank). sleep_sharpness rescales the sleep likelihood
-    # so it sees the same separability as the legacy A_SCALE=6 domain;
-    # tau_sleep_persist_h is the sticky-HMM persistence used only in
-    # generation (estimator treats labels conditionally independent).
     sleep_sharpness=10.0,
     tau_sleep_persist_h=1.0,
 )
 
 
 # =========================================================================
-# PARAMETER PRIORS — 27 estimable scalars
+# PARAMETER PRIORS — 11 estimable scalars (The Identifiable Subset)
 # =========================================================================
-# Adapted from Repo A's PARAM_PRIOR_CONFIG. Differences from Repo A:
-# - V_h, V_n REMOVED (now exogenous controls, not estimable params).
-# - V_c REMOVED (now exogenous control).
-# - Time-scale priors converted hours -> days where applicable.
-# - Diffusion temperatures converted per-hour -> per-day.
-
-_HOURS_PER_DAY = 24.0
-
-
-def _ln_d(hours):
-    """Helper: lognormal-mean of a value originally in hours, expressed in days."""
-    return math.log(hours / _HOURS_PER_DAY)
-
+# Parameters that are not frozen above and are expected to be identified
+# from the 4-channel observation model.
 
 PARAM_PRIOR_CONFIG = OrderedDict([
-    # ── Sigmoid couplings (block F — fast subsystem) ─────────────────
-    ('kappa',    ('lognormal', (math.log(6.67), 0.5))),
-    ('lmbda',    ('lognormal', (math.log(32.0), 0.5))),
-    ('gamma_3',  ('lognormal', (math.log(8.0),  0.5))),
-    ('beta_Z',   ('lognormal', (math.log(4.0),  0.4))),
+    # Stuart-Landau bifurcation block
+    ('E_crit',       ('normal',    (0.5, 0.1))),
+    ('alpha_T',      ('lognormal', (math.log(0.3),  0.3))),
 
-    # ── Timescales (in DAYS, converted from hours) ───────────────────
-    # tau_T is PINNED — see FROZEN_PARAMS — to break the
-    # (mu_0, mu_E, eta, tau_T) Stuart-Landau scaling degeneracy.
-    # Phase 3.6 dev-repo truth values: tau_W=2h, tau_Z=0.25h, tau_a=10h.
-    ('tau_W',    ('lognormal', (_ln_d(2.0),   0.3))),
-    ('tau_Z',    ('lognormal', (_ln_d(0.25),  0.3))),
-    ('tau_a',    ('lognormal', (_ln_d(10.0),  0.3))),
-
-    # ── Stuart-Landau bifurcation block (the F_max-analog parameters) ─
-    # mu_0 + mu_E = 0 is the bifurcation point E_crit = -mu_0/mu_E = 0.5
-    # in the healthy-baseline case. Both estimable so the data informs
-    # the threshold (the SMC²-MPC novel feature for this port).
-    ('mu_0',     ('normal',    (-0.5, 0.3))),
-    ('mu_E',     ('lognormal', (math.log(1.0),  0.3))),
-    ('eta',      ('lognormal', (math.log(0.5),  0.3))),
-    ('alpha_T',  ('lognormal', (math.log(0.3),  0.3))),
-
-    # ── Diffusion temperatures (per DAY) ─────────────────────────────
-    ('T_W',      ('lognormal', (math.log(0.01 * _HOURS_PER_DAY), 0.5))),
-    ('T_Z',      ('lognormal', (math.log(0.05 * _HOURS_PER_DAY), 0.5))),
-    ('T_a',      ('lognormal', (math.log(0.01 * _HOURS_PER_DAY), 0.5))),
-    ('T_T',      ('lognormal', (math.log(0.0001 * _HOURS_PER_DAY), 0.5))),
-
-    # ── Entrainment-amplitude block (V_h-anabolic) ───────────────────
-    # lambda_amp_Z is PINNED — see FROZEN_PARAMS — because
-    # (lambda_amp_W, lambda_amp_Z) enter E_dyn only through their
-    # product, so only one is individually identifiable.
-    ('lambda_amp_W', ('lognormal', (math.log(5.0), 0.3))),
+    # Entrainment-amplitude block
     ('V_n_scale',    ('lognormal', (math.log(2.0), 0.3))),
 
-    # ── Obs ch1: HR Gaussian (sleep-modulated via W) ─────────────────
-    ('HR_base',  ('normal',    (50.0, 5.0))),
-    ('alpha_HR', ('lognormal', (math.log(25.0), 0.3))),
-    ('sigma_HR', ('lognormal', (math.log(8.0),  0.3))),
+    # Obs ch1: HR Gaussian
+    ('delta_HR',     ('normal',    (0.0, 5.0))),
+    ('sigma_HR',     ('lognormal', (math.log(8.0),  0.3))),
 
-    # ── Obs ch2: Sleep 3-level ordinal ───────────────────────────────
-    # Z domain rescaled to [0,1]: c_tilde 2.5/6 ≈ 0.417, delta_c 1.5/6 = 0.25
-    # sleep_sharpness pinned in FROZEN_PARAMS (sigmoid-sharpness rescale).
-    ('c_tilde',  ('normal',    (0.417, 0.10))),
-    ('delta_c',  ('lognormal', (math.log(0.25), 0.3))),
+    # Obs ch2: Sleep 3-level ordinal
+    ('c_tilde',      ('normal',    (0.417, 0.10))),
+    ('delta_c',      ('lognormal', (math.log(0.25), 0.3))),
 
-    # ── Obs ch3: Steps log-Gaussian, wake-gated ──────────────────────
-    # log(steps+1) ~ N(mu_step0 + beta_W_steps * W, sigma_step^2),
-    # only observed when sleep_label == 0 (wake bin).
+    # Obs ch3: Steps log-Gaussian
     ('mu_step0',     ('normal',    (4.0, 0.3))),
-    ('beta_W_steps', ('lognormal', (math.log(0.8), 0.2))),
     ('sigma_step',   ('lognormal', (math.log(0.5), 0.15))),
 
-    # ── Obs ch4: Stress Gaussian ─────────────────────────────────────
-    ('s_base',   ('normal',    (30.0, 10.0))),
-    ('alpha_s',  ('normal',    (40.0, 10.0))),
-    ('beta_s',   ('lognormal', (math.log(10.0), 0.3))),
-    ('sigma_s',  ('lognormal', (math.log(15.0), 0.3))),
+    # Obs ch4: Stress Gaussian
+    ('delta_s',      ('normal',    (0.0, 10.0))),
+    ('sigma_s',      ('lognormal', (math.log(15.0), 0.3))),
 ])
 
 
@@ -176,13 +139,10 @@ PARAM_PRIOR_CONFIG = OrderedDict([
 # =========================================================================
 
 INIT_STATE_PRIOR_CONFIG = OrderedDict([
-    # Tight known priors — match FSA-v2 cold-start pattern. Inits are
-    # not part of the inferred posterior in practice; the bench's
-    # shard_init_fn cold-starts from COLD_START_INIT.
     ('W_0',  ('normal', (0.50, 0.05))),
-    ('Z_0',  ('normal', (0.583, 0.05))),  # 3.5/6 = 0.583 (dev INIT_STATE_A)
+    ('Z_0',  ('normal', (0.583, 0.05))),
     ('a_0',  ('normal', (0.50, 0.05))),
-    ('T_0',  ('normal', (0.50, 0.05))),
+    ('T_0',  ('normal', (0.00, 0.05))),    # Pathological start T=0
 ])
 
 # Fast lookup: parameter name -> index in the prior-vector
@@ -191,8 +151,7 @@ _PI = {k: i for i, k in enumerate(_PK)}
 
 
 # Cold-start initial state for the very first window's prior mean.
-# Z_0 rescaled from 3.5 (in [0,6]) to 0.583 (in [0,1]).
-COLD_START_INIT = jnp.array([0.5, 0.583, 0.5, 0.5], dtype=jnp.float64)
+COLD_START_INIT = jnp.array([0.5, 0.583, 0.5, 0.0], dtype=jnp.float64)
 
 
 # =========================================================================
@@ -225,36 +184,105 @@ COLD_START_INIT = jnp.array([0.5, 0.583, 0.5, 0.5], dtype=jnp.float64)
 
 def propagate_fn(y, t, dt, params, grid_obs, k,
                   sigma_diag, noise, rng_key):
-    """Euler-Maruyama propagate for SWAT 4-state.
+    """GK-DPF for SWAT 4-state.
 
-    No Kalman fusion of Gaussian channels in this version — the
-    obs-side log-weight (``obs_log_weight_fn``) catches all four
-    channel likelihoods. GK-DPF guided proposal is a Phase 1.5
-    optimisation.
+    Uses 10x deterministic sub-stepping to find the prior mean, then
+    performs sequential scalar Kalman fusion of the 3 Gaussian channels
+    (HR, Steps, Stress) at the bin boundary to generate a guided proposal.
     """
-    del rng_key, sigma_diag  # sigma_diag ignored in favour of state-dep calculation
+    del sigma_diag, rng_key
+    n_substeps = 10
+    sub_dt = jnp.asarray(dt / float(n_substeps), dtype=y.dtype)
 
-    # Build params dict from the indexed vector (jit-stable view)
-    p_dict = {name: params[idx] for name, idx in _PI.items()}
-    # Add frozen constants (drift_jax doesn't read them but keeps API
-    # uniform across SWAT functions)
+    # Build params dict
+    p_dict = {name: params[idx].astype(y.dtype) for name, idx in _PI.items()}
     for fname, fval in FROZEN_PARAMS.items():
-        p_dict[fname] = jnp.float64(fval)
+        p_dict[fname] = jnp.asarray(fval, dtype=y.dtype)
 
-    # Read controls from grid_obs at this bin
+    # Read controls
     V_h = grid_obs['V_h'][k]
     V_n = grid_obs['V_n'][k]
     V_c = grid_obs['V_c'][k]
-    u = jnp.array([V_h, V_n, V_c], dtype=jnp.float64)
+    u = jnp.array([V_h, V_n, V_c], dtype=y.dtype)
 
-    # Drift + diffusion step
-    d_y = drift_jax(y, p_dict, t, u)
+    # 1. Prior Mean via 10x deterministic sub-stepping
+    def sub_body(y_curr, k_sub):
+        t_sub = t + k_sub * sub_dt
+        d_y = drift_jax(y_curr, p_dict, t_sub, u)
+        y_next = y_curr + sub_dt * d_y
+        return state_clip(y_next), None
+
+    mu_prior, _ = jax.lax.scan(sub_body, y, jnp.arange(n_substeps, dtype=y.dtype))
+
+    # 2. Prior Covariance (using diffusion at start of bin)
     sigma_y = diffusion_state_dep(y, p_dict)
-    sqrt_dt = jnp.sqrt(dt)
-    y_new = y + dt * d_y + sigma_y * sqrt_dt * noise
-    y_new = state_clip(y_new)
+    var_prior = jnp.maximum(sigma_y ** 2 * dt, 1e-12)
+    P_prior = jnp.diag(var_prior)
 
-    pred_lw = jnp.float64(0.0)   # plain Euler proposal -> zero predictive lw
+    # 3. Kalman Fusion setup
+    H = jnp.array([
+        [p_dict['alpha_HR'], 0.0, 0.0, 0.0],
+        [p_dict['alpha_s'],  0.0, 0.0, 0.0],
+        [p_dict['beta_W_steps'], 0.0, 0.0, 0.0],
+    ], dtype=y.dtype)
+
+    bias = jnp.array([
+        p_dict['HR_base'] + p_dict['delta_HR'],
+        p_dict['s_base'] + p_dict['delta_s'] + p_dict['beta_s'] * V_n,
+        p_dict['mu_step0'],
+    ], dtype=y.dtype)
+
+    R_diag = jnp.array([
+        p_dict['sigma_HR'] ** 2,
+        p_dict['sigma_s'] ** 2,
+        p_dict['sigma_step'] ** 2,
+    ], dtype=y.dtype)
+
+    obs_vals = jnp.array([
+        grid_obs['hr_value'][k],
+        grid_obs['stress_value'][k],
+        grid_obs['log_steps_value'][k],
+    ], dtype=y.dtype)
+
+    obs_pres = jnp.array([
+        grid_obs['hr_present'][k],
+        grid_obs['stress_present'][k],
+        grid_obs['steps_present'][k],
+    ], dtype=y.dtype)
+
+    # 4. Sequential Kalman updates
+    def _kalman_step(carry, ch):
+        mu, P, lp = carry
+        h_i, b_i, r_i, y_i, pres_i = ch
+        innov = y_i - (h_i @ mu + b_i)
+        Ph    = P @ h_i
+        S_i   = h_i @ Ph + r_i
+        K_i   = Ph / S_i
+        ll_i  = -0.5 * jnp.log(2.0 * jnp.pi * S_i) - 0.5 * innov ** 2 / S_i
+        mu = mu + pres_i * K_i * innov
+        P  = P  - pres_i * jnp.outer(K_i, Ph)
+        lp = lp + pres_i * ll_i
+        return (mu, P, lp), None
+
+    (mu_fused, P_fused, log_pred_total), _ = jax.lax.scan(
+        _kalman_step,
+        (mu_prior, P_prior, jnp.float64(0.0)),
+        (H, bias, R_diag, obs_vals, obs_pres),
+    )
+
+    # 5. Sample from fused posterior
+    P_safe = P_fused + jnp.asarray(1e-10, dtype=y.dtype) * jnp.eye(4, dtype=y.dtype)
+    L = jnp.linalg.cholesky(P_safe)
+    x_new = mu_fused + L @ noise
+    y_new = state_clip(x_new)
+
+    # 6. Weight correction (predictive log-weight = Kalman marginal - exact Gaussian obs LL)
+    preds_new = H @ y_new + bias
+    resids_new = obs_vals - preds_new
+    obs_ll_new = jnp.sum(obs_pres * (-0.5 * resids_new ** 2 / R_diag
+                                      - 0.5 * jnp.log(R_diag) - HALF_LOG_2PI))
+    pred_lw = log_pred_total - obs_ll_new
+
     return y_new, pred_lw
 
 
@@ -286,34 +314,35 @@ def _gauss_log_lik(obs_value, mean, sigma):
     return -HALF_LOG_2PI - jnp.log(sigma) - 0.5 * z * z
 
 
-def _ordinal_log_lik(obs_label, Z, c1, c2, sharp):
-    """3-level ordinal: P(label | Z) via thresholds c1 < c2 with
-    sigmoid sharpness multiplier matching the dev-repo generator.
-
-        P(0=wake)   = 1 - sigmoid(sharp * (Z - c1))
-        P(1=light)  = sigmoid(sharp * (Z - c1)) - sigmoid(sharp * (Z - c2))
-        P(2=deep)   = sigmoid(sharp * (Z - c2))
+def _ordinal_log_lik(obs_label, Z, c1, c2, sharp, k_prev, is_first_bin):
+    """3-level ordinal with sticky-HMM persistence.
     """
     s1 = jax.nn.sigmoid(sharp * (Z - c1))
     s2 = jax.nn.sigmoid(sharp * (Z - c2))
     p_wake = 1.0 - s1
     p_light = s1 - s2
     p_deep = s2
-    # Pick the right probability via integer label
-    p = jnp.where(obs_label == 0, p_wake,
+    p_marg = jnp.where(obs_label == 0, p_wake,
         jnp.where(obs_label == 1, p_light, p_deep))
-    return jnp.log(jnp.maximum(p, 1e-30))
-
-
-
+    
+    # dt_h = 15 mins / 60 = 0.25h
+    dt_h = jnp.float64(0.25)
+    tau = jnp.float64(FROZEN_PARAMS['tau_sleep_persist_h'])
+    P_stay = jnp.exp(-dt_h / tau)
+    
+    is_same = (obs_label == k_prev)
+    p_sticky = P_stay * is_same + (1.0 - P_stay) * p_marg
+    
+    p_eff = jax.lax.cond(is_first_bin, lambda: p_marg, lambda: p_sticky)
+    return jnp.log(jnp.maximum(p_eff, 1e-30))
 
 def obs_log_weight_fn(x_new, grid_obs, k, params):
-    """Sum the four channel log-likelihoods at bin k.
-
-    Each channel's contribution is gated by its ``*_present`` mask in
-    grid_obs (1.0 if obs present at this bin, 0.0 if not).
+    """Total observation log-weight for the particle at x_new.
+    Uses the exact sticky-HMM for the sleep channel.
     """
     p = {name: params[idx] for name, idx in _PI.items()}
+    for fname, fval in FROZEN_PARAMS.items():
+        p[fname] = jnp.float64(fval)
 
     W = x_new[0]
     Z = x_new[1]
@@ -323,22 +352,23 @@ def obs_log_weight_fn(x_new, grid_obs, k, params):
     # ── Ch1: HR Gaussian ─────────────────────────────────────────────
     hr_value = grid_obs['hr_value'][k]
     hr_present = grid_obs['hr_present'][k]
-    hr_mean = p['HR_base'] + p['alpha_HR'] * W
+    hr_mean = (p['HR_base'] + p['delta_HR']) + p['alpha_HR'] * W
     log_w += hr_present * _gauss_log_lik(hr_value, hr_mean, p['sigma_HR'])
 
-    # ── Ch2: Sleep 3-level ordinal ───────────────────────────────────
+    # ── Ch2: Sleep 3-level ordinal (Sticky HMM) ──────────────────────
     sleep_label = grid_obs['sleep_label'][k]
     sleep_present = grid_obs['sleep_present'][k]
     c1 = p['c_tilde']
     c2 = c1 + p['delta_c']
     sharp = jnp.float64(FROZEN_PARAMS['sleep_sharpness'])
+    
+    k_prev = jax.lax.cond(k > 0, lambda: grid_obs['sleep_label'][k-1], lambda: jnp.int32(0))
+    is_first_bin = (k == 0)
+    
     log_w += sleep_present * _ordinal_log_lik(
-        sleep_label, Z, c1, c2, sharp)
+        sleep_label, Z, c1, c2, sharp, k_prev, is_first_bin)
 
     # ── Ch3: Steps log-Gaussian (wake-gated) ─────────────────────────
-    # log(steps+1) ~ N(mu_step0 + beta_W_steps * W, sigma_step^2).
-    # Wake-gating is folded into steps_present (set to 0 in non-wake
-    # bins by align_obs_fn).
     log_steps_value = grid_obs['log_steps_value'][k]
     steps_present = grid_obs['steps_present'][k]
     step_mean = p['mu_step0'] + p['beta_W_steps'] * W
@@ -349,7 +379,7 @@ def obs_log_weight_fn(x_new, grid_obs, k, params):
     stress_value = grid_obs['stress_value'][k]
     stress_present = grid_obs['stress_present'][k]
     V_n = grid_obs['V_n'][k]
-    stress_mean = p['s_base'] + p['alpha_s'] * W + p['beta_s'] * V_n
+    stress_mean = (p['s_base'] + p['delta_s']) + p['alpha_s'] * W + p['beta_s'] * V_n
     log_w += stress_present * _gauss_log_lik(
         stress_value, stress_mean, p['sigma_s'])
 

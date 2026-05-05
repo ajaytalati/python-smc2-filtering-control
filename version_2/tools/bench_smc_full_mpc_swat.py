@@ -112,6 +112,21 @@ def _hmc_step_for_horizon(T_total_days: int) -> float:
     return 0.20
 
 
+def _particle_counts_for_horizon(T_total_days: int) -> tuple[int, int, int, int]:
+    """Return (filter n_smc, filter n_pf, ctrl n_smc, ctrl n_inner).
+
+    Memory-load on the controller's MPC rollout scales as
+    n_smc * n_inner * T_total_days * BINS_PER_DAY * n_substeps.
+    With controller `n_substeps = 4` (Run 09 retry baseline):
+
+    T<=2  : 512/400/512/64 fits comfortably.
+    T>=14 : 256/200/256/32 — Run 09 retry's working config at 14d.
+    """
+    if T_total_days >= 14:
+        return 256, 200, 256, 32
+    return 512, 400, 512, 64
+
+
 def extract_window(obs_data, start: int, end: int):
     """Slice a window of obs from the global accumulators."""
     window = {}
@@ -152,7 +167,7 @@ def _build_swat_control_spec(*, dyn_params: dict, init_state: np.ndarray,
         if k in truth_params:
             truth_params[k] = float(v)
 
-    n_steps = plan_horizon_days * BINS_PER_DAY
+    n_steps = int(plan_horizon_days * BINS_PER_DAY)
     # lambda_E (∫E_dyn shaping weight) overridable via SWAT_LAMBDA_E
     # env var. Default 1.0 (balanced with ∫T at healthy ops).
     lambda_E = float(os.environ.get('SWAT_LAMBDA_E', '1.0'))
@@ -170,6 +185,12 @@ def _build_swat_control_spec(*, dyn_params: dict, init_state: np.ndarray,
         dt=DT,
         n_anchors=8,
         n_inner=64,
+        # Reverted from D2's n_substeps=10 back to 4 for production
+        # T=14 throughput. D2's principle (controller integrator
+        # matches plant) is right but the 2.5× cost-rollout overhead
+        # had no measurable mean-T benefit at T=2 across runs 12–17.
+        # Revisit once the engine supports a faster-than-Euler
+        # integrator.
         n_substeps=4,
         sigma_prior=1.5,
         lambda_E=lambda_E,
@@ -217,7 +238,7 @@ SCENARIO_CONFIGS = {
     },
     'set_A': {
         # Healthy baseline matches dev repo INIT_STATE_A: V_n=0.2 (was 0.3).
-        'init_state':   np.array([0.5, 0.583, 0.5, 0.5], dtype=np.float64),
+        'init_state':   np.array([0.5, 0.583, 0.5, 0.0], dtype=np.float64),
         'baseline_v_h': 1.0,
         'baseline_v_n': 0.2,
         'baseline_v_c': 0.0,
@@ -258,6 +279,8 @@ def main():
 
     truth = dict(DEFAULT_PARAMS)
     em = SWAT_ESTIMATION
+    for name in em.all_names: 
+        if name not in truth: truth[name] = 0.0
     name_to_idx = {n: i for i, n in enumerate(em.all_names)}
 
     # SWAT identifiable subset — params we expect to recover under the
@@ -265,9 +288,9 @@ def main():
     # → log-Gaussian wake-gated steps switch (Phase 3.5); replaced by
     # mu_step0 / beta_W_steps which are linear-in-W so well-identified.
     identifiable_subset = {
-        'alpha_HR', 'sigma_HR', 'tau_W', 'tau_Z',
-        'beta_Z', 'tau_a', 'mu_step0', 'beta_W_steps',
-        'mu_0', 'mu_E',  # the F_max-from-data analogs
+        'delta_HR', 'delta_s', 'V_n_scale', 'mu_step0', 
+        'sigma_HR', 'sigma_step', 'sigma_s', 
+        'alpha_T', 'E_crit', 'c_tilde', 'delta_c',
     }
 
     n_windows = (T_total_days * BINS_PER_DAY - WINDOW_BINS) // STRIDE_BINS + 1
@@ -317,12 +340,13 @@ def main():
     replan_history = []
 
     # ── SMC config ──
-    # Doubled back to 512/400 for Phase 3.5 — at T=7 (vs the OOM-
-    # triggering T=14) the controller's MPC rollout fits comfortably
-    # in 32 GB. If revisiting longer horizons later, halve again.
+    # Particle counts are horizon-dispatched: T<=7 fits 512/400/512/64,
+    # T>=14 OOMs on the controller-side MPC rollout at those counts and
+    # is halved to 256/200/256/32 (see _particle_counts_for_horizon).
+    f_n_smc, f_n_pf, c_n_smc, c_n_inner = _particle_counts_for_horizon(T_total_days)
     smc_cfg = SMCConfig(
-        n_smc_particles=512,
-        n_pf_particles=400,
+        n_smc_particles=f_n_smc,
+        n_pf_particles=f_n_pf,
         target_ess_frac=0.5,
         max_lambda_inc=0.5,
         num_mcmc_steps=5,
@@ -338,7 +362,11 @@ def main():
     )
 
     ctrl_cfg = SMCControlConfig(
-        n_smc=512, n_inner=64,
+        n_smc=c_n_smc, n_inner=c_n_inner,
+        # Reverted D5's 0.1 back to 0.5 for production T=14 throughput.
+        # D5 forced ~11 tempering levels (vs 5 at 0.5) but showed no
+        # measurable mean-T benefit at T=2 across runs 16–17. Cost was
+        # 2.2× more HMC chains per plan.
         target_ess_frac=0.5, max_lambda_inc=0.5,
         num_mcmc_steps=5,
         hmc_step_size=_hmc_step_for_horizon(T_total_days),
@@ -509,7 +537,6 @@ def main():
             dyn_params = {k: post_means[k] for k in (
                 'kappa', 'lmbda', 'gamma_3', 'beta_Z',
                 'tau_W', 'tau_Z', 'tau_a', 'tau_T',
-                'mu_0', 'mu_E', 'eta', 'alpha_T',
                 'T_W', 'T_Z', 'T_a', 'T_T',
                 'lambda_amp_W', 'lambda_amp_Z', 'V_n_scale',
             ) if k in post_means}
@@ -606,10 +633,10 @@ def main():
 
     # ── Save outputs ──
     h_suffix = f"_h{int(_STEP_MINUTES)}min"
-    auto_run_name = (f"swat_T{T_total_days}d_replanK{REPLAN_EVERY_K}"
+    auto_run_name = (f"swat_runs/swat_T{T_total_days}d_replanK{REPLAN_EVERY_K}"
                       f"{h_suffix}_{SCENARIO}")
     run_name = run_name_override if run_name_override else auto_run_name
-    run_dir = f"outputs/swat/swat_runs/{run_name}"
+    run_dir = f"outputs/swat/{run_name}"
     os.makedirs(run_dir, exist_ok=True)
 
     # Manifest
@@ -879,6 +906,15 @@ def main():
         save_dir=run_dir,
         suffix='',
     )
+
+    # Posterior parameter-trace plot (one panel per param, median + 5/95
+    # band over windows, truth dashed). Best-effort: never fail the bench
+    # on a plotting hiccup.
+    try:
+        from tools.plot_param_traces import main as _plot_param_traces
+        _plot_param_traces(run_dir)
+    except Exception as _e:
+        print(f"  WARN: param-trace plot failed: {_e}")
 
     print()
     print(f"  Checkpoint: {run_dir}/manifest.json + data.npz")

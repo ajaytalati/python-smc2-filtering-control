@@ -100,8 +100,8 @@ TRUTH_PARAMS = dict(
 
     # Timescales (days). dev-repo Phase 3.6 values:
     #   tau_W = 2.0 h      (unchanged)
-    #   tau_Z = 0.25 h     (was 2.0 h; sharper Z↔sleep flip-flop)
-    #   tau_a = 10.0 h     (was 3.0 h; slow adenosine drain → step-like Z)
+    #   tau_Z = 0.25 h     (sharper Z↔sleep flip-flop)
+    #   tau_a = 10.0 h     (slow adenosine drain → step-like Z)
     #   tau_T = 48.0 h     (unchanged; pinned in estimation FROZEN_PARAMS)
     tau_W=2.0   / _HOURS_PER_DAY,        # 0.0833 d
     tau_Z=0.25  / _HOURS_PER_DAY,        # 0.0104 d
@@ -109,7 +109,7 @@ TRUTH_PARAMS = dict(
     tau_T=48.0  / _HOURS_PER_DAY,        # 2.0    d
 
     # Stuart-Landau testosterone (block T)
-    mu_0=-0.5,
+    E_crit=0.5,
     mu_E=1.0,
     eta=0.5,
     alpha_T=0.3,
@@ -221,7 +221,7 @@ def drift_jax(y, params, t, u):
     tau_Z = params['tau_Z']
     tau_a = params['tau_a']
     tau_T = params['tau_T']
-    mu_0 = params['mu_0']
+    E_crit = params['E_crit']
     mu_E = params['mu_E']
     eta = params['eta']
     alpha_T = params['alpha_T']
@@ -248,7 +248,8 @@ def drift_jax(y, params, t, u):
     da = (W - a) / tau_a
 
     E_dyn = entrainment_quality(W, Z, a, T, V_h, V_n, V_c, params)
-    mu = mu_0 + mu_E * E_dyn
+    E_crit = params['E_crit']
+    mu = mu_E * (E_dyn - E_crit)
     dT = (mu * T - eta * T * T * T) / tau_T
 
     return jnp.array([dW, dZ, da, dT])

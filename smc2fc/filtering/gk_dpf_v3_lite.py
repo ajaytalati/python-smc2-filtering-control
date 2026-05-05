@@ -264,16 +264,17 @@ def make_gk_dpf_v3_lite_log_density_compileonce(
             noise = jax.random.normal(sk, (K, n_s), dtype=jnp.float32)
             parts_f32 = parts.astype(jnp.float32)
 
-            def _prop_one(y, xi):
+            def _prop_one(y, xi, sk_one):
                 t_step = jnp.asarray((w_start + k) * dt, dtype=jnp.float32)
                 x_new, pred_lw = model.propagate_fn(
                     y, t_step, dt, params_f32, grid_obs_f32, k,
-                    sigma_diag_f32, xi, None)
+                    sigma_diag_f32, xi, sk_one)
                 obs_lw = model.obs_log_weight_fn(
                     x_new, grid_obs_f32, k, params_f32)
                 return x_new, pred_lw + obs_lw
 
-            new_parts_f32, step_lw_f32 = jax.vmap(_prop_one)(parts_f32, noise)
+            sk_v = jax.random.split(sk, K)
+            new_parts_f32, step_lw_f32 = jax.vmap(_prop_one)(parts_f32, noise, sk_v)
             new_parts = new_parts_f32.astype(u.dtype)
             step_lw = step_lw_f32.astype(u.dtype)
             log_w_pre = log_w + step_lw
@@ -646,16 +647,17 @@ def make_gk_dpf_v3_lite_log_density(
             noise = jax.random.normal(sk, (K, n_s), dtype=jnp.float32)
             parts_f32 = parts.astype(jnp.float32)
 
-            def _prop_one(y, xi):
+            def _prop_one(y, xi, sk_one):
                 t_step = jnp.asarray((_w_start + k) * dt, dtype=jnp.float32)
                 x_new, pred_lw = model.propagate_fn(
                     y, t_step, dt, params_f32, grid_obs_f32, k,
-                    sigma_diag_f32, xi, None)
+                    sigma_diag_f32, xi, sk_one)
                 obs_lw = model.obs_log_weight_fn(
                     x_new, grid_obs_f32, k, params_f32)
                 return x_new, pred_lw + obs_lw
 
-            new_parts_f32, step_lw_f32 = jax.vmap(_prop_one)(parts_f32, noise)
+            sk_v = jax.random.split(sk, K)
+            new_parts_f32, step_lw_f32 = jax.vmap(_prop_one)(parts_f32, noise, sk_v)
             new_parts = new_parts_f32.astype(u.dtype)
             step_lw = step_lw_f32.astype(u.dtype)
             log_w_pre = log_w + step_lw

@@ -184,7 +184,7 @@ def _plot_latent(trajectory, t_days, V_h, V_n, V_c, params, save_path):
     # TESTOSTERONE
     T_amp = trajectory[:, 3]
     axes[3].plot(t_days, T_amp, lw=0.8, color='crimson')
-    mu_max = params['mu_0'] + params['mu_E']
+    mu_max = params['mu_E'] * (1.0 - params['E_crit'])
     if mu_max > 0:
         T_star_max = math.sqrt(mu_max / params['eta'])
         axes[3].axhline(T_star_max, ls=':', color='green', alpha=0.5,
@@ -344,8 +344,8 @@ def _plot_entrainment(trajectory, t_days, V_h, V_n, V_c, params, save_path):
 
     E_dyn = _compute_E_dynamics(trajectory, V_h, V_n, V_c, params)
     E_obs = _compute_E_obs(trajectory, t_days, params)
-    mu = params['mu_0'] + params['mu_E'] * E_dyn
-    E_crit = -params['mu_0'] / params['mu_E']
+    mu = params['mu_E'] * (E_dyn - params['E_crit'])
+    E_crit = params['E_crit']
 
     T_actual = trajectory[:, 3]
     T_star = np.where(mu > 0,

@@ -72,23 +72,34 @@ def _plant_em_step(
     dt,                    # f64 scalar
     rng_key,               # PRNGKey
 ):
-    """Forward Euler-Maruyama with state-INDEPENDENT diagonal diffusion
-    (SWAT) for stride_bins steps. Returns (final_state, traj).
+    """Sub-stepped Euler-Maruyama for SWAT 4-state plant.
+    Uses 10x sub-stepping to resolve the fast flip-flop.
     """
-    sqrt_dt = jnp.sqrt(dt)
+    n_substeps = 10
+    sub_dt = dt / float(n_substeps)
+    sqrt_sub_dt = jnp.sqrt(sub_dt)
     stride_bins = u_per_bin.shape[0]
 
     def step(carry, k):
-        y, key = carry
-        key, sub = jax.random.split(key)
+        y_bin, key = carry
         u_t = u_per_bin[k]
-        t_k = t_start_days + dt * k
-        d_y = drift_jax(y, p_jax, t_k, u_t)
-        sigma_diag = diffusion_state_dep(y, p_jax)        # (4,) constants
-        noise = jax.random.normal(sub, (4,), dtype=jnp.float64)
-        y_new = y + dt * d_y + sigma_diag * sqrt_dt * noise
-        y_new = state_clip(y_new)
-        return (y_new, key), y_new
+        t_bin = t_start_days + dt * k
+
+        # Sub-stepping within the bin
+        def sub_step(sub_carry, k_sub):
+            y_curr, k_in = sub_carry
+            k_in, sub = jax.random.split(k_in)
+            t_sub = t_bin + k_sub * sub_dt
+            d_y = drift_jax(y_curr, p_jax, t_sub, u_t)
+            sigma_diag = diffusion_state_dep(y_curr, p_jax)
+            noise = jax.random.normal(sub, (4,), dtype=jnp.float64)
+            y_next = y_curr + sub_dt * d_y + sigma_diag * sqrt_sub_dt * noise
+            return (state_clip(y_next), k_in), None
+
+        (y_final, key_final), _ = jax.lax.scan(
+            sub_step, (y_bin, key), jnp.arange(n_substeps))
+            
+        return (y_final, key_final), y_final
 
     init_carry = (initial_state, rng_key)
     (final_state, _), traj = lax.scan(
