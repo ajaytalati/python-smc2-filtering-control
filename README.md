@@ -54,15 +54,16 @@ PYTHONPATH=.:.. python tools/bench_smc_full_mpc_swat.py 14 --scenario pathologic
 
 ## Adjacent repos
 
-- **[Python-Model-Development-Simulation](https://github.com/ajaytalati/Python-Model-Development-Simulation)**
-  — canonical home for SDE models in the 3-file convention
-  (`simulation.py` + `_dynamics.py` + `estimation.py`).
-- **[Python-Model-Scenario-Simulation](https://github.com/ajaytalati/Python-Model-Scenario-Simulation)** (`psim`)
-  — sim-est consistency validation gate. Synthesises forward-SDE
-  scenarios and emits canonical artifacts (`manifest.json` + `npz/`).
-- **[smc2-blackjax-rolling](https://github.com/ajaytalati/smc2-blackjax-rolling)**
-  — earlier validated rolling-window SMC² implementation; source of
-  the SF Path-B-fixed bridge variant.
+Per-model dev sandboxes — models are developed and validated there
+(identifiability, stiffness, plant-vs-estimator reconciliation,
+likelihood, controller checks) before being ported into
+`version_2/models/<name>/` for closed-loop runs.
+
+- **[FSA_model_dev](https://github.com/ajaytalati/FSA_model_dev)**
+  — dev sandbox for the FSA-v2 (Banister-coupled) model.
+- **[SWAT_model_dev](https://github.com/ajaytalati/SWAT_model_dev)**
+  — dev sandbox for the SWAT (Sleep-Wake-Adenosine-Testosterone)
+  model.
 
 ## References
 
