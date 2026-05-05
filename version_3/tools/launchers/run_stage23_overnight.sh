@@ -47,7 +47,7 @@ run_one() {
   echo "  log:  $log" | tee -a "$SWEEP_LOG"
   echo "============================================================" | tee -a "$SWEEP_LOG"
   local t0=$(date +%s)
-  "$PY" "${args[@]}" 2>&1 | tee "$log" || true
+  "$PY" -u "${args[@]}" 2>&1 | tee "$log" || true
   local rc=${PIPESTATUS[0]}
   local t1=$(date +%s)
   local elapsed=$((t1 - t0))
@@ -64,14 +64,13 @@ run_one sanity_T2d_soft_fast_healthy \
   $CTRL --cost soft_fast --scenario healthy --T-days 2 --replan-K 2 \
         --run-tag $SANITY_TAG
 
-# 2. Stage 2 HEALTHY -- the non-negotiable A/B. soft_fast first.
+# 2. Stage 2 HEALTHY -- only soft_fast here. The soft healthy baseline
+#    is already running in a separate process (started by Ajay; tag
+#    `stage2_ctrl_soft_healthy_T14d_sat`). This launcher will pick up
+#    its manifest at A/B-summary time. No need to re-run soft healthy.
 run_one s2_soft_fast_healthy \
   $CTRL --cost soft_fast --scenario healthy --T-days 14 --replan-K 2 \
         --run-tag stage2_soft_fast_healthy_T14_optimized
-
-run_one s2_soft_healthy \
-  $CTRL --cost soft --scenario healthy --T-days 14 --replan-K 2 \
-        --run-tag stage2_soft_healthy_T14_baseline
 
 # 3. Stage 2 SEDENTARY -- only if healthy looked OK.
 run_one s2_soft_fast_sedentary \
