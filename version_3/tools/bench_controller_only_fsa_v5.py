@@ -293,15 +293,19 @@ def _build_spec_for_cost_variant(
             # Indicator gradient is zero; HMC inside leapfrog is wasted.
             ctrl_cfg_overrides = {'num_mcmc_steps': 0}
         elif cost == 'soft_fast':
-            # Gemini's bucket #4: trim HMC since the soft surface is
-            # smooth and the cost is 4x cheaper per evaluation already.
-            # Also drop n_smc 256 -> 128 (controller doesn't need that
-            # many particles when the cost is well-conditioned).
-            ctrl_cfg_overrides = {
-                'num_mcmc_steps':   5,
-                'hmc_num_leapfrog': 8,
-                'n_smc':            128,
-            }
+            # Reverted Gemini's bucket #4 (HMC trim) after Run 09 (T=14d
+            # healthy soft_fast at n_smc=128/mcmc=5/leapfrog=8) showed
+            # excursions into the collapsed (Phi_B, Phi_S) regime on a
+            # couple of daily-mean replans -- the headline metrics
+            # (mean A, A_integral) matched soft within 0.5% but the
+            # basin-overlay path quality regressed visibly. Likely root
+            # cause: the trimmed HMC budget gave occasional leapfrog
+            # divergences and the smaller particle cloud lost diversity.
+            # The cost-fn optimisations (fp32 + relaxed bisection +
+            # sub-sampled bins) are mathematical not statistical, so
+            # they're kept; only the HMC-config trim is reverted.
+            # No overrides => use the same HMC config as `soft`.
+            ctrl_cfg_overrides = {}
         else:
             ctrl_cfg_overrides = {}
         return spec, ctrl_cfg_overrides
@@ -420,9 +424,11 @@ def main():
     if cost == 'hard':
         suffix = " (HMC skipped for hard variant)"
     elif cost == 'soft_fast':
-        suffix = (" (trimmed for soft_fast: num_mcmc_steps=5, "
-                  "hmc_num_leapfrog=8, n_smc=128)")
-    print(f"  num_mcmc_steps: {ctrl_cfg.num_mcmc_steps}{suffix}")
+        suffix = (" (soft_fast keeps full HMC config; only the cost-fn "
+                  "is optimised: fp32, relaxed bisection, sub-sampled bins)")
+    print(f"  num_mcmc_steps: {ctrl_cfg.num_mcmc_steps}, "
+          f"hmc_num_leapfrog: {ctrl_cfg.hmc_num_leapfrog}, "
+          f"n_smc: {ctrl_cfg.n_smc}{suffix}")
     if cost == 'soft_fast':
         print(f"  bin_stride:     {bin_stride}  (separatrix sub-sampled every "
               f"{bin_stride * 15} min)")

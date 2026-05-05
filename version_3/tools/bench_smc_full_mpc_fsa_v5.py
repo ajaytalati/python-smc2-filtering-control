@@ -283,11 +283,10 @@ def _build_spec_for_cost_variant_posterior(
         if cost == 'hard':
             ctrl_cfg_overrides = {'num_mcmc_steps': 0}
         elif cost == 'soft_fast':
-            ctrl_cfg_overrides = {
-                'num_mcmc_steps':   5,
-                'hmc_num_leapfrog': 8,
-                'n_smc':            128,
-            }
+            # Reverted: see version_3/tools/bench_controller_only_fsa_v5.py
+            # for the rationale. Same HMC config as `soft`; only the
+            # cost-fn-side optimisations remain in `soft_fast`.
+            ctrl_cfg_overrides = {}
         else:
             ctrl_cfg_overrides = {}
         return spec, ctrl_cfg_overrides
