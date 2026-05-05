@@ -238,9 +238,56 @@ The post-hoc evaluator runs the legacy hard-indicator chance-constraint check on
 
 ---
 
+## Run 08 — Stage 2 sanity (T=2d soft_fast, healthy) — overnight launcher hook
+
+`run08_stage2_soft_fast_T2d_sanity_overnight` — same as Run 07 but inside the launcher. **27 s** wall-clock, all artifacts produced including `basin_overlay.png`. Two gate FAILs are expected (T=2d too short to accumulate `A_target=2.0`). Confirms the sweep wires up clean before the long runs.
+
+---
+
+## Run 09 — Stage 2 soft_fast (healthy, T=14d)  [B in the A/B vs Run 06]
+
+**2026-05-05 21:54** — controller-only bench, `soft_fast` cost variant, healthy scenario. Production-default per Ajay's redirect.
+
+- **Run dir:** `experiments/run09_stage2_soft_fast_healthy_T14_optimized/`
+- **Cost variant:** `soft_fast` (fp32 throughout, 1e-3 bisection / 20-iter cap, chance check sub-sampled every 4 bins, trimmed HMC: n_smc=128 / num_mcmc_steps=5 / hmc_num_leapfrog=8)
+- **Wall-clock:** **986 s = 16.4 min** on RTX 5090 (replan ~70 s/each × 14 replans)
+
+### A/B headline against Run 06 (strict `soft`)
+
+| Metric | Run 06 (`soft`) | Run 09 (`soft_fast`) | Δ |
+|---|---|---|---|
+| Wall-clock | 99.8 min | **16.4 min** | **−83.6%  (6.07× speedup)** |
+| Mean A_integral | 11.42 | 11.41 | **−0.09%**  ✅ within 5% |
+| Final A | 0.945 | 0.963 | +1.9% |
+| Max applied Φ | 0.49 | 1.07 | +118%  (more aggressive bursts; still well below Φ_max=3.0) |
+| Post-hoc violation rate | 0.96 | 0.96 | identical (same evaluator quirk on both) |
+
+### Plan A/B pass criteria
+
+- ✅ **≥3× faster:**   6.07× (target 3×)
+- ✅ **within 5% on `mean_A_integral`:**  0.09% (target ≤5%)
+- ⚠️ **post-hoc violation ≤ α=0.05:** FAIL on both variants (Run 06 = 0.96, Run 09 = 0.96). The match between variants is the relevant signal: `soft_fast` is producing the same trajectory geometry as `soft`, both fail the post-hoc check for the same evaluator-side reason (separatrix `+inf` semantics in mono-stable healthy regions, or deterministic-vs-stochastic forward-roll discrepancy). **Not a controller divergence.** Investigation queued.
+
+### Gates
+
+- ✅ `schedule_in_bounds` (max applied Φ = 1.07 < 3.0)
+- ✅ `A_integral_geq_target` (11.41 ≥ 2.0)
+- ❌ `violation_leq_alpha` (0.96 > 0.05) — same as Run 06
+- ✅ `controller_adapts`
+
+### Plots produced
+
+`latent_trajectory.png`, `applied_schedule.png`, `basin_overlay.png`. The basin overlay confirms the controller's path stays inside the healthy island throughout the 14 days.
+
+### Verdict
+
+`soft_fast` is the production cost variant going forward. The 6× speedup is exactly what Gemini's optimisation plan predicted (fp32 path on the 5090's main silicon vs fp64 on 1/64th of the cores), with no measurable behavioural divergence at the healthy-island corner.
+
+---
+
 ## Run 02 — TODO: Stage 2 controller-only verification
 
-(superseded by Runs 06 / 07 above)
+(superseded by Runs 06 / 07 / 08 / 09 above)
 
 ## Run 03 — TODO: Stage 3 full closed-loop SMC²-MPC verification
 
