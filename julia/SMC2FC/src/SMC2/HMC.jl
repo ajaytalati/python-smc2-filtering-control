@@ -106,6 +106,16 @@ the temperature-tempered log-density `lp_fn(u)`. Returns the final position.
               unused. Closest cheap analogue of MCLMC for our use case;
               roughly matches Python's MCLMC per-step cost (~1 grad).
 
+  - `:AutoMALA` — MALA with Robbins-Monro step-size adaptation toward
+              the optimal MALA acceptance rate of ~0.574 (Roberts &
+              Rosenthal 2001). Same per-step cost as :MALA but no
+              hand-tuning of `hmc_step_size` — the kernel auto-shrinks
+              ε when acceptance is low and grows it when acceptance is
+              high. Inspired by `Pigeons.jl`'s `AutoMALA` explorer
+              (which we couldn't use directly — its newer versions
+              conflict with our AdvancedHMC/Distributions deps and
+              the v0.1.1 that does resolve doesn't ship AutoMALA).
+
 Inv_mass_diag is the diagonal inverse mass matrix — full-mass kernels
 collapse to zero acceptance by λ ≈ 0.3 on the PF likelihood landscape.
 """
@@ -125,6 +135,9 @@ function hmc_step_chain(initial_position::AbstractVector{Float64},
     if sampler === :MALA
         return mala_step_chain(initial_position, target_grad, num_steps,
                                 Float64(step_size), inv_mass_diag, rng)
+    elseif sampler === :AutoMALA
+        return automala_step_chain(initial_position, target_grad, num_steps,
+                                     Float64(step_size), inv_mass_diag, rng)
     end
 
     metric      = DiagEuclideanMetric(inv_mass_diag)
@@ -210,6 +223,77 @@ function mala_step_chain(u0::AbstractVector{Float64},
             val_u   = val_new
             grad_u  = grad_new
         end
+    end
+    return u
+end
+
+"""
+    automala_step_chain(u0, target_grad, num_steps, step_size_init,
+                         inv_mass_diag, rng;
+                         target_accept=0.574, adapt_rate=0.05) -> Vector{Float64}
+
+MALA with Robbins-Monro step-size adaptation. Each step does one MALA
+move and then nudges `log(ε)` based on the local accept/reject decision:
+
+    log(ε) ← log(ε) + adapt_rate · (accept_indicator - target_accept)
+
+where `accept_indicator ∈ {0, 1}` is whether the MH proposal was
+accepted at this step. This is the standard Roberts-Rosenthal Robbins-
+Monro adaptation. After `num_steps` moves the step size has settled
+near the value that produces ~target_accept (= 0.574 for MALA).
+
+`step_size_init` only seeds the adaptation; the final ε is independent
+of it (modulo a transient).
+
+Returns the final position. The adapted ε is discarded — each call
+to `automala_step_chain` re-adapts. For longer chains this is
+suboptimal; for our SMC² use case with `num_mcmc_steps ≈ 40` it
+converges fast enough.
+"""
+function automala_step_chain(u0::AbstractVector{Float64},
+                              target_grad,
+                              num_steps::Integer,
+                              step_size_init::Float64,
+                              inv_mass_diag::AbstractVector{Float64},
+                              rng::AbstractRNG;
+                              target_accept::Float64 = 0.574,
+                              adapt_rate::Float64    = 0.05)
+    d   = length(u0)
+    log_ε = log(step_size_init)
+    u   = collect(u0)
+    M⁻¹  = inv_mass_diag
+    sM⁻¹ = sqrt.(inv_mass_diag)
+
+    val_u, grad_u = LogDensityProblems.logdensity_and_gradient(target_grad, u)
+
+    @inbounds for _ in 1:Int(num_steps)
+        ε   = exp(log_ε)
+        ε2  = ε * ε
+        ξ      = randn(rng, d)
+        drift  = (ε2 / 2) .* M⁻¹ .* grad_u
+        noise  = ε .* sM⁻¹ .* ξ
+        u_new  = u .+ drift .+ noise
+
+        val_new, grad_new = LogDensityProblems.logdensity_and_gradient(target_grad, u_new)
+
+        drift_rev = (ε2 / 2) .* M⁻¹ .* grad_new
+        diff_fwd  = u_new .- u .- drift
+        diff_rev  = u    .- u_new .- drift_rev
+        log_q_fwd = -sum(@. diff_fwd^2 / (2 * ε2 * M⁻¹))
+        log_q_rev = -sum(@. diff_rev^2 / (2 * ε2 * M⁻¹))
+        log_α     = (val_new - val_u) + (log_q_rev - log_q_fwd)
+
+        accepted = log(rand(rng)) < log_α
+        if accepted
+            u       = u_new
+            val_u   = val_new
+            grad_u  = grad_new
+        end
+
+        # Robbins-Monro: log(ε) ← log(ε) + adapt_rate · (1{accept} - target).
+        log_ε += adapt_rate * ((accepted ? 1.0 : 0.0) - target_accept)
+        # Safety clamp so a string of rejects doesn't drive ε to 0.
+        log_ε = clamp(log_ε, -10.0, 5.0)
     end
     return u
 end

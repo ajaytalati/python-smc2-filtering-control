@@ -127,9 +127,9 @@ cfg_outer = SMCConfig(
     target_ess_frac  = 0.5,            # match Python
     num_mcmc_steps   = 40,             # 8× v3's 5 — compensates MALA's 8× cheaper cost
     max_lambda_inc   = 0.10,           # match Python
-    hmc_step_size    = 0.05,           # MALA step size (tune from acceptance)
-    hmc_num_leapfrog = 8,               # unused under :MALA
-    sampler          = :MALA,
+    hmc_step_size    = 0.05,           # initial seed for AutoMALA — adapts away
+    hmc_num_leapfrog = 8,               # unused under :AutoMALA
+    sampler          = :AutoMALA,      # MALA + Robbins-Monro step-size adapt
     ad_backend       = :ForwardDiff,
 )
 
