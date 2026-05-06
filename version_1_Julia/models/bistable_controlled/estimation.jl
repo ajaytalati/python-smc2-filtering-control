@@ -78,6 +78,64 @@ function align_obs_fn(obs_data, t_steps, dt_hours)
     )
 end
 
+# ── Batched (GPU-portable) propagate / obs ──────────────────────────────────
+# Phase 6 follow-up #2 contract: when these are provided, the framework's
+# `bootstrap_log_likelihood` calls them on the full `(K, n_states)` particle
+# matrix in a single broadcast — works on `Array{Float64}` and `CuArray{Float32}`
+# with the same source.
+
+"""
+    propagate_batch_fn(particles_in, t, dt, params, grid_obs, k, σ_diag, noise, rng)
+        -> (particles_out::AbstractMatrix, pred_lw::AbstractVector)
+
+Vectorised EM step on the bistable dynamics. `particles_in` is `(K, 2)`,
+`noise` is `(K, 2)`. `pred_lw` is zero (bootstrap proposal == prior).
+"""
+function propagate_batch_fn(particles_in, t, dt, params, grid_obs, k,
+                              σ_diag, noise, rng_)
+    α  = params[_PI[:alpha]]
+    a  = params[_PI[:a]]
+    γ  = params[_PI[:gamma]]
+    sx_sd = sqrt(2.0 * params[_PI[:sigma_x]])
+    su_sd = sqrt(2.0 * params[_PI[:sigma_u]])
+    sqrt_dt = sqrt(dt)
+
+    T_i  = haskey(grid_obs, :T_intervention) ? grid_obs[:T_intervention] : EXOGENOUS_A.T_intervention
+    u_on = haskey(grid_obs, :u_on)           ? grid_obs[:u_on]           : EXOGENOUS_A.u_on
+    u_tgt = t < T_i ? 0.0 : u_on   # piecewise constant; same for all particles at step k
+
+    x_old = @view particles_in[:, 1]
+    u_old = @view particles_in[:, 2]
+    nx    = @view noise[:, 1]
+    nu    = @view noise[:, 2]
+
+    x_new = x_old .+ dt .* (α .* x_old .* (a^2 .- x_old .^ 2) .+ u_old) .+
+             sx_sd .* sqrt_dt .* nx
+    u_new = u_old .+ dt .* (-γ .* (u_old .- u_tgt)) .+
+             su_sd .* sqrt_dt .* nu
+    out = hcat(x_new, u_new)
+
+    pred_lw = similar(particles_in, eltype(particles_in), size(particles_in, 1))
+    fill!(pred_lw, 0.0)
+    return out, pred_lw
+end
+
+"""
+    obs_log_weight_batch_fn(particles, grid_obs, k, params)
+
+Vectorised Gaussian observation log-weight on x-channel only.
+Returns a `(K,)` vector — works on `Array` + `CuArray`.
+"""
+function obs_log_weight_batch_fn(particles, grid_obs, k, params)
+    σ_obs = params[_PI[:sigma_obs]]
+    y_k   = grid_obs[:obs_value][k]
+    HALF_LOG_2PI = 0.9189385332046727
+    x_pred = @view particles[:, 1]
+    ν      = y_k .- x_pred
+    return -0.5 .* (ν ./ σ_obs) .^ 2 .- log(σ_obs) .- HALF_LOG_2PI
+end
+
+
 function build_estimation_model()
     return EstimationModel(
         name              = "bistable_controlled",
@@ -92,6 +150,8 @@ function build_estimation_model()
         propagate_fn      = propagate_fn,
         diffusion_fn      = diffusion_fn,
         obs_log_weight_fn = obs_log_weight_fn,
+        propagate_batch_fn = propagate_batch_fn,
+        obs_log_weight_batch_fn = obs_log_weight_batch_fn,
         align_obs_fn      = align_obs_fn,
         shard_init_fn     = shard_init_fn,
     )

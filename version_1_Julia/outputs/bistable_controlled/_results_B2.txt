@@ -1,0 +1,7 @@
+n_temp=5
+elapsed=4.614782810211182
+rate_smc=1.0
+rate_default=1.0
+cost_smc=0.006535410690386178
+cost_default=0.008333333333333333
+u_crit=0.3849001794597505
