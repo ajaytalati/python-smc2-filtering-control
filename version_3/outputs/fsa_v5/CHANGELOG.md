@@ -326,6 +326,77 @@ Reduced both filter and controller particle counts for Stage 3 (Run 12, below): 
 
 ---
 
+## Run 13 — Stage 2 soft_fast HEALTHY (corrected: cost-fn opts ONLY, full HMC config)
+
+**2026-05-05 22:16 → 2026-05-06 00:21** — diagnostic for the Run 09 quality regression.
+
+- **Run dir:** `experiments/run13_stage2_soft_fast_healthy_T14_full_hmc/`
+- **Cost variant:** `soft_fast` (fp32 throughout, 1e-3 bisection / 20-iter cap, chance check sub-sampled every 4 bins)
+- **HMC config:** **REVERTED to the strict `soft` baseline** — `n_smc=256`, `num_mcmc_steps=10`, `hmc_num_leapfrog=16`. Only the cost-fn-side optimisations remain.
+- **Wall-clock:** **124.9 min** on RTX 5090 (slower than Run 06's 99.8 min — GPU was being shared with Run 14 Stage 3 throughout, so wall-clock isn't a clean comparison)
+
+### Why this run
+
+Run 09 (full optimisation stack including HMC trim) finished in 16.4 min and matched Run 06's metric integrals to <0.5%, but the **basin overlay showed the controller's daily-mean Φ wandering as far as (Φ_B, Φ_S) = (1.07, 0.28)** — i.e. into the collapsed-T regime — twice during the 14 days. Plant SDE robustness recovered each time so the integral metrics looked clean, but the controller schedule was meaningfully noisier than the strict baseline.
+
+Hypothesis: the HMC config trim (`n_smc 256→128`, `mcmc_steps 10→5`, `leapfrog 16→8`) cut the controller's exploration budget by ~16× and that's the source of the noisy proposals. The cost-fn optimisations (fp32, relaxed bisection, sub-sampled bins) are mathematical and should be safe.
+
+Run 13 tests this: revert the HMC trim, keep the cost-fn opts.
+
+### A/B against Runs 06 + 09
+
+| Metric | Run 06 (`soft`, full HMC) | Run 09 (`soft_fast`, trimmed HMC) | **Run 13 (`soft_fast`, full HMC)** |
+|---|---|---|---|
+| Wall-clock | 99.8 min | 16.4 min | 124.9 min* |
+| Mean A_integral | 11.42 | 11.41 | **11.37** |
+| Final A | 0.945 | 0.963 | **0.948** |
+| Max applied Φ | **0.49** | 1.07 | **0.528** ✅ |
+| Min applied Φ | 0.15 | 0.12 | **0.113** |
+| Post-hoc violation rate | 0.96 | 0.96 | 0.96 (same evaluator quirk) |
+
+*Run 13's wall-clock is contaminated by GPU contention with Run 14 (Stage 3 healthy v2) which ran in parallel for the entire duration. A clean re-run on a free GPU is needed before claiming a speed result for soft_fast + full HMC.
+
+### Basin overlay verdict (the diagnostic plot)
+
+✅ **Controller path stays inside the bistable annulus and hugs the healthy island.** Start point (first replan at (0.53, 0.11), green dot) sits on the boundary; subsequent daily-mean Φ values walk into the bistable region and converge to ~(0.34, 0.25), inside the healthy island and near the scenario's (0.30, 0.30) baseline (purple end dot). **Zero excursions to the collapsed regime** — the qualitative quality bug from Run 09 is gone.
+
+### Gates
+
+- ✅ `schedule_in_bounds` (max applied Φ = 0.528 < 3.0)
+- ✅ `A_integral_geq_target` (11.37 ≥ 2.0)
+- ❌ `violation_leq_alpha` (0.96 > 0.05) — same evaluator quirk as Runs 06/09
+- ✅ `controller_adapts`
+
+### Verdict — Run 09 regression diagnosed
+
+**The HMC trim alone was the bug.** Cost-fn optimisations (fp32, relaxed bisection, sub-sampled bins) are mathematically clean: they preserve the trajectory geometry. Cutting HMC's exploration budget did NOT preserve it — proposal-space coverage matters for stable schedules under the chance-constrained cost.
+
+### Production config going forward
+
+`soft_fast` cost-fn (`evaluate_chance_constrained_cost_soft_fast`) with the strict-`soft` HMC config:
+- `n_smc=256`, `n_inner=64`
+- `num_mcmc_steps=10`, `hmc_num_leapfrog=16`
+
+Both bench drivers (`bench_controller_only_fsa_v5.py` and `bench_smc_full_mpc_fsa_v5.py`) had the trim reverted before Run 13 launched. Reverts are committed in `bc26316`.
+
+### Open question — wall-clock for the corrected config
+
+124.9 min vs Run 06's 99.8 min looks like a regression, but Run 13 had GPU contention. Need a clean re-run on a free GPU to A/B speed at the corrected production config. Profiling work queued (`tools/profile_cost_fn.py`).
+
+---
+
+## Run 15 — Stage 2 soft_fast SEDENTARY (in flight at 01:13)
+
+**2026-05-06 00:22 → in progress**
+
+- **Run dir:** `experiments/run15_stage2_soft_fast_sedentary_T14_full_hmc/`
+- **Config:** corrected production (soft_fast cost-fn + full HMC)
+- **Status:** Stride 11/28, ~17 strides remaining, ~9 min/stride → ETA ~03:30
+
+Per the Run 10 lesson: Stage 2 sedentary trajectories will be bit-identical to healthy under the same RNG (controller's first replan overwrites `baseline_phi`). The run will complete and produce metrics, but won't add new information beyond Run 13.
+
+---
+
 ## Run 03 — TODO: Stage 3 full closed-loop SMC²-MPC verification
 
 (superseded by Run 12 above)
