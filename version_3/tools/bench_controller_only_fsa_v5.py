@@ -440,13 +440,22 @@ def main():
     plant_state_per_stride[0] = plant.state.copy()
     replan_records = []
 
-    # Initial schedule: baseline_phi for the first replan period
-    current_schedule = np.tile(baseline_phi, (replan_K, 1))   # (replan_K, 2)
+    # Initial schedule: baseline_phi for the first replan_K-stride warm-up
+    # period. Mirrors Stage 3 (bench_smc_full_mpc_fsa_v5.py) where the
+    # first WINDOW_BINS/STRIDE_BINS strides apply baseline_phi while the
+    # filter window fills. Stage 2 has no filter, but the warm-up still
+    # matters: the chosen `scenario` (sedentary, healthy, overtrained)
+    # only differentiates at Stage 2 if baseline_phi is actually applied
+    # for at least one replan period before the controller takes over.
+    current_schedule = np.array([baseline_phi], dtype=np.float64)  # (1, 2)
+    cur_replan_idx_in_block = 0
 
     total_t0 = time.time()
     for k in range(n_strides):
-        # On replan boundary, plan fresh schedule from current state
-        if k % replan_K == 0:
+        # On replan boundary AFTER the warm-up, plan fresh schedule from
+        # current state. We skip k=0 so baseline_phi is applied for the
+        # first replan_K strides.
+        if k > 0 and k % replan_K == 0:
             print(f"  Stride {k+1:>2}/{n_strides} REPLAN  state={plant.state.round(3).tolist()}",
                   end='', flush=True)
             t_replan = time.time()

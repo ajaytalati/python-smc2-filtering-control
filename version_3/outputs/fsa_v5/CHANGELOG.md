@@ -291,9 +291,9 @@ The post-hoc evaluator runs the legacy hard-indicator chance-constraint check on
 
 `run10_stage2_soft_fast_sedentary_T14_optimized` -- only 4 of 14 replans logged before the launcher process was killed externally (no traceback in log; bench process exited cleanly mid-loop). The 4 logged replans show the controller producing **bit-identical** state evolution to Run 09 healthy at the same stride numbers (`state=[0.5, 0.45, 0.2, 0.45, 0.06, 0.07] → ... → state=[0.477, 0.429, 0.179, 0.677, 0.058, 0.076]`).
 
-**Why bit-identical:** Stage 2 driver has a structural property — `baseline_phi` is overwritten by the controller's first replan at `k=0` BEFORE it's ever applied. So `scenario` only changes the saved metadata; the controller starts planning from the trained-athlete state under truth params regardless of which scenario tag is set, and the deterministic plant + same RNG seed (42) produces identical trajectories.
+**Why bit-identical (the WRONG explanation given originally — see correction below):** Stage 2 driver had a bug — `baseline_phi` was overwritten by the controller's first replan at `k=0` BEFORE it was ever applied. So `scenario` only changed the saved metadata; the controller started planning from the trained-athlete state under truth params regardless of which scenario tag was set, and the deterministic plant + same RNG seed (42) produced identical trajectories.
 
-The "scenario" only meaningfully differentiates Stage 3 runs (where the filter sees observations from a `replan_K`-stride warm-up under `baseline_phi` before the controller takes over). The Stage 2 launcher's sedentary + overtrained sweeps would have produced bit-identical results to Run 09; aborting the sweep early was the correct call. Sedentary + overtrained Stage 2 are NOT useful additional runs. (`overtrained` was dropped from the queue without being run.)
+> **CORRECTION (2026-05-06 07:37, after Ajay flagged it):** This was a BUG in `bench_controller_only_fsa_v5.py`, not a "structural property". Stage 3 (`bench_smc_full_mpc_fsa_v5.py`) correctly applies `baseline_phi` for the first `WINDOW_BINS/STRIDE_BINS = 2` strides until the filter window fills (Run 18 sedentary correctly starts at (0,0); Run 19 overtrained correctly starts at (1,1)). Stage 2 had no filter, so the warm-up reason vanished, and the loop started replanning at k=0 immediately — destroying the scenario differentiation. **Fix in commit (next).** The Run 10 / Run 13 / Run 15 / Run 16 trajectories were all controller-output-from-trained-athlete, NOT the named scenario. Stage 2 sedentary + overtrained re-runs at the corrected driver are needed in the next session.
 
 ---
 
@@ -491,9 +491,9 @@ This run used the **trimmed HMC config** (the one Run 09 showed produces noisy s
 - weighted_violation_rate = 0.964
 - applied Φ range: [0.113, 0.528]
 
-### Bit-identical to Run 13 (expected)
+### Bit-identical to Run 13 (BUG, not "expected")
 
-Per the Run 10 / Run 13 lesson: Stage 2's `baseline_phi` is overwritten by the controller's first replan before being applied. With the same RNG seed (42) and deterministic plant under truth params, the trajectory is **bit-identical** to Run 13 (healthy) regardless of the `scenario` tag — every metric matches exactly:
+> **CORRECTION (2026-05-06 07:37, after Ajay flagged):** Originally I framed this bit-identicality as a "structural property" of Stage 2. **It was actually a bug** in `bench_controller_only_fsa_v5.py`: `baseline_phi` was overwritten by the controller's first replan at k=0 before being applied. With the same RNG seed (42) and the controller starting from `init_state=TRAINED_ATHLETE_STATE` (the same across all three scenarios), trajectories collapsed to identical metrics. Fix committed; Stage 2 sedentary + overtrained need re-running at the corrected driver in the next session.
 
 | Metric | Run 13 (healthy) | Run 15 (sedentary) |
 |---|---|---|
@@ -531,9 +531,9 @@ Run 13 showed 124.9 min and Run 15 showed 106.4 min, both contaminated by GPU co
 
 This is the corrected version of the Run 09 A/B (which over-claimed 6× speedup at the cost of basin-path quality).
 
-### Bit-identical trajectory to Run 13 / Run 15 (expected)
+### Bit-identical trajectory to Run 13 / Run 15 (BUG, not "expected")
 
-Same structural property: identical metrics across scenarios. mean_A_traj = 0.81211, applied_phi_max = 0.5278, etc.
+> **CORRECTION (2026-05-06 07:37, after Ajay flagged):** This bit-identicality was a Stage 2 driver bug, not a "structural property". See the correction notes on Runs 10 + 15 above. Fix committed; this Run 16 wall-clock benchmark (59.7 min) IS still meaningful as a soft_fast vs soft speed comparison (both variants suffered the same bug, so they're an apples-to-apples cost-fn timing test from the same starting state). But Run 16's trajectory is NOT a meaningful "overtrained scenario" result — it was controller-from-trained-athlete-state under the overtrained tag.
 
 ### Gates
 
@@ -674,6 +674,52 @@ The controller, after 2 strides at the (1.0, 1.0) overload baseline, brings the 
 | **overtrained** | **Run 19 (full HMC)** | **0.798** | **11.17** | **0.554 (controller-side)** | **✅ walks INTO island from (1,1)** |
 
 The 4 standard gates pass across all three Stage 3 scenarios except `violation_leq_alpha` (known evaluator quirk that's identical across `soft` and `soft_fast` — flagged for separate investigation, not a controller divergence).
+
+---
+
+## Bug fix — Stage 2 driver `baseline_phi` warm-up (2026-05-06 07:37)
+
+**Reported by Ajay** during the morning write-up after spotting that Run 15's basin overlay (Stage 2 sedentary) showed start at (0.53, 0.11) when sedentary baseline is (0.0, 0.0).
+
+### The bug
+
+`tools/bench_controller_only_fsa_v5.py` line 449 (pre-fix):
+```python
+current_schedule = np.tile(baseline_phi, (replan_K, 1))   # OK
+for k in range(n_strides):
+    if k % replan_K == 0:        # ← fires at k=0 BEFORE baseline_phi ever applied
+        ...replan branch overwrites current_schedule...
+```
+
+So `baseline_phi` was computed but immediately overwritten before line 506's `plant.advance(STRIDE_BINS, phi_this_stride)` could apply it. Every Stage 2 run started from `init_state = TRAINED_ATHLETE_STATE` regardless of `scenario`.
+
+### Why Stage 3 was OK
+
+`bench_smc_full_mpc_fsa_v5.py` calls `plant.advance(...)` FIRST every stride and only replans once the filter window fills (~`WINDOW_BINS / STRIDE_BINS = 2` strides). Run 18 sedentary correctly starts at (0,0); Run 19 overtrained correctly starts at (1,1). The Stage 3 results are unaffected.
+
+### The fix
+
+```python
+# Apply baseline_phi for the first replan_K-stride warm-up
+current_schedule = np.array([baseline_phi], dtype=np.float64)   # (1, 2)
+cur_replan_idx_in_block = 0
+for k in range(n_strides):
+    if k > 0 and k % replan_K == 0:        # ← skip k=0 replan
+        ...replan branch...
+```
+
+### Implications for prior runs
+
+- **Stage 3 (Runs 14, 18, 19)**: unaffected. Results stand.
+- **Stage 2 (Runs 06, 09, 13, 15, 16)**: all started from trained-athlete state regardless of scenario. The basin overlay START POINT (green dot) for these runs was the controller's first replan, NOT the scenario baseline. The metrics (mean_A, A_integral, applied_Φ range) reflect controller-from-trained-athlete, not the named scenario.
+- **Run 13 vs Run 06 A/B (soft_fast vs soft healthy)**: still meaningful — both ran the same buggy starting state, so it's apples-to-apples. The 1.67× speedup result holds.
+- **Run 16 wall-clock benchmark (59.7 min)**: still meaningful as a soft_fast-vs-soft speed comparison (apples-to-apples), but NOT meaningful as an "overtrained scenario" result.
+
+### Re-runs needed in the next session
+
+1. Stage 2 sedentary at corrected driver (~60 min) → verify start at (0,0), basin path walks INTO island
+2. Stage 2 overtrained at corrected driver (~60 min) → verify start at (1,1), basin path walks INTO island
+3. Stage 2 healthy at corrected driver — useful as a control: a 2-stride baseline_phi=(0.30,0.30) warm-up before controller takes over should NOT meaningfully change the result vs Run 13 (controller already starts inside the healthy island). Could skip if time-constrained.
 
 ---
 
