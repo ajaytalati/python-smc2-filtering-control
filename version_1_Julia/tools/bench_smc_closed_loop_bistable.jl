@@ -105,13 +105,19 @@ function loglik(u)
     return target - SMC2FC.log_prior_unconstrained(u, priors)
 end
 
+# Phase 1 filter budget — tightened from the v1 (n_smc=32, max_λ_inc=0.25)
+# which gave dynamics-param posteriors with 22–39 % rel.err. The Python
+# reference (MCLMC, full window) gets 0.4–6.1 % rel.err. With AdvancedHMC
+# + ForwardDiff the per-leapfrog cost is high, so we lean on threading
+# (24 cores) rather than per-particle parallelism: bigger n_smc + finer
+# tempering schedule + more MCMC moves per level.
 cfg_outer = SMCConfig(
-    n_smc_particles  = 32,
-    target_ess_frac  = 0.5,
-    num_mcmc_steps   = 3,
-    max_lambda_inc   = 0.25,
-    hmc_step_size    = 0.04,
-    hmc_num_leapfrog = 4,
+    n_smc_particles  = 96,           # 3× v1 — outer cloud width
+    target_ess_frac  = 0.6,           # tighter resampling trigger
+    num_mcmc_steps   = 6,             # 2× v1 — more decorrelation per level
+    max_lambda_inc   = 0.12,          # 2× as many tempering levels
+    hmc_step_size    = 0.035,
+    hmc_num_leapfrog = 5,
 )
 
 print("Running filter ... ")

@@ -126,22 +126,28 @@ Pipeline:
 
 | param   | **Python** | **Julia** |
 |---------|------------|-----------|
-| α       | 6.1 %      | 32 %      |
-| a       | 0.8 %      | 23 %      |
-| σ_x     | 0.4 %      | 39 %      |
-| γ       | 5.1 %      | 23 %      |
-| σ_u     | 0.3 %      | 36 %      |
-| σ_obs   | 3.0 %      | 2.6 %     |
+| α       | 6.1 %      | 5.9 %     |
+| a       | 0.8 %      | 12.4 %    |
+| σ_x     | 0.4 %      | 15.3 %    |
+| γ       | 5.1 %      | 17.6 %    |
+| σ_u     | 0.3 %      | 17.1 %    |
+| σ_obs   | 3.0 %      | 0.3 %     |
 
-The Python's MCLMC sampler with the JAX-side full-window run gets a
-much tighter posterior on the dynamics params from the same 144 Phase-1
-obs. The Julia bench uses AdvancedHMC.jl + ForwardDiff at `n_smc = 32`
-(small cloud for 24-thread CPU + ~16 s wall) and recovers σ_obs to
-within 3 % but the dynamics params at 22–39 %. Bumping `n_smc` toward
-the Python's effective cloud size would close most of that gap. The
-B3 gates measure **closed-loop quality** (does the planner do well
-under the posterior?), not posterior tightness — so this only matters
-indirectly through the schedule shape.
+Filter config (Julia, 24 threads, 76 s wall):
+  `n_smc = 96`, `num_mcmc_steps = 6`, `max_lambda_inc = 0.12`,
+  `hmc_step_size = 0.035`, `hmc_num_leapfrog = 5`,
+  inner PF `K = 200`, `bandwidth_scale = 1.0`.
+
+α and σ_obs land within Python's recovery; a, σ_x, γ, σ_u are 12–18 %
+off because Phase 1 only sees the unhealthy-well portion of the
+trajectory (`x ∈ [-1.41, 0.06]`) — the cubic drift is locally near-
+linear there, so dynamics params are partially observable. Bumping
+`n_smc` further closes the gap monotonically; this is the
+quality/wall-time trade-off knob.
+
+The B3 gates measure **closed-loop quality** (does the planner do well
+under the posterior?), not posterior tightness — so the dynamics-
+param spread only matters indirectly through the schedule shape.
 
 ### Phase 2 closed-loop performance
 
@@ -154,15 +160,15 @@ indirectly through the schedule shape.
 | gate                                          | Python  | Julia  |
 |------------------------------------------------|---------|--------|
 | closed-loop transition rate ≥ 80 %            | 100 % ✓ | 100 % ✓ |
-| closed-loop cost ≤ 1.20 × oracle              | 0.988× ✓ | **0.885× ✓** |
+| closed-loop cost ≤ 1.20 × oracle              | 0.988× ✓ | **0.954× ✓** |
 
 The SMC²-with-posterior is **statistically tied with the oracle** in
 both languages — the framework's filter→control pipeline composes
 end-to-end without the posterior uncertainty hurting closed-loop
 quality.
 
-Convergence (Julia, 24 threads):
-  Phase 1 filter:    6 tempering levels, ~16 s
+Convergence (Julia, 24 threads, after the v2 budget bump):
+  Phase 1 filter:    9 tempering levels, ~76 s
   Phase 2 posterior: 5 tempering levels, ~3 s
   Phase 2 oracle:    5 tempering levels, ~2 s
   Plant rollouts:    100 trials × 3 schedules, < 1 s
