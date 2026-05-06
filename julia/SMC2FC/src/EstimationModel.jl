@@ -13,7 +13,8 @@
 
 Base.@kwdef struct EstimationModel{Fp,Fd,Fo,Fa,Fs,
                                    Fld,Fpld,Fls,Fobs,Fsamp,
-                                   Ffwd,Fgo,Fic,Fdkl,Fpld2}
+                                   Ffwd,Fgo,Fic,Fdkl,Fpld2,
+                                   Fpb,Fob}
     # ── Metadata ─────────────────────────────────────────────────────────────
     name::String
     version::String
@@ -61,6 +62,19 @@ Base.@kwdef struct EstimationModel{Fp,Fd,Fo,Fa,Fs,
 
     # ── Optional: I/O (matches Python) ───────────────────────────────────────
     get_init_theta_fn::Fpld2   = nothing
+
+    # ── Optional: GPU-batched forms (Phase 6 follow-up #2) ───────────────────
+    # When provided, `bootstrap_log_likelihood` calls these instead of the
+    # per-particle `propagate_fn` / `obs_log_weight_fn`. The batched form takes
+    # a `(K, n_states)` particle matrix and returns a `(K, n_states)` matrix
+    # plus a `(K,)` log-weight vector — runs naturally on `CuArray` because
+    # all ops are vectorised. Fall back is the per-particle loop on CPU.
+    propagate_batch_fn::Fpb           = nothing
+    # (particles_in::AbstractMatrix, t, dt, params, grid_obs, k, σ_diag,
+    #  noise::AbstractMatrix, rng) -> (particles_out::AbstractMatrix,
+    #                                   pred_lw::AbstractVector)
+    obs_log_weight_batch_fn::Fob      = nothing
+    # (particles::AbstractMatrix, grid_obs, k, params) -> AbstractVector{Float64}
 
     # ── Grid obs structure ───────────────────────────────────────────────────
     exogenous_keys::Vector{Symbol} = Symbol[]

@@ -25,6 +25,13 @@ include("test_phase5_simulator.jl")
 # ── Phase 6 — End-to-end smoke + correctness ─────────────────────────────────
 include("test_phase6_e2e.jl")
 
+# ── Phase 6 follow-up #1 — AD-compatible bootstrap PF ────────────────────────
+include("test_phase6_followup_ad.jl")
+include("test_phase6_followup_e2e_pf.jl")
+
+# ── Phase 6 follow-up #2 — GPU end-to-end bootstrap PF ───────────────────────
+include("test_phase6_followup_gpu_pf.jl")
+
 # Phase 3+ tests are added as later phases land.
 
 # ── JET.jl static analysis (charter §18 audit gate) ──────────────────────────

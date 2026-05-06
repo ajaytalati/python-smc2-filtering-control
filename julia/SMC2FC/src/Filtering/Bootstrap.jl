@@ -17,7 +17,8 @@
 
 module Bootstrap
 
-using Random: AbstractRNG, default_rng
+using Random
+using Random: AbstractRNG, default_rng, randn!
 using LogExpFunctions: logsumexp
 using LinearAlgebra: dot
 using ..Kernels: compute_ess
@@ -56,10 +57,11 @@ shape on either side.
 """
 function BootstrapBuffers{T}(K::Integer, n_states::Integer;
                               backend = Array) where {T<:Real}
-    sys_offsets = backend{T}(undef, K)
-    @inbounds for i in 1:K
-        sys_offsets[i] = (i - 1) / T(K)
-    end
+    # Build sys_offsets on CPU, then move to the target device. Avoids the
+    # scalar-indexing path that fails on CuArray.
+    sys_offsets_cpu = T[(i - 1) / T(K) for i in 1:K]
+    sys_offsets     = backend{T}(undef, K)
+    copyto!(sys_offsets, sys_offsets_cpu)
     M = typeof(backend{T}(undef, K, n_states))
     V = typeof(sys_offsets)
     return BootstrapBuffers{T,M,V}(
@@ -83,8 +85,11 @@ end
 
 """
 Apply per-component state bounds (from `model.state_bounds`) in place.
+
+Two methods: one for plain `Matrix` (scalar loop, fast on CPU + ForwardDiff-
+friendly), one for `AbstractMatrix` that uses broadcast (GPU-portable).
 """
-function clip_to_bounds!(particles::AbstractMatrix{T},
+function clip_to_bounds!(particles::Matrix{T},
                          state_bounds::Vector{Tuple{Float64,Float64}}) where {T<:Real}
     K_, n_s = size(particles)
     @inbounds for d in 1:n_s
@@ -93,6 +98,22 @@ function clip_to_bounds!(particles::AbstractMatrix{T},
             particles[i, d] = clamp(particles[i, d], T(lo), T(hi))
         end
     end
+    return particles
+end
+
+# Generic broadcast version — runs on CuArray and any other AbstractMatrix
+# whose element-type supports `clamp`. Less efficient on plain Array than
+# the scalar-loop method above, but the dispatcher picks the right one.
+function clip_to_bounds!(particles::AbstractMatrix{T},
+                         state_bounds::Vector{Tuple{Float64,Float64}}) where {T<:Real}
+    n_s = size(particles, 2)
+    lo = T[T(state_bounds[d][1]) for d in 1:n_s]
+    hi = T[T(state_bounds[d][2]) for d in 1:n_s]
+    # Move bounds onto the same device as `particles`. `similar(particles, T, n_s)`
+    # gives a CuArray when particles is a CuArray, plain Vector otherwise.
+    lo_dev = similar(particles, T, n_s); copyto!(lo_dev, lo)
+    hi_dev = similar(particles, T, n_s); copyto!(hi_dev, hi)
+    particles .= clamp.(particles, reshape(lo_dev, 1, :), reshape(hi_dev, 1, :))
     return particles
 end
 
@@ -190,7 +211,7 @@ across the PCIe bus.
 function bootstrap_log_likelihood(model::EstimationModel,
                                    u::AbstractVector{T},
                                    grid_obs::Dict,
-                                   fixed_init_state::AbstractVector{T},
+                                   fixed_init_state::AbstractVector{<:Real},
                                    priors::Vector{<:PriorType},
                                    cfg::SMCConfig,
                                    rng::AbstractRNG;
@@ -198,6 +219,19 @@ function bootstrap_log_likelihood(model::EstimationModel,
                                    t_steps::Integer,
                                    window_start_bin::Integer = 0,
                                    buffers = nothing) where {T<:Real}
+    # Phase 6 follow-up #1 (AD-compatible bootstrap PF):
+    #   - `T` is the element type of `u` — either `Float64` (production) or a
+    #     `ForwardDiff.Dual{...}` (when AdvancedHMC.jl asks for a gradient).
+    #   - `fixed_init_state` stays plain `Real` because the user-supplied
+    #     initial state is NOT a parameter being differentiated; assignment
+    #     into the `T`-typed buffer auto-promotes via `convert(T, x)`.
+    #   - All `randn` draws inside the loop are `Float64`. Random noise has
+    #     zero gradient w.r.t. `u` by construction (independent of `u`); the
+    #     Float64 sample auto-promotes to `T` at the assignment site.
+    #   - `BootstrapBuffers{T}` allocates Dual-typed scratch when called from
+    #     ForwardDiff — slow but correct. Reusing buffers across calls within
+    #     a ForwardDiff session requires the chunk-size in the type to match,
+    #     which is handled implicitly by allocating fresh per call.
 
     K        = cfg.n_pf_particles
     n_s      = model.n_states
@@ -217,8 +251,21 @@ function bootstrap_log_likelihood(model::EstimationModel,
     exog     = Dict(k => grid_obs[k] for k in model.exogenous_keys)
     base     = model.shard_init_fn(window_start_bin, params, exog, fixed_init_state)
 
-    @inbounds for i in 1:K, d in 1:n_s
-        bufs.particles[i, d] = base[d] + σ_diag[d] * sqrt_dt * randn(rng, T)
+    # Initial-particle noise: scalar loop on CPU, vectorised on GPU.
+    use_batch = (model.propagate_batch_fn !== nothing) &&
+                (model.obs_log_weight_batch_fn !== nothing)
+    if use_batch && !(bufs.particles isa Matrix)
+        # GPU path: fill in-place with CUDA.randn! when buffers are CuArray.
+        Random.randn!(rng, bufs.noise)
+        # particles[i,d] = base[d] + σ_diag[d] * sqrt_dt * noise[i,d]
+        base_dev    = similar(bufs.particles, T, n_s); copyto!(base_dev, T.(collect(base)))
+        sigma_dev   = similar(bufs.particles, T, n_s); copyto!(sigma_dev, T.(collect(σ_diag)))
+        bufs.particles .= reshape(base_dev, 1, :) .+
+                           reshape(sigma_dev, 1, :) .* sqrt_dt .* bufs.noise
+    else
+        @inbounds for i in 1:K, d in 1:n_s
+            bufs.particles[i, d] = base[d] + σ_diag[d] * sqrt_dt * randn(rng, Float64)
+        end
     end
     clip_to_bounds!(bufs.particles, model.state_bounds)
     fill!(bufs.log_w, zero(T))
@@ -236,20 +283,35 @@ function bootstrap_log_likelihood(model::EstimationModel,
         t_global = T((window_start_bin + k - 1) * dt)
 
         # propagate + log-weight update
-        @inbounds for d in 1:n_s, i in 1:K
-            bufs.noise[i, d] = randn(rng, T)
-        end
-
-        @inbounds for i in 1:K
-            y_old = @view bufs.particles[i, :]
-            ξ     = @view bufs.noise[i, :]
-            x_new, pred_lw = model.propagate_fn(y_old, t_global, T(dt), params,
-                                                 grid_obs, k, σ_diag, ξ, rng)
-            obs_lw = model.obs_log_weight_fn(x_new, grid_obs, k, params)
-            for d in 1:n_s
-                bufs.new_particles[i, d] = x_new[d]
+        if use_batch
+            # Batched / GPU-portable path. propagate_batch_fn returns
+            # `(particles_out::AbstractMatrix, pred_lw::AbstractVector)` and
+            # obs_log_weight_batch_fn returns `AbstractVector`. Both run
+            # vectorised on the buffers' device (Array or CuArray).
+            Random.randn!(rng, bufs.noise)
+            new_parts, pred_lw = model.propagate_batch_fn(
+                bufs.particles, t_global, T(dt), params, grid_obs, k, σ_diag,
+                bufs.noise, rng,
+            )
+            copyto!(bufs.new_particles, new_parts)
+            obs_lw = model.obs_log_weight_batch_fn(bufs.new_particles, grid_obs, k, params)
+            bufs.log_w_pre .= bufs.log_w .+ pred_lw .+ obs_lw
+        else
+            # Per-particle CPU path (unchanged from v1).
+            @inbounds for d in 1:n_s, i in 1:K
+                bufs.noise[i, d] = randn(rng, Float64)
             end
-            bufs.log_w_pre[i] = bufs.log_w[i] + pred_lw + obs_lw
+            @inbounds for i in 1:K
+                y_old = @view bufs.particles[i, :]
+                ξ     = @view bufs.noise[i, :]
+                x_new, pred_lw = model.propagate_fn(y_old, t_global, T(dt), params,
+                                                     grid_obs, k, σ_diag, ξ, rng)
+                obs_lw = model.obs_log_weight_fn(x_new, grid_obs, k, params)
+                for d in 1:n_s
+                    bufs.new_particles[i, d] = x_new[d]
+                end
+                bufs.log_w_pre[i] = bufs.log_w[i] + pred_lw + obs_lw
+            end
         end
 
         # marginal-likelihood increment
@@ -261,30 +323,40 @@ function bootstrap_log_likelihood(model::EstimationModel,
         do_resample = has_obs > 0.5
 
         if do_resample
-            # Normalised weights
-            log_norm = logsumexp(bufs.log_w_pre)
-            @inbounds for i in 1:K
-                bufs.weights[i] = exp(bufs.log_w_pre[i] - log_norm)
+            # Normalised weights — vectorised; same code on CPU + GPU.
+            log_norm     = logsumexp(bufs.log_w_pre)
+            bufs.weights .= exp.(bufs.log_w_pre .- log_norm)
+
+            # Cumulative sum — `cumsum!` works on AbstractVector incl. CuArray.
+            cumsum!(bufs.cumsum_w, bufs.weights)
+
+            # Systematic resample. The binary search is cheap (K = 400 ≈ µs)
+            # but doesn't broadcast cleanly on CuArray; we transfer the small
+            # cumsum_w vector to CPU, compute indices, leave the heavy gather
+            # on the device. Charter §14: scalar bookkeeping crosses PCIe;
+            # particle states stay GPU-resident.
+            if bufs.cumsum_w isa Matrix || bufs.cumsum_w isa Vector
+                systematic_indices!(bufs.indices, bufs.cumsum_w, bufs.sys_offsets, rng)
+            else
+                cumsum_cpu  = Array(bufs.cumsum_w)
+                offsets_cpu = Array(bufs.sys_offsets)
+                systematic_indices!(bufs.indices, cumsum_cpu, offsets_cpu, rng)
             end
 
-            # cumsum (in-place)
-            acc = zero(T)
-            @inbounds for i in 1:K
-                acc += bufs.weights[i]
-                bufs.cumsum_w[i] = acc
-            end
+            # Gather: works on CuArray with Vector{Int} indices.
+            bufs.resampled .= bufs.new_particles[bufs.indices, :]
 
-            # Systematic resample → indices → resampled cloud
-            systematic_indices!(bufs.indices, bufs.cumsum_w, bufs.sys_offsets, rng)
-            @inbounds for d in 1:n_s, i in 1:K
-                bufs.resampled[i, d] = bufs.new_particles[bufs.indices[i], d]
-            end
-
-            # Liu-West shrinkage with ESS-scaled bandwidth
-            ess_frac   = clamp(compute_ess(bufs.log_w_pre) / T(K), 0.0, 1.0)
-            ess_factor = (1.0 - ess_frac) ^ 2
-            liu_west_shrink!(bufs.sys_lw, bufs.resampled, bufs.new_particles,
-                              bufs.weights, bw_scale, ess_factor, K, n_st)
+            # Liu-West shrinkage — vectorise the per-component scalar loop so
+            # it runs on CuArray. weights' * new_particles is a (1, n_states)
+            # row vector of weighted means; broadcasting blends with `a`.
+            ess_frac    = clamp(compute_ess(bufs.log_w_pre) / T(K), 0.0, 1.0)
+            ess_factor  = (1.0 - ess_frac) ^ 2
+            silverman_factor = (4.0 / (n_st + 2.0)) ^ (1.0 / (n_st + 4.0))
+            k_factor         = float(K) ^ (-1.0 / (n_st + 4.0))
+            h_norm           = silverman_factor * k_factor * bw_scale * ess_factor
+            a = T(sqrt(clamp(1.0 - h_norm^2, 0.0, 1.0)))
+            μ_w = reshape(bufs.weights, 1, :) * bufs.new_particles    # (1, n_s)
+            bufs.sys_lw .= a .* bufs.resampled .+ (T(1) - a) .* μ_w
 
             # Optional OT rescue (sigmoid blend)
             if ot_active

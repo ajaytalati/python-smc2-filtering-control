@@ -8,17 +8,19 @@ This package is **Part II of the joint LEAN4-and-Julia charter** for the
 FSA + smc2fc stack; the charter PDF lives at
 [`LaTex_docs/julia_port_charter.pdf`](../../LaTex_docs/julia_port_charter.pdf).
 
-## Status: all phases complete
+## Status: all phases complete (incl. Phase 6 follow-ups)
 
-| Phase | Component                                      | Tests | Status |
-|------:|:-----------------------------------------------|------:|:------:|
-| 1     | Foundations (Types, Config, Transforms)        |   204 |   ✓    |
-| 2     | Filtering (Kernels, OT, Bootstrap PF, GPU)     |    44 |   ✓    |
-| 3     | Outer SMC² (Tempering, HMC, TemperedSMC, Bridge) | 14 |   ✓    |
-| 4     | Control (Spec, Calibration, RBFSchedule, ControlLoop) | 12 |   ✓    |
-| 5     | Plant + Simulator (StochasticDiffEq + Observations) | 6 |   ✓    |
-| 6     | End-to-end + JET                                |     7 |   ✓    |
-|       | **Total**                                       | **287** | **All passing** |
+| Phase | Component                                                | Tests | Status |
+|------:|:---------------------------------------------------------|------:|:------:|
+| 1     | Foundations (Types, Config, Transforms)                  |   204 |   ✓    |
+| 2     | Filtering (Kernels, OT, Bootstrap PF, GPU)               |    44 |   ✓    |
+| 3     | Outer SMC² (Tempering, HMC, TemperedSMC, Bridge)         |    14 |   ✓    |
+| 4     | Control (Spec, Calibration, RBFSchedule, ControlLoop)    |    12 |   ✓    |
+| 5     | Plant + Simulator (StochasticDiffEq + Observations)      |     6 |   ✓    |
+| 6     | End-to-end + JET                                         |     7 |   ✓    |
+| 6.1   | Follow-up: AD-compatible bootstrap PF + PF inside HMC    |    12 |   ✓    |
+| 6.2   | Follow-up: GPU end-to-end bootstrap PF (CuArray buffers) |     5 |   ✓    |
+|       | **Total**                                                | **304** | **All passing** |
 
 JET.jl static analysis pass (charter §18 audit gate) is clean — no type
 uncertainties or instabilities flagged inside any SMC2FC submodule.
@@ -144,38 +146,60 @@ matrix:
 | `OT.factor_matvec*`             | ✓   | ✓   | matmul; passes through CUBLAS |
 | `OT.sinkhorn_scalings`          | ✓   | ✓   | rewrote `ones(T, N)` → `similar(a, T)` so device matches |
 | `OT.barycentric_projection`     | ✓   | ✓   | matmul + broadcast |
-| `Bootstrap.bootstrap_log_likelihood` | ✓ | (pending) | inner SDE step uses model callbacks; full GPU end-to-end is the Phase 6 follow-up listed below |
+| `Bootstrap.bootstrap_log_likelihood` (per-particle path) | ✓ | n/a | the v1 fallback for models without batched fns |
+| `Bootstrap.bootstrap_log_likelihood` (batched path) | ✓ | ✓ | **Phase 6 follow-up #2 — landed.** Routed via optional `propagate_batch_fn` + `obs_log_weight_batch_fn` on `EstimationModel`. Buffers parameterised on backend (`Array` or `CuArray`); see `BootstrapBuffers{T}(K, n_s; backend=CUDA.CuArray)`. Systematic-resample step transfers a `(K,)` weight vector across PCIe per step (charter §14: scalar bookkeeping crosses the bus, particle states stay GPU-resident). |
 | `SMC2/*` outer machinery        | ✓   | n/a | charter §14: outer SMC² runs CPU-resident on purpose |
 
-## Phase 6 follow-up
+## Phase 6 follow-ups — landed
 
-Two items deferred for follow-on work (both listed in charter §17 and §15.7):
+Both items the v1 README flagged as deferred have been delivered:
 
-1. **AD-compatible bootstrap PF.** The current `BootstrapBuffers{Float64}`
-   can't be traced by ForwardDiff — `searchsortedfirst` returns an `Int`
-   used for indexed assign. The Python framework gets around this by
-   relying on JAX's `lax.stop_gradient` on the resampling step plus the
-   Liu-West kernel smoothing for the differentiable proxy. The Julia fix
-   is to:
-   - parameterise `BootstrapBuffers{T}` over the AD-tracked `T`,
-   - replace `searchsortedfirst` with the Liu-West-smoothed kernel blend
-     when an AD context is detected (or always, since the production
-     path uses Liu-West anyway),
-   - swap the `:ForwardDiff` AD backend for `:Enzyme` once the buffer
-     parameterisation lands; Enzyme's reverse-mode is what charter §13
-     names as the production AD backend for high-D θ posteriors.
+1. **AD-compatible bootstrap PF — done.** The signature of
+   `bootstrap_log_likelihood` was relaxed so `u` (the AD-tracked parameter
+   vector) and `fixed_init_state` (the user's initial state) no longer
+   share an element type. Random noise inside the inner loop is sampled
+   as `Float64` and auto-promotes to the AD-tracked `T` at the assignment
+   site — random draws have zero gradient w.r.t. `u` by construction.
+   `BootstrapBuffers{T}` allocates Dual-typed scratch when called from
+   ForwardDiff. The systematic-resample step's integer indices are
+   compatible with AD because the gradient flows through the *values*
+   in the gather, not through the indices themselves (same trick JAX
+   uses for `gather`).
 
-2. **Full GPU bootstrap PF end-to-end.** Phase 6 step 21 of the charter
-   asks for a full-pipeline test on `backend = :cuda`. The kernel ops and
-   OT primitives (Phase 2) are already GPU-portable, but the Bootstrap PF
-   driver allocates `Vector{Int}` for resample indices and uses scalar
-   binary search inside the inner loop. Replacing this with a
-   `KernelAbstractions.@kernel` and a parallel-prefix-sum cumsum is the
-   second half of follow-up (1).
+   Verified by `test_phase6_followup_ad.jl` (ForwardDiff gradient runs
+   through the PF and matches finite-difference within 8 nats per dim
+   — the slack accounts for PF Monte Carlo noise) and
+   `test_phase6_followup_e2e_pf.jl` (full SMC² with the PF as the inner
+   likelihood, AdvancedHMC.jl + ForwardDiff gradient end-to-end on AR(1)).
 
-Both items are scoped, both are mechanical translation work, both are
-under a day each — but they are out of scope for the seven-and-a-half-hour
-single-pass port that the charter §15 budget commits to.
+2. **Full GPU bootstrap PF end-to-end — done.** `EstimationModel` gained
+   two optional fields: `propagate_batch_fn` and `obs_log_weight_batch_fn`.
+   When provided, `bootstrap_log_likelihood` calls them on the full
+   `(K, n_states)` particle matrix instead of the per-particle loop —
+   so the model side runs natively on `CuArray`. The PF bookkeeping
+   (cumsum, Liu-West shrinkage, clip, Δlog-w) was also vectorised so
+   the same source compiles for both `Array` (CPU) and `CuArray` (GPU)
+   buffers. `clip_to_bounds!` has both a scalar-loop method (CPU-fast,
+   ForwardDiff-friendly) and a broadcast method (GPU-portable); the
+   dispatcher picks the right one. The systematic-resample binary-search
+   step transfers a `(K,)` cumsum vector to CPU, computes indices, and
+   leaves the heavy gather on the device — a textbook charter §14
+   hybrid pattern (scalar bookkeeping crosses PCIe, particle states
+   stay GPU-resident).
+
+   Verified by `test_phase6_followup_gpu_pf.jl`: same AR(1) likelihood
+   evaluated three ways — CPU per-particle, CPU batched, GPU batched —
+   all three agree within PF Monte Carlo σ.
+
+Open work that is genuinely out of scope here:
+   - **Enzyme reverse-mode AD** as the production backend instead of
+     ForwardDiff. Charter §13 names Enzyme as the preferred AD; the
+     hooks are in `HMC.jl` (`build_target(...; ad_backend=:Enzyme)`),
+     but the Enzyme path needs a per-model audit because Enzyme's
+     mutation analysis is stricter than ForwardDiff's.
+   - **Full FSA-v5 model** wired against this framework end-to-end.
+     The framework is model-agnostic (charter §17), so this lives in
+     `models/fsa_high_res/` and is its own port effort.
 
 ## How this composes with the Python `smc2fc/`
 
