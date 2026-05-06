@@ -1,0 +1,28 @@
+# Julia / Pkg artefacts that are reproducible from Project.toml.
+# Manifest.toml is committed so collaborators reproduce the exact
+# resolved dep tree on `Pkg.instantiate()`.
+/Manifest.toml.~*
+
+# PythonCall's CondaPkg env (full Python interpreter + libs, ~hundreds
+# of MB, machine-specific). The diff test sets JULIA_PYTHONCALL_EXE
+# to the user's existing comfyenv; CondaPkg only creates this dir
+# when that env var isn't set. Either way, it's regenerated on
+# first PythonCall load.
+.CondaPkg/
+
+# Python bytecode (when PythonCall imports the FSA_model_dev source,
+# Python writes __pycache__ alongside).
+**/__pycache__/
+*.pyc
+
+# Build / test outputs
+.julia_history
+*.cov
+deps/build.log
+docs/build/
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
