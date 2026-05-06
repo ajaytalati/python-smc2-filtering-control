@@ -92,9 +92,21 @@ function _tempered_step!(particles::Matrix{Float64},
         return logprior_fn(u) + next_λ * loglikelihood_fn(u)
     end
 
+    # Pre-generate per-thread seeds OUTSIDE the @threads loop. Julia's
+    # MersenneTwister is NOT thread-safe — calling `rand(parent_rng, ...)`
+    # from multiple threads concurrently corrupts its internal state and
+    # triggers `AssertionError: length(ints) == 501`. By drawing the
+    # `n_smc` integer seeds serially before the parallel loop, each
+    # worker thread gets its own independent `MersenneTwister(seed[m])`.
+    seeds_per_particle = Vector{UInt64}(undef, n_smc)
+    @inbounds for m in 1:n_smc
+        seeds_per_particle[m] = abs(rand(rng, Int) % typemax(Int)) ⊻
+                                  (UInt64(m) * 0x9E3779B97F4A7C15)
+    end
+
     new_particles = Matrix{Float64}(undef, n_smc, size(particles, 2))
     Threads.@threads for m in 1:n_smc
-        local_rng = Random_seeded_for_thread(rng, m)
+        local_rng = Random.MersenneTwister(seeds_per_particle[m])
         new_particles[m, :] = hmc_step_chain(
             collect(@view resampled[m, :]),
             tempered_lp,
@@ -110,13 +122,6 @@ function _tempered_step!(particles::Matrix{Float64},
     copyto!(particles, new_particles)
 
     return next_λ
-end
-
-# Tiny helper: produce a per-thread rng deterministically from a parent rng.
-# Avoids race conditions when many @threads workers share one RNG.
-function Random_seeded_for_thread(parent_rng::AbstractRNG, m::Integer)
-    s = abs(rand(parent_rng, Int)) ⊻ (UInt64(m) * 0x9E3779B97F4A7C15)
-    return Random.MersenneTwister(s)
 end
 
 using Random

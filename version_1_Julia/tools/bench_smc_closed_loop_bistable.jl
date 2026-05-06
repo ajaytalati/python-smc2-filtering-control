@@ -105,32 +105,32 @@ function loglik(u)
     return target - SMC2FC.log_prior_unconstrained(u, priors)
 end
 
-# Phase 1 filter budget — v5 with NUTS sampler.
+# Phase 1 filter budget — v6 with MALA sampler.
 #
-# Sampler choice rationale:
-#   - v1 used HMC with hmc_num_leapfrog=4: low-budget proposals, posterior
-#     22-39% rel.err on dynamics params.
-#   - v3 used HMC with bigger budget (n_smc=96, num_mcmc=6): closed half
-#     the gap to Python (5.9% on α, 12-18% on others).
-#   - v4 tried Enzyme reverse-mode AD: empirically 2.7× slower than
-#     ForwardDiff at d_θ=8 because ForwardDiff's 8 partials fit in one
-#     AVX-256 register and amortise the SDE-step overhead in one SIMD pass.
-#     Documented in models/bistable_controlled/loglik_enzyme.jl.
-#   - v5 (this): switch to NUTS — adaptive trajectory length picks its own
-#     leapfrog count per move based on a U-turn check. Typically 3-5x more
-#     mixing per gradient eval than fixed-step HMC on poorly-conditioned
-#     posteriors. Cost varies per call; we keep n_smc and num_mcmc moderate.
+# Sampler-cost progression:
+#   v1-v3 HMC : 8 grad evals per move (leapfrog count) × 5 moves = 40 grads/level
+#   v5    NUTS: 10–100 grads per move (tree-doubling), too expensive at this scale
+#   v6    MALA: 1 grad eval per move (no leapfrog inner loop) → 8× cheaper than
+#               HMC. Compensate by doing 8× more moves: num_mcmc_steps = 40.
 #
-# Both filter and control loops can use NUTS via cfg.sampler = :NUTS.
+# Why MALA fits this problem: MCLMC and Python's "1 grad per step" sampler
+# family work well on PF log-densities where the gradient is a noisy
+# unbiased estimator. MALA is the simplest member of that family — same
+# 1-grad cost, with MH accept making the chain exact (no MCLMC-style
+# discretisation bias).
+#
+# Step size: MALA proposals scale ~ε vs HMC's ε·L_leapfrog effective step.
+# For HMC ε=0.025 + L=8 → effective ε≈0.07. For MALA we can use a similar
+# raw step ε≈0.05 and tune from acceptance rate.
 cfg_outer = SMCConfig(
-    n_smc_particles  = 64,
-    target_ess_frac  = 0.5,
-    num_mcmc_steps   = 4,           # NUTS does more work per step → fewer steps
-    max_lambda_inc   = 0.10,
-    hmc_step_size    = 0.025,
-    hmc_num_leapfrog = 8,            # ignored under :NUTS
-    sampler          = :NUTS,
-    ad_backend       = :ForwardDiff, # FD wins at d_θ=8 (engineering finding)
+    n_smc_particles  = 64,            # match Python
+    target_ess_frac  = 0.5,            # match Python
+    num_mcmc_steps   = 40,             # 8× v3's 5 — compensates MALA's 8× cheaper cost
+    max_lambda_inc   = 0.10,           # match Python
+    hmc_step_size    = 0.05,           # MALA step size (tune from acceptance)
+    hmc_num_leapfrog = 8,               # unused under :MALA
+    sampler          = :MALA,
+    ad_backend       = :ForwardDiff,
 )
 
 print("Running filter ... ")
