@@ -1,0 +1,183 @@
+\section{JAX-native SMC: once-per-run compilation} \label{sec:jax-native}
+
+This section covers what is, in the authors' view, the framework's
+single most consequential engineering decision: the JAX-native
+re-implementation of the tempered-SMC outer loop in
+\path{smc2fc/core/jax_native_smc.py}, eliminating the per-window JIT
+recompilation cost of the BlackJAX-wrapped baseline and reducing the
+end-to-end runtime of a multi-window inference run by roughly an
+order of magnitude.
+
+It also documents a failed experiment --- replacing HMC with NUTS
+(\path{smc2fc/core/jax_native_smc_nuts.py}) --- so that future
+contributors do not repeat it.
+
+\subsection{The compile-cost problem with the BlackJAX-wrapped backend}
+
+The reference implementation \path{smc2fc/core/tempered_smc.py} is a
+thin wrapper around BlackJAX's
+\texttt{blackjax.smc.tempered.build\_kernel}. BlackJAX bakes the
+log-likelihood function into the closure of the returned kernel.
+That is fine for a single run; the issue is that in the rolling-window
+setting (Section~\ref{sec:mpc}) the log-likelihood closes over per-
+window observation data, so a new kernel is built per window. Every
+fresh kernel triggers a new \texttt{jax.jit} cache entry, and every
+new cache entry costs a full HLO recompile --- on the model classes
+the framework targets, in the order of $\sim 15$ seconds per window.
+
+For a $27$-window benchmark that recompilation dominates the total
+wall-clock; the actual sampling work is only a small fraction of the
+visible cost. This is a structural problem of the BlackJAX API, not
+of BlackJAX's HMC kernel itself --- the kernel is fine; the issue is
+that it is rebuilt every window.
+
+\subsection{The fix}
+
+The fix has three parts, all inside
+\path{smc2fc/core/jax_native_smc.py}:
+
+\paragraph{(a) Module-level HMC kernel.} The HMC kernel itself is
+built once at module import:
+\begin{lstlisting}
+HMC_KERNEL = hmc.build_kernel()  # smc2fc/core/jax_native_smc.py:53
+HMC_INIT   = hmc.init
+\end{lstlisting}
+These are module-level constants, not per-call closures. The kernel's
+trace cache key depends only on the shape and dtype of its arguments,
+not on their values. Same shape/dtype across windows $\Rightarrow$ one
+compile per process.
+
+\paragraph{(b) Pytree-Partial wrapping of per-window callables.} The
+per-window log-density and the prior log-density are passed in as
+\texttt{jax.tree\_util.Partial}-wrapped callables. Partial is a
+JAX-recognised pytree, so its bound-arg \emph{shapes/dtypes} enter the
+trace cache key but its bound-arg \emph{values} do not. Across
+windows the data values change but the data shapes don't, so the
+cache hits (\path{jax_native_smc.py:121--130}).
+
+\paragraph{(c) On-device tempering loop via \texttt{lax.while\_loop}.}
+The full adaptive-tempering loop, including the ESS bisection that
+chooses each $\delta\lambda$, is implemented inside a single
+\texttt{lax.while\_loop} (\path{jax_native_smc.py:252}). The
+ESS bisection is itself a fixed-iteration \texttt{lax.scan}
+(\path{jax_native_smc.py:_solve_delta_for_ess}, 30 bisection steps).
+There is no Python-side iteration, no Python-side branching, no
+Python-side ESS solver. The whole thing is one XLA graph.
+
+The combined effect: the first window's call pays the JIT compile
+cost ($\sim 1.6$ seconds for the cached HMC kernel); every subsequent
+window reuses the compiled artefact and pays only the sampling cost
+($\sim 1.1$ seconds per window in the benchmark).
+
+\subsection{Empirical speedup}
+
+On a synthetic benchmark target with $256$ parameter particles and
+$20$ tempering steps:
+\begin{center}
+\begin{tabular}{lr}
+\toprule
+Stage & HMC backend (jax-native) \\
+\midrule
+JIT compile + first run        & 1.63\,s \\
+Cached run (subsequent windows) & 1.09\,s per window \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+For the same benchmark, the BlackJAX-wrapped backend pays roughly
+$15$ seconds of recompilation per window (figures will vary by
+hardware and HLO cache state); the JAX-native backend amortises this
+to a one-shot $1.6$\,s and is then bounded only by the cost of
+sampling. The net speedup at $27$ windows is approximately one order
+of magnitude.
+
+\subsection{Failed experiment: NUTS as a drop-in replacement} \label{sec:nuts-failed}
+
+The textbook upgrade from HMC is the No-U-Turn Sampler (NUTS), which
+adapts the trajectory length per step based on a U-turn diagnostic. A
+JAX-native NUTS variant of \path{jax_native_smc.py} was implemented
+in \path{smc2fc/core/jax_native_smc_nuts.py} (only the kernel
+differs --- everything else is structurally identical). Both kernels
+were benchmarked side-by-side on the same synthetic target inside the
+same conda environment.
+
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+Stage & HMC & NUTS \\
+\midrule
+JIT compile + first run        & 1.63\,s & 102.03\,s \\
+Cached run (per window)         & 1.09\,s & 94.23\,s \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The NUTS version is approximately \emph{60$\times$ slower at compile
+time and $85\times$ slower per cached window}.
+
+The cause is structural, not parametric. NUTS dynamically determines
+the trajectory length using an internal \texttt{while\_loop} (the
+U-turn check). When this dynamic-control-flow loop is placed inside
+a \texttt{jax.vmap} (over the $256$ parameter particles) and an outer
+\texttt{lax.while\_loop} (the tempering schedule), JAX is forced to
+either unroll the dynamic loop --- which produces an enormous XLA
+graph --- or compile a deeply nested control-flow structure that the
+GPU executes inefficiently. Either way the cost compounds across the
+two outer loops.
+
+The trajectory-length expansion is also unbounded in the worst case.
+``$5$ NUTS steps per particle per tempering level'' (matching the HMC
+default \texttt{num\_mcmc\_steps = 5}) translates into $5 \times 8 =
+40$ gradient evaluations under HMC, but anywhere from $5 \times 1 =
+5$ to $5 \times 1024 = 5120$ evaluations under NUTS depending on the
+maximum tree depth.
+
+\paragraph{Conclusion.} HMC remains the production rejuvenation
+kernel. The NUTS implementation file
+\path{smc2fc/core/jax_native_smc_nuts.py} is preserved as a documented
+dead-end --- not deleted, so the next contributor who has the same
+``why don't we just use NUTS?'' idea can read this section, see the
+benchmark, and not repeat the experiment.
+
+\subsection{How to switch backends}
+
+In user code, the backends are interchangeable at the import line:
+
+\begin{lstlisting}
+# Production: JAX-native, compile-once, HMC.
+from smc2fc.core.jax_native_smc import (
+    run_smc_window_native, run_smc_window_bridge_native,
+)
+
+# Reference: BlackJAX wrapper, slower, easier to read.
+from smc2fc.core.tempered_smc import (
+    run_smc_window, run_smc_window_bridge,
+)
+
+# Documented dead-end (do not use; see Section ref{sec:nuts-failed}).
+# from smc2fc.core.jax_native_smc_nuts import (
+#     run_smc_window_native, run_smc_window_bridge_native,
+# )
+\end{lstlisting}
+
+\subsection{Implementation pointers}
+
+\begin{itemize}
+  \item \path{smc2fc/core/jax_native_smc.py} ($\sim 430$ lines) ---
+        production HMC backend.
+  \item \path{smc2fc/core/jax_native_smc_nuts.py} ($\sim 430$ lines)
+        --- the dead-end NUTS variant. Read the file's header
+        docstring before considering it.
+  \item \path{smc2fc/core/mass_matrix.py} ($20$ lines) --- the diagonal
+        mass-matrix re-estimation discussed in Section~\ref{sec:mass-matrix}.
+  \item \path{smc2fc/core/tempered_smc.py} ($\sim 370$ lines) ---
+        BlackJAX-wrapped reference backend.
+\end{itemize}
+
+\subsection{Practical takeaway}
+
+For any new application the framework targets, default to
+\texttt{jax\_native\_smc.py}. The BlackJAX wrapper is useful only as
+a reference when debugging an unfamiliar log-density (its slower
+trace cycle gives you cleaner stack traces). The NUTS variant should
+not be used.

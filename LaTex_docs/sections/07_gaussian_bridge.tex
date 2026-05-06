@@ -1,0 +1,89 @@
+\section{Gaussian bridge for warm-starts} \label{sec:bridge}
+
+When data arrive sequentially and the framework is run in a rolling-
+window mode (Section~\ref{sec:mpc}), the first window is a cold start:
+the parameter cloud is sampled from the prior and tempered all the
+way to the posterior. Doing the same on every subsequent window would
+be wasteful --- successive windows' posteriors are typically close to
+each other, so a \emph{warm-start} from the previous window's
+posterior is the right thing to do. This section documents the
+warm-start mechanism the framework actually uses; it is short by
+design.
+
+\subsection{The Gaussian bridge in practice}
+
+The framework's default warm-start mechanism (\texttt{bridge\_type =
+"gaussian"}) does the simplest thing that works:
+
+\begin{enumerate}
+  \item Fit a single Gaussian
+        $q_0 = \Ncal(m_0, \Sigma_0)$ to the previous window's
+        posterior cloud by importance-weighted moment match (with
+        Liu--West shrinkage on $\Sigma_0$ to reduce its noise).
+  \item Run a single inner-PF evaluation on the new window's data per
+        previous-cloud particle to get an importance-weighted moment
+        match $q_1 = \Ncal(m_1, \Sigma_1)$ of the new posterior.
+  \item Initialise the next tempering chain from the blended Gaussian
+        $\Ncal(m_b, \Sigma_b)$ with $m_b = (1 - \rho) m_0 + \rho m_1$,
+        $\Sigma_b$ a similar interpolation, and $\rho \in [0, 1]$ a
+        bias toward the new evidence (default $\rho = 0.7$ in
+        \texttt{sf\_blend}, though the field's value is only used by
+        the SF variant; see below).
+  \item Run the outer SMC$^2$ tempering loop from this initialisation,
+        with a slightly relaxed schedule
+        (\texttt{max\_lambda\_inc\_bridge = 0.10}, double the cold-
+        start cap) and fewer HMC moves per level
+        (\texttt{num\_mcmc\_steps\_bridge = 3}, vs $5$ for cold start).
+\end{enumerate}
+
+The net effect is that each warm-start window typically converges in
+a fraction of the cold-start tempering steps, with a smaller HMC
+budget per step. On a $27$-window benchmark this is the difference
+between a manageable run and an impractical one.
+
+\subsection{The Schr\"odinger--F\"ollmer / Bures--Wasserstein variant}
+
+\path{smc2fc/core/sf_bridge.py} also implements an alternative
+warm-start mechanism based on the closed-form Schr\"odinger--F\"ollmer
+bridge between Gaussians, which traces the Bures--Wasserstein geodesic
+between $q_0$ and $q_1$ in the manifold of positive-definite
+covariance matrices. Activated by \texttt{bridge\_type =
+"schrodinger\_follmer"} (with \texttt{sf\_blend = 0.5} for the BW
+midpoint), it has the appealing property that its midpoint covariance
+is \emph{larger} than either endpoint's when the endpoints differ ---
+useful in principle for shedding accumulated bias from previous
+windows.
+
+\paragraph{Empirical assessment.} On the model classes the framework
+has been tested against, the SF/BW variant has \emph{not} produced
+measurably better posteriors than the simple Gaussian bridge above.
+The added geometric complexity --- matrix square roots, optional
+entropic regularisation, optional info-aware blending keyed off a
+local FIM --- is not paying for itself. The plain Gaussian bridge is
+therefore the production default and the recommended setting for new
+applications.
+
+The SF/BW machinery is preserved in \path{sf_bridge.py} for two
+reasons: (a) it may earn its keep on a future, larger-covariance-
+mismatch problem; (b) several knobs (\texttt{sf\_info\_aware},
+\texttt{sf\_info\_lambda\_thresh\_quantile},
+\texttt{sf\_info\_blend\_temperature}) are exposed in
+\texttt{SMCConfig} for users who want to experiment. Section
+\ref{sec:config} summarises them in the configuration reference.
+
+\subsection{Implementation pointer}
+
+\begin{itemize}
+  \item \path{smc2fc/core/sf_bridge.py} --- the bridge implementation.
+        The Gaussian-bridge path uses a moment-match helper at the
+        top of the file; the SF/BW path uses
+        \texttt{bw\_geodesic}, \texttt{bures\_wasserstein\_map}, and
+        the larger \texttt{fit\_sf\_base} pipeline.
+  \item \path{smc2fc/core/jax_native_smc.py:run_smc_window_bridge_native}
+        --- the rolling-window entry point that consumes the bridge
+        output and runs the relaxed tempering schedule. Note that
+        this entry point currently only supports the SF/BW variant
+        (the Gaussian bridge is in the BlackJAX-wrapped backend
+        \texttt{run\_smc\_window\_bridge}, in
+        \path{smc2fc/core/tempered_smc.py}).
+\end{itemize}

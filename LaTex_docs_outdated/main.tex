@@ -1,0 +1,72 @@
+\documentclass[11pt,a4paper]{article}
+
+\input{preamble.tex}
+
+\title{Sequential Monte Carlo${}^2$ for Bayesian Filtering and Stochastic
+Optimal Control of a Physiological SDE\\[2pt]
+\large Lecture notes on the FSA-v2 model}
+\author{Ajay Talati}
+\date{Generated 29 April 2026 \\[2pt]
+\small Source: \texttt{python-smc2-filtering-control} at commit
+\texttt{fdf2d45} (Stage H/I) \\
+(\href{https://github.com/ajaytalati/python-smc2-filtering-control}{github.com/ajaytalati/python-smc2-filtering-control})}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+These notes present the mathematical theory underlying a research code base
+that combines particle filtering and stochastic optimal control on a
+three-dimensional physiological stochastic differential equation. We define
+the FSA-v2 model in its G1-reparametrized form, prove that all $30$ static
+parameters are locally identifiable from a one-day window of four-channel
+observations by analytical Fisher-information-matrix calculation, and
+establish exponential ergodicity of the SDE on its operating domain via a
+quadratic Lyapunov function. We then develop the bootstrap particle filter
+and the SMC${}^2$ algorithm of Chopin, Jacob and Papaspiliopoulos,
+recast optimal scheduling of training stimulus as posterior inference
+under a tempered cost likelihood, and close the loop in a model-predictive
+controller that interleaves a rolling SMC${}^2$ filter with a
+posterior-mean control SMC${}^2$ over an RBF schedule. The receding-horizon
+section is presented in both abstract mathematical and code-level form, and
+includes Stage~I's confirmation that the SDE solver's outer step can be
+enlarged from $15$ to $60$ minutes for a $4\times$ wall-clock speedup
+with no qualitative change in the control problem. A linearised
+LQG / Riccati baseline, recorded in an appendix only, does not match
+the SMC${}^2$ MPC on this plant: the cubic Stuart--Landau
+non-linearity is essential to FSA-v2 and the SMC${}^2$ machinery is
+what captures it.
+
+\medskip
+\noindent
+The audience is graduate students in applied mathematics, mathematical
+engineering, applied stochastics, or process engineering. Familiarity with
+It\^o stochastic differential equations, Bayesian filtering, and basic
+optimal control at the level of a one-semester course is assumed; the
+particle-filtering and tempered-SMC machinery is built up from first
+principles.
+\end{abstract}
+
+\tableofcontents
+\medskip
+
+\input{sections/01_intro.tex}
+\input{sections/02_fsa_v2_sde.tex}
+\input{sections/03_identifiability.tex}
+\input{sections/04_lyapunov.tex}
+\input{sections/05_numerical_stability.tex}
+\input{sections/06_particle_filter.tex}
+\input{sections/07_smc2.tex}
+\input{sections/08_control_inference.tex}
+\input{sections/09_mpc.tex}
+\input{sections/10_results.tex}
+\input{sections/11_discussion.tex}
+
+\appendix
+\input{sections/appendix_A_fim.tex}
+\input{sections/appendix_B_lyapunov.tex}
+\input{sections/appendix_C_numerical.tex}
+\input{sections/appendix_D_lqg.tex}
+
+\end{document}

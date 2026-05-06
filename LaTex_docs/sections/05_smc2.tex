@@ -1,0 +1,155 @@
+\section{SMC$^2$ over parameters: tempered SMC + HMC} \label{sec:smc2}
+
+The bootstrap filter of Section~\ref{sec:pf} assumes the static
+parameter vector $\thetadyn$ is known. In practice $\thetadyn$ is
+itself the principal object of inference, with a prior $p(\thetadyn)$
+and posterior
+\begin{equation}
+p(\thetadyn \mid Y_{1:T})
+   \;\propto\; p(\thetadyn)\;p(Y_{1:T} \mid \thetadyn).
+\end{equation}
+A direct sampler is unavailable because $p(Y_{1:T} \mid \thetadyn)$ has
+no closed form. The SMC$^2$ algorithm of Chopin, Jacob and
+Papaspiliopoulos (2013) replaces this likelihood by the unbiased
+estimator $\Lhat_N(\thetadyn)$ from \eqref{eq:unbiased-likelihood} and
+runs adaptive tempered SMC over the parameter cloud.
+
+\subsection{The tempered posterior}
+
+For a schedule $0 = \lambda_0 < \lambda_1 < \cdots < \lambda_K = 1$
+define the sequence of tempered targets
+\begin{equation}
+\pi_\lambda(\thetadyn) \;\propto\;
+   p(\thetadyn)^{1-\lambda}\,\Lhat_N(\thetadyn)^{\lambda},
+   \qquad \lambda \in [0, 1].
+\label{eq:tempered-target}
+\end{equation}
+At $\lambda = 0$ the target is the prior; at $\lambda = 1$ it is, in
+expectation, the posterior. The interpolation in between bridges the
+two in a way that keeps the importance weights well-behaved. Sampling
+from $\pi_{\lambda_K} = \pi_1$ is the goal; the intermediate
+$\pi_{\lambda_k}$ are stepping stones.
+
+\subsection{Adaptive tempering: choosing $\lambda_k - \lambda_{k-1}$}
+
+A population of $M$ \emph{parameter particles}
+$\{\thetadyn^{(m)}\}_{m=1, \ldots, M}$ (default $M = 256$,
+\texttt{n\_smc\_particles}) is propagated through the schedule. At
+each step the unnormalised tempering weight is
+\begin{equation}
+\omega_k^{(m)} \;\propto\;
+   \left(\frac{\Lhat_N(\thetadyn^{(m)})}
+              {\Lhat_N(\thetadyn^{(m)})_{\rm prev}}\right)^{\!\lambda_k - \lambda_{k-1}},
+\end{equation}
+and an effective sample size
+$M_{\rm eff} = (\sum_m \omega_k^{(m)})^2 / \sum_m (\omega_k^{(m)})^2$
+is monitored. The interval $\lambda_k - \lambda_{k-1}$ is chosen
+\emph{adaptively}, by bisection, to drive $M_{\rm eff} / M$ to a
+prescribed target (\texttt{target\_ess\_frac}, default $0.5$): too
+large and the cloud collapses; too small and tempering wastes work.
+The bisection is capped at \texttt{max\_lambda\_inc} (default $0.05$
+cold-start, $0.10$ bridge) so a single step cannot leap to $\lambda =
+1$ in one go.
+
+The on-device implementation of this bisection is
+\path{smc2fc/core/jax_native_smc.py:_solve_delta_for_ess}; it runs
+inside a \texttt{lax.scan} of fixed depth (30 bisection steps) so the
+full tempering loop is one compiled XLA graph. This is part of the
+JAX-native compile-once architecture covered in
+Section~\ref{sec:jax-native}.
+
+\subsection{The HMC move step}
+
+After resampling at temperature $\lambda_k$, the parameter cloud is
+\emph{rejuvenated} by Hamiltonian Monte Carlo moves targeting
+$\pi_{\lambda_k}$. Without these moves the cloud loses diversity at
+every resample step, eventually collapsing onto a single value.
+
+Each move is a leapfrog-integrated trajectory of length
+\texttt{hmc\_num\_leapfrog} (default $8$) at step size
+\texttt{hmc\_step\_size} (default $0.025$), accepted/rejected by the
+Metropolis ratio. The framework runs \texttt{num\_mcmc\_steps} such
+moves per tempering level (default $5$ for cold start, $3$ for bridge
+warm-start). Implementation:
+\path{smc2fc/core/jax_native_smc.py:_hmc_step_chain}, which is
+\texttt{jax.vmap}'d across particles.
+
+\subsection{Adaptive diagonal mass matrix} \label{sec:mass-matrix}
+
+HMC's per-dimension step size is set jointly by \texttt{hmc\_step\_size}
+and the inverse mass matrix $M^{-1}$, which acts as a preconditioner.
+A poorly-chosen mass matrix collapses the acceptance rate to zero very
+quickly during tempering --- for the kinds of high-dimensional
+posteriors the framework targets (35-D SWAT, 37-D FSA-v5), an
+identity mass matrix collapses HMC at $\lambda \approx 0.3$.
+
+The framework re-estimates a \emph{diagonal} mass matrix at each
+tempering level from the current parameter cloud:
+\begin{equation}
+M^{-1}_{ii} \;=\; \mathrm{Var}_m\!\bigl([\thetadyn^{(m)}]_i\bigr)
+                 \,+\, \epsilon, \qquad i = 1, \ldots, d.
+\label{eq:diag-mass}
+\end{equation}
+Implementation: \path{smc2fc/core/mass_matrix.py:estimate_mass_matrix}
+(20 lines, deliberately minimal). The regularisation $\epsilon =
+10^{-4}$ floors the variance to prevent numerical issues for
+parameters that have collapsed to a delta.
+
+A full (non-diagonal) mass matrix would in principle be a better
+preconditioner, but on the parameter scales the framework targets the
+empirical covariance is too noisy at $M = 256$ particles to invert
+stably. The diagonal version is a deliberate engineering choice; see
+the comment block in \path{mass_matrix.py} for the empirical history.
+
+\subsection{The full SMC$^2$ loop}
+
+Algorithm~\ref{alg:smc2} stitches the pieces together.
+
+\begin{algorithm}[H]
+\caption{Adaptive-tempered SMC$^2$ over $\thetadyn$}
+\label{alg:smc2}
+\begin{algorithmic}[1]
+\State Sample $\thetadyn^{(m)} \sim p(\thetadyn)$ for $m = 1, \ldots, M$;
+       set $\lambda_0 = 0$.
+\State For each $m$, run the inner bootstrap filter
+       (Algorithm~\ref{alg:sir}) with $\thetadyn^{(m)}$ to obtain
+       $\Lhat_N(\thetadyn^{(m)})$.
+\While{$\lambda_k < 1$}
+  \State \textbf{Adaptive $\lambda$.} Solve for the smallest increment
+         $\delta \in (0, 1 - \lambda_k]$ such that the tempering ESS
+         ratio with weights
+         $\omega^{(m)} \propto \Lhat_N(\thetadyn^{(m)})^{\delta}$ equals
+         the target. Cap at \texttt{max\_lambda\_inc}. Set
+         $\lambda_{k+1} = \lambda_k + \delta$.
+  \State \textbf{Reweight \& resample.} Compute weights
+         $\omega^{(m)}$, normalise, systematically resample.
+  \State \textbf{Re-estimate mass matrix.} $M^{-1}_{ii} =
+         \mathrm{Var}_m([\thetadyn^{(m)}]_i) + \epsilon$ from the
+         resampled cloud.
+  \State \textbf{HMC moves.} Run \texttt{num\_mcmc\_steps} HMC
+         trajectories of length \texttt{hmc\_num\_leapfrog} at step
+         size \texttt{hmc\_step\_size}, targeting $\pi_{\lambda_{k+1}}$
+         on each $\thetadyn^{(m)}$. Re-evaluate
+         $\Lhat_N(\thetadyn^{(m)})$ for any moved particle by
+         re-running the inner filter.
+  \State $k \leftarrow k + 1$.
+\EndWhile
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Implementation pointer}
+
+Two backends implement Algorithm~\ref{alg:smc2}:
+\begin{itemize}
+  \item \path{smc2fc/core/tempered_smc.py} --- BlackJAX-wrapped
+        version. Easier to read, slower in production because of a
+        per-window JIT recompilation cost.
+  \item \path{smc2fc/core/jax_native_smc.py} --- production
+        compile-once version. Same algorithm, same outputs, but the
+        whole tempering loop is one XLA graph that compiles once per
+        process and is reused across all subsequent windows.
+\end{itemize}
+The two are interchangeable from the caller's perspective. Section
+\ref{sec:jax-native} explains why the JAX-native version exists, what
+it costs to maintain, and what it returns at the cost of a few hundred
+extra lines of careful JAX engineering.

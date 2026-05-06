@@ -1,0 +1,345 @@
+\documentclass[11pt,a4paper]{article}
+
+\input{preamble.tex}
+
+\title{Sequential Monte Carlo${}^2$ for Bayesian Filtering and Stochastic Optimal Control of the SWAT Physiological SDE\\[2pt]
+\large Mathematical Formulation of the 11-Parameter Reduced SWAT Model}
+\author{Ajay Talati}
+\date{Generated 3 May 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+This document defines the authoritative mathematical formulation of the Sleep-Wake-Activity-Testosterone (SWAT) model as implemented in the \texttt{smc2fc} framework. It outlines the 4-dimensional latent state space and the 3-dimensional exogenous control vector. We define the stochastic differential equations governing the system dynamics, including the multiplicative gating mechanism and the Stuart-Landau bifurcation coupled to the sleep-wake cycle via an entrainment quality function. 
+
+To guarantee local identifiability of the system under the available four-channel observation model, we fix the core physics (timescales and coupling constants) and restrict inference to an 11-parameter identifiable subset that captures individual subject variation. This document provides the explicit definition of both the fixed physical constants and the free parameter priors.
+\end{abstract}
+
+\tableofcontents
+\medskip
+
+\section{State Space and Controls}
+
+The model is defined by a 4-dimensional latent state vector $\mathbf{y}(t) = [W, Z, a, T]^\top$ and a 3-dimensional exogenous control vector $\mathbf{u}(t) = [V_h, V_n, V_c]^\top$.
+
+\subsection{Latent States (Inferred)}
+\begin{itemize}
+    \item $W(t) \in [0, 1]$: \textbf{Wakefulness}. Represents the activation of the ascending arousal system.
+    \item $Z(t) \in [0, 1]$: \textbf{Sleep Depth}. Represents the inhibitory drive of the ventrolateral preoptic area (VLPO).
+    \item $a(t) \in [0, 1]$: \textbf{Adenosine}. Represents homeostatic sleep pressure.
+    \item $T(t) \geq 0$: \textbf{Testosterone Amplitude}. Represents the strength of the hypothalamic-pituitary-gonadal (HPG) axis rhythm.
+\end{itemize}
+
+\subsection{Exogenous Controls (User/MPC Driven)}
+\begin{itemize}
+    \item $V_h(t) \in [0, 1]$: \textbf{Vitality Reserve} (Anabolic). Drives the amplitude of the sleep-wake cycle.
+    \item $V_n(t) \geq 0$: \textbf{Chronic Load} (Catabolic). Dampens the system and shifts the testosterone bifurcation.
+    \item $V_c(t) \in [-12, 12]$ (hours): \textbf{Phase Shift}. Rotates the subject's internal circadian rhythm relative to the external light cycle.
+\end{itemize}
+
+\section{Stochastic Differential Equations (SDEs)}
+
+The system dynamics are governed by the It\^o drift-diffusion equation:
+\[
+\mathrm{d}\mathbf{y}_t = \mathbf{f}(\mathbf{y}_t, \mathbf{u}_t, t) \, \mathrm{d}t + \boldsymbol{\Sigma}(\mathbf{y}_t) \, \mathrm{d}\mathbf{W}_t.
+\]
+
+\subsection{Drift Equations}
+
+The deterministic skeleton $\mathbf{f}$ is defined by:
+\begin{align}
+\frac{\mathrm{d}W}{\mathrm{d}t} &= \frac{\text{gate}(V_h, V_n) \cdot \sigma(u_W) - W}{\tau_W} \\
+\frac{\mathrm{d}Z}{\mathrm{d}t} &= \frac{\text{gate}(V_h, V_n) \cdot \sigma(u_Z) - Z}{\tau_Z} \\
+\frac{\mathrm{d}a}{\mathrm{d}t} &= \frac{W - a}{\tau_a} \\
+\frac{\mathrm{d}T}{\mathrm{d}t} &= \frac{\mu(E) \cdot T - \eta \cdot T^3}{\tau_T}
+\end{align}
+
+\subsubsection*{Auxiliary Components}
+The drift equations depend on the following auxiliary functions:
+\begin{itemize}
+    \item \textbf{Multiplicative Gate:} $\text{gate}(V_h, V_n) = V_h \cdot \exp\left(-\frac{V_n}{V_{n,\text{scale}}}\right)$. This structurally anchors the cycle at 0 when $V_h=0$ and scales the peak arousal and sleep depth.
+    \item \textbf{Sigmoid Function:} $\sigma(x) = \frac{1}{1 + e^{-x}}$.
+    \item \textbf{Sigmoid Arguments:}
+    \begin{align*}
+        u_W &= \lambda \cdot C_{\text{eff}}(t, V_c) - a - \kappa \cdot Z + \alpha_T \cdot T \\
+        u_Z &= -\gamma_3 \cdot W + \beta_Z \cdot a
+    \end{align*}
+    \item \textbf{Circadian Drive:} $C_{\text{eff}}(t, V_c) = \sin\left(2\pi \left(t - \frac{V_c}{24}\right) + \phi_0\right)$, where $t$ is time in days.
+    \item \textbf{Bifurcation Parameter:} $\mu(E) = \mu_E \cdot (E - E_{\text{crit}})$.
+\end{itemize}
+
+\subsection{Entrainment Quality ($E$)}
+
+The entrainment quality $E \in [0, 1]$ couples the fast sleep-wake subsystem to the slow testosterone dynamics. It is defined as:
+\[
+E = \text{damp}(V_n) \cdot \text{amp}_W \cdot \text{amp}_Z \cdot \text{phase}(V_c)
+\]
+where the components are given by:
+\begin{align*}
+A_W &= \lambda_{\text{amp},W} \cdot V_h \\
+B_W &= V_n - a + \alpha_T \cdot T \\
+\text{amp}_W &= \sigma(B_W + A_W) - \sigma(B_W - A_W)
+\end{align*}
+and similarly for the $Z$ component:
+\begin{align*}
+A_Z &= \lambda_{\text{amp},Z} \cdot V_h \\
+B_Z &= -V_n + \beta_Z \cdot a \\
+\text{amp}_Z &= \sigma(B_Z + A_Z) - \sigma(B_Z - A_Z).
+\end{align*}
+The damping and phase penalties are:
+\begin{align*}
+\text{damp}(V_n) &= \exp\left(-\frac{V_n}{V_{n,\text{scale}}}\right) \\
+\text{phase}(V_c) &= \cos\left(\frac{\pi \cdot \min(|V_c|, V_{c,\text{max}})}{2 V_{c,\text{max}}}\right).
+\end{align*}
+
+\subsection{Diffusion (Noise)}
+The noise term $\boldsymbol{\Sigma}(\mathbf{y}_t)$ applies independent Wiener increments to each state:
+\begin{itemize}
+    \item \textbf{W, Z, a:} Jacobi diffusion $\sigma_i \sqrt{y_i(1-y_i)} \, \mathrm{d}W_t$ ensures states remain strictly bounded within $[0, 1]$.
+    \item \textbf{T:} Additive Gaussian noise $\sigma_T \, \mathrm{d}W_t$ allows the process to escape the absorbing boundary at $T=0$.
+\end{itemize}
+
+\section{Observation Model}
+
+The latent state $\mathbf{y}(t)$ is not directly observed. Instead, the model relies on four discrete-time observation channels sampled at a 15-minute grid.
+
+\subsection{Heart Rate (HR)}
+The heart rate is modeled as a continuous Gaussian channel modulated by wakefulness $W$:
+\[
+\text{HR}(t) \sim \mathcal{N}\left(\text{HR}_{\text{base}} + \delta_{\text{HR}} + \alpha_{\text{HR}} \cdot W(t), \, \sigma_{\text{HR}}^2\right)
+\]
+where $\text{HR}_{\text{base}} = 50.0$ and $\alpha_{\text{HR}} = 25.0$ are frozen population constants, while $\delta_{\text{HR}}$ and $\sigma_{\text{HR}}$ are subject-specific free parameters.
+
+\subsection{Sleep Stage}
+Sleep is observed as a 3-level ordinal variable ($\text{Wake} = 0$, $\text{Light/REM} = 1$, $\text{Deep} = 2$) driven by the sleep depth $Z$. The marginal probabilities per bin, $P_{\text{marg}}(k \mid Z)$, are defined via sigmoid thresholds $c_1 = \tilde{c}$ and $c_2 = \tilde{c} + \delta_c$:
+\begin{align*}
+P_{\text{marg}}(\text{sleep}(t) = 0 \mid Z) &= 1 - \sigma\big(\text{sharp} \cdot (Z(t) - c_1)\big) \\
+P_{\text{marg}}(\text{sleep}(t) = 1 \mid Z) &= \sigma\big(\text{sharp} \cdot (Z(t) - c_1)\big) - \sigma\big(\text{sharp} \cdot (Z(t) - c_2)\big) \\
+P_{\text{marg}}(\text{sleep}(t) = 2 \mid Z) &= \sigma\big(\text{sharp} \cdot (Z(t) - c_2)\big)
+\end{align*}
+where $\text{sharp} = 10.0$ is a frozen constant scaling the sigmoid, and $\tilde{c}$ and $\delta_c$ are free parameters. 
+
+In the forward generative simulation, sleep transitions are modeled as a sticky Hidden Markov Model (HMM) to ensure physiological continuity. Labels are not drawn independently per bin. Given a persistence time constant $\tau_{\text{sleep\_persist\_h}} = 1.0$\,h and a bin width $\Delta t_h$ (in hours), the probability of staying in the current state is $P_{\text{stay}} = \exp(-\Delta t_h / \tau_{\text{sleep\_persist\_h}})$. The effective transition kernel from the previous state $k_{\text{prev}}$ to a new state $k$ is therefore:
+\[
+P_{\text{eff}}(\text{sleep}(t) = k \mid Z, k_{\text{prev}}) = P_{\text{stay}} \cdot \mathbb{I}[k = k_{\text{prev}}] + (1 - P_{\text{stay}}) \cdot P_{\text{marg}}(k \mid Z)
+\]
+\textit{Note on Inference Asymmetry:} While the generative model uses this sticky-HMM persistence for physiological realism, the SMC$^2$ estimator treats the labels as conditionally independent given $Z$ (using only $P_{\text{marg}}$) for computational tractability.
+
+\subsection{Step Count}
+Steps are modeled as a log-Gaussian channel, gated by the sleep label (only emitted when the subject is awake, $\text{sleep}(t) = 0$):
+\[
+\log(\text{steps}(t) + 1) \sim \mathcal{N}\left(\mu_{\text{step}0} + \beta_{W,\text{steps}} \cdot W(t), \, \sigma_{\text{step}}^2\right)
+\]
+where $\beta_{W,\text{steps}} = 0.8$ is frozen, and $\mu_{\text{step}0}$ and $\sigma_{\text{step}}$ are free parameters.
+
+\subsection{Stress Score}
+The stress score is modeled as a Gaussian channel, driven by wakefulness $W$ and the exogenous chronic load $V_n$:
+\[
+S(t) \sim \mathcal{N}\left(s_{\text{base}} + \delta_s + \alpha_s \cdot W(t) + \beta_s \cdot V_n(t), \, \sigma_s^2\right)
+\]
+where $s_{\text{base}} = 30.0$, $\alpha_s = 40.0$, and $\beta_s = 10.0$ are frozen, while $\delta_s$ and $\sigma_s$ are free parameters.
+
+\section{The Reduced 11-Parameter Identifiable Subset}
+
+To ensure mathematical identifiability—avoiding degeneracies where different parameter combinations produce indistinguishable observation distributions—we freeze the core physics. We focus Bayesian inference strictly on 11 free parameters that describe individual subject variation. 
+
+\subsection{Physical Parameters (3)}
+These parameters modulate the subject's internal physiological response to training and recovery.
+\begin{enumerate}
+    \item $E_{\text{crit}}$ (Prior: $\mathcal{N}(0.5, 0.1)$): The ``recovery threshold''. If entrainment $E < E_{\text{crit}}$, testosterone collapses.
+    \item $\alpha_T$ (Prior: $\text{LogN}(\ln 0.3, 0.3)$): The anabolic feedback gain. Dictates how strongly testosterone ``paints'' back onto the wakefulness drive.
+    \item $V_{n,\text{scale}}$ (Prior: $\text{LogN}(\ln 2.0, 0.3)$): Stress sensitivity. Controls how rapidly chronic load dampens the overall system amplitude.
+\end{enumerate}
+
+\subsection{Observation/Sensor Parameters (8)}
+These parameters characterize the emission models linking latent states to the four discrete-time observation channels (Heart Rate, Sleep, Steps, and Stress).
+\begin{enumerate}
+\setcounter{enumi}{3}
+    \item $\delta_{\text{HR}}$ (Prior: $\mathcal{N}(0, 5)$): Individual baseline heart rate offset (bpm).
+    \item $\sigma_{\text{HR}}$ (Prior: $\text{LogN}(\ln 8, 0.3)$): Measurement noise scale for the Gaussian heart rate channel.
+    \item $c_{\text{tilde}}$ (Prior: $\mathcal{N}(0.417, 0.1)$): The primary sleep/wake detection threshold for the $Z$ latent state.
+    \item $\delta_c$ (Prior: $\text{LogN}(\ln 0.25, 0.3)$): The threshold separation defining the boundary between ``light'' and ``deep'' sleep.
+    \item $\mu_{\text{step}0}$ (Prior: $\mathcal{N}(4.0, 0.3)$): Baseline log-steps during wakefulness.
+    \item $\sigma_{\text{step}}$ (Prior: $\text{LogN}(\ln 0.5, 0.15)$): Step count variability for the log-Gaussian step channel.
+    \item $\delta_s$ (Prior: $\mathcal{N}(0, 10)$): Stress score offset (on a 0-100 scale).
+    \item $\sigma_s$ (Prior: $\text{LogN}(\ln 15, 0.3)$): Measurement noise for the Gaussian stress score channel.
+\end{enumerate}
+
+\section{Frozen Parameters (The ``Fixed Physics'')}
+
+The following parameters are held constant across all subjects. This pins the time-scales and structural stability of the model, breaking degeneracies (such as time-vs-rate scaling in the Stuart-Landau oscillator) that exist in the over-parameterized formulation.
+
+\begin{itemize}
+    \item $\tau_W = 2.0$h, $\tau_Z = 0.25$h, $\tau_a = 10.0$h: Fast subsystem sleep-wake time constants.
+    \item $\tau_T = 48.0$h: Testosterone recovery time constant.
+    \item $\kappa = 6.67$, $\lambda = 32.0$, $\gamma_3 = 8.0$, $\beta_Z = 4.0$: Sigmoid coupling constants governing the $W, Z, a$ interactions.
+    \item $\eta = 0.5$, $\mu_E = 1.0$: Stuart-Landau cubic growth and saturation constants.
+    \item $\lambda_{\text{amp},W} = 5.0$, $\lambda_{\text{amp},Z} = 8.0$: Amplitudes for the entrainment quality calculation.
+\end{itemize}
+
+\section{Particle Filter Design}
+
+The latent state of the SWAT model is unobserved and must be inferred from the four discrete-time observation channels. The \texttt{smc2fc} framework employs a bootstrap particle filter within an SMC$^2$ outer loop. This section details the specific design choices implemented in \texttt{estimation.py} to adapt the generic particle filter to the SWAT model.
+
+\subsection{Propagation Strategy: Sub-stepped Euler-Maruyama}
+The transition density of the state is approximated using an explicit Euler-Maruyama scheme. To ensure numerical stability, particularly for the fast sleep-wake subsystem ($Z$ dynamics, $\tau_Z = 0.25$\,h), the 15-minute observation stride is subdivided into $n_{\text{substeps}} = 10$ integration steps. 
+
+Crucially, the proposal distribution $q(\mathbf{x}_n \mid \mathbf{x}_{n-1}, \mathbf{y}_n)$ is chosen to be the blind prior transition density $p(\mathbf{x}_n \mid \mathbf{x}_{n-1})$. This means:
+\begin{itemize}
+    \item \textbf{No Guided Proposal:} Unlike the FSA-v2 implementation which uses a Guided Kalman-Density Particle Filter (GK-DPF) to fuse Gaussian channels during propagation, the SWAT implementation relies on a pure bootstrap filter.
+    \item \textbf{Predictive Log-Weight:} Because the proposal matches the prior dynamics, the predictive log-weight is zero. The particles are propagated blindly, and all correction occurs during the observation reweighting step. While computationally less efficient (requiring more particles to maintain effective sample size), this approach guarantees asymptotic correctness without complex Kalman fusion logic.
+\end{itemize}
+
+\subsection{Observation Alignment and Masking}
+The raw observations generated by the physiological plant occur at irregular or channel-specific frequencies. The estimator normalizes these into a strict 15-minute grid using an alignment function. 
+\begin{itemize}
+    \item \textbf{Presence Masks:} Each channel is accompanied by a binary mask (e.g., \texttt{hr\_present}, \texttt{steps\_present}). If an observation is missing in a given bin, its mask is 0.
+    \item \textbf{Wake-Gating:} The step count channel is only active when the subject is awake. The alignment function computes \texttt{steps\_present} as the logical AND of ``observation exists'' and ``subject is awake'' ($\text{sleep\_label} = 0$).
+    \item \textbf{Exogenous Controls:} The control inputs $V_h, V_n, V_c$ are treated as fully observed, deterministic covariates and are passed directly to the drift equations via the aligned grid.
+\end{itemize}
+
+\subsection{Likelihood Evaluation}
+At the end of each 15-minute bin, the particle weights are updated using the log-likelihood of the observations given the proposed state:
+\[
+\log w_k^{(i)} = \log w_{k-1}^{(i)} + \sum_{c \in \text{channels}} m_{c,k} \cdot \log p(y_{c,k} \mid \mathbf{x}_k^{(i)}, \boldsymbol{\theta})
+\]
+where $m_{c,k} \in \{0, 1\}$ is the presence mask for channel $c$ at bin $k$. The log-likelihood components are evaluated as follows:
+\begin{itemize}
+    \item \textbf{Continuous Channels (HR, Stress, Steps):} Evaluated using exact Gaussian or log-Gaussian log-densities against the channel-specific means.
+    \item \textbf{Ordinal Channel (Sleep):} Evaluated using the conditional independence assumption discussed in Section 5.2. The likelihood relies strictly on the marginal probabilities $P_{\text{marg}}(k \mid Z)$, intentionally dropping the generative sticky-HMM persistence for computational tractability.
+\end{itemize}
+
+\subsection{Initialization and Rolling Windows}
+For receding-horizon control, the filter operates over a rolling window (e.g., 24 hours). 
+\begin{itemize}
+    \item \textbf{Cold Start:} For the very first window, particles are initialized from a static prior distribution $\mathbf{y}_0 \sim \mathcal{N}(\boldsymbol{\mu}_{\text{init}}, \boldsymbol{\Sigma}_{\text{init}})$, where the pathological state sets the prior mean for testosterone to $T=0$.
+    \item \textbf{Warm Start:} For subsequent windows, the filter state is initialized by drawing from a Schr\"odinger-F\"ollmer (SF) bridge. This bridge fits a Gaussian to the previous window's posterior and transports it to match the initial evidence of the new window, providing a robust warm-start that prevents particle collapse across planning strides.
+\end{itemize}
+
+\section{Required Filter Upgrades for the SWAT Model}
+
+The current \texttt{estimation.py} implementation utilizes a basic bootstrap particle filter. As highlighted during the initial model audit, several advanced inference techniques present in the FSA-v2 implementation were deferred. To achieve optimal performance and strict generative-model parity, the following design choices and upgrades must be implemented in the SWAT filter.
+
+\subsection{Guided Kalman-Density Particle Filter (GK-DPF)}
+The bootstrap filter proposes blindly from the prior SDE dynamics, meaning it ignores current observations until the reweighting step. In a stiff system with informative continuous sensors, this leads to high variance in the importance weights and rapid collapse of the Effective Sample Size (ESS). 
+
+The GK-DPF resolves this by using an Extended Kalman Filter (EKF) step to fuse Gaussian observations into the proposal distribution. For the SWAT model, this is highly tractable because the continuous observation channels (Heart Rate, Steps, and Stress) are all \textit{strictly linear} with respect to the state variable $W$ (Wakefulness):
+\begin{align*}
+\text{HR}(t) &= (\text{HR}_{\text{base}} + \delta_{\text{HR}}) + \alpha_{\text{HR}} \cdot W(t) + \epsilon_{\text{HR}} \\
+\log(\text{steps}(t) + 1) &= \mu_{\text{step}0} + \beta_{W,\text{steps}} \cdot W(t) + \epsilon_{\text{step}} \\
+S(t) &= (s_{\text{base}} + \delta_s + \beta_s V_n) + \alpha_s \cdot W(t) + \epsilon_S
+\end{align*}
+
+\textbf{Implementation Design:}
+To port the GK-DPF to SWAT, the \texttt{propagate\_fn} must be updated to:
+\begin{enumerate}
+    \item Compute the prior predictive mean and variance for $W(t)$ at each sub-step using the Euler-Maruyama drift and the state-dependent Jacobi diffusion $\sigma_W \sqrt{W(1-W)}$.
+    \item Define the $3 \times 4$ observation matrix $H$, which contains non-zero entries exclusively in the first column (corresponding to $W$): $H = [\alpha_{\text{HR}}, \beta_{W,\text{steps}}, \alpha_s]^\top$.
+    \item Perform a sequential scalar Kalman update using the observed continuous channels to obtain a fused posterior for $W$.
+    \item Sample the new state from this fused distribution and compute the predictive log-weight (the difference between the Kalman log-likelihood and the exact observation log-likelihood evaluated at the sampled point) to ensure asymptotic unbiasedness.
+\end{enumerate}
+
+\subsection{Exact Sticky-HMM Sleep Inference}
+The current estimator drops the generative model's sticky-HMM persistence ($\tau_{\text{sleep\_persist\_h}} = 1.0$\,h) and treats sleep labels as conditionally independent given $Z$. While computationally convenient, this throws away the temporal autocorrelation of the sleep architecture.
+
+\textbf{Implementation Design:}
+To evaluate the correct sticky-HMM likelihood $P_{\text{eff}}(k \mid Z, k_{\text{prev}})$, the filter must maintain knowledge of the previous sleep state $k_{\text{prev}}$.
+\begin{itemize}
+    \item \textit{Fully Observed Regime:} If sleep observations are contiguous with no missing data, $k_{\text{prev}}$ is trivially known from the previous bin's data array (\texttt{grid\_obs['sleep\_label'][k-1]}).
+    \item \textit{Missing Data Regime:} If sleep observations can drop out, the particle state must be augmented from continuous $\mathbf{y} \in \mathbb{R}^4$ to a mixed continuous-discrete state $(\mathbf{y}, k) \in \mathbb{R}^4 \times \{0,1,2\}$. The propagation step must then draw the new discrete state $k$ from the transition matrix dictated by $P_{\text{stay}}$ and $P_{\text{marg}}(Z)$, advancing the HMM jointly with the SDE.
+\end{itemize}
+
+\subsection{Liu-West Shrinkage and Optimal Transport Resampling}
+To support robust long-horizon parameter estimation (e.g., the 14-day and 84-day benchmarks), the generic \texttt{smc2fc} framework features must be enabled for SWAT:
+\begin{itemize}
+    \item \textbf{Liu-West Kernel:} In rolling-window SMC$^2$, static parameters $\boldsymbol{\theta}$ can suffer from particle impoverishment. A Liu-West shrinkage step should be applied after window transitions to gently perturb the parameter particles while preserving their exact posterior mean and covariance.
+    \item \textbf{Sinkhorn OT Resampling:} Standard multinomial or systematic resampling duplicates high-weight particles exactly, accelerating diversity loss. By enabling Sinkhorn Optimal Transport resampling, the filter computes a transport plan that maps the weighted empirical measure to a uniform measure with minimal displacement, preserving the topological spread of the particle cloud.
+\end{itemize}
+
+\section{Plant Implementation (Generative Model)}
+
+In the closed-loop control architecture, the true physiological system is represented by a mutable simulator object, the \texttt{StepwisePlant} (implemented in \texttt{\_plant.py}). Since the model predictive controller (MPC) determines the daily control schedules online based on posterior estimates, the plant cannot be simulated open-loop for the entire horizon. Instead, it must be advanced one stride at a time. This section outlines the software architecture and numerical design of this generative plant.
+
+\subsection{Mutable Simulator Architecture}
+The \texttt{StepwisePlant} acts as the ``real world'' from which the SMC$^2$ filter receives its data. It maintains the true hidden state $\mathbf{y}(t) = [W, Z, a, T]^\top$, the global time bin index, and a comprehensive history of the trajectory, applied controls, and emitted observations.
+
+During closed-loop execution, the MPC driver requests the plant to simulate forward by calling the \texttt{advance} method with a specified number of \texttt{stride\_bins} (typically 12 bins for a 3-hour stride at 15-minute resolution) and the applied exogenous controls ($V_h$, $V_n$, $V_c$).
+
+\subsection{SDE Integration: Sub-stepped Euler-Maruyama}
+To evolve the latent state over the stride, the plant utilizes a JAX-compiled, sub-stepped Euler-Maruyama integrator (\texttt{\_plant\_em\_step}).
+\begin{itemize}
+    \item \textbf{Sub-stepping:} For numerical stability against the stiff sleep-wake dynamics ($\tau_Z = 0.25$\,h), each 15-minute integration bin is subdivided into $n_{\text{substeps}} = 10$ internal steps.
+    \item \textbf{Stochastic Injection:} A JAX-native random normal noise vector is sampled and applied at \textit{each} sub-step, scaled by the state-dependent diffusion $\boldsymbol{\Sigma}(\mathbf{y}_t)$ and $\sqrt{\Delta t_{\text{sub}}}$.
+    \item \textbf{Boundary Projection:} After every sub-step, a \texttt{state\_clip} function projects the state back into the strict physiological domain ($W, Z, a \in [0, 1]$ and $T \geq 0$) to prevent numerical divergence in the Stuart-Landau oscillator.
+    \item \textbf{Hardware Acceleration:} The sub-stepping loop is implemented using \texttt{jax.lax.scan}, allowing the entire multi-bin stride integration to compile into a single, highly efficient GPU kernel.
+\end{itemize}
+
+\subsection{Observation Sampling and Causal Ordering}
+After the continuous latent trajectory is generated for the stride, the plant generates the discrete sensor readings. Unlike the SDE integration, the observation samplers (\texttt{gen\_obs\_*}) are implemented in pure NumPy. This is computationally inexpensive and necessary for generating discrete ordinal labels (sleep) and Poisson-like integer counts (steps).
+
+The samplers are executed with a strict causal ordering to respect physiological dependencies:
+\begin{enumerate}
+    \item \textbf{Heart Rate:} Sampled first as a direct Gaussian emission from $W$.
+    \item \textbf{Sleep Stage:} Sampled next using the generative sticky-HMM logic (which requires the previous bin's sleep state to compute $P_{\text{stay}}$) based on the $Z$ trajectory.
+    \item \textbf{Step Count:} Sampled \textit{after} sleep, because the step channel is strictly wake-gated. The sampler requires the newly generated sleep labels to compute the presence mask (steps are only emitted when $\text{sleep\_label} = 0$).
+    \item \textbf{Stress Score:} Sampled independently as a Gaussian emission from $W$ and the applied control $V_n$.
+\end{enumerate}
+
+To ensure exact reproducibility across experiments, all observation samplers use a deterministic RNG seed constructed from a base \texttt{seed\_offset}, the current global \texttt{t\_bin}, and a channel-specific integer.
+
+\section{Model Predictive Controller (MPC) Design}
+
+The ultimate goal of the SWAT model is not merely to track the latent state of the subject, but to actively schedule training and lifestyle interventions that drive the physiological system out of pathological states (overtraining or severe detraining) and into a healthy, oscillating regime. This is achieved using a receding-horizon Model Predictive Controller (MPC) based on the SMC$^2$ control-as-inference framework.
+
+\subsection{Action Space and Schedule Parameterization}
+
+The controller must determine three continuous, time-varying schedules over a finite planning horizon $H$ (typically 14 days):
+\begin{itemize}
+    \item $V_h(t) \in [0, 4]$: The anabolic training stimulus.
+    \item $V_n(t) \in [0, 5]$: The catabolic/stress load.
+    \item $V_c(t) \in [-12, 12]$: The circadian phase shift (in hours).
+\end{itemize}
+
+Rather than optimizing the controls at every 15-minute bin independently, the schedules are parametrized using a set of Gaussian Radial Basis Functions (RBFs). Let $\{\varphi_a(t)\}_{a=1}^{N_A}$ be a basis of $N_A = 8$ evenly spaced anchors over the horizon. The schedule is defined by a 24-dimensional coefficient vector $\boldsymbol{\theta}_{\text{ctrl}} \in \mathbb{R}^{24}$, partitioned into $\boldsymbol{\theta}_h, \boldsymbol{\theta}_n, \boldsymbol{\theta}_c \in \mathbb{R}^8$. 
+
+The unbounded coefficients are mapped to the strict physiological bounds using squashing functions without logit biases, ensuring that a prior mean of $\boldsymbol{\theta}_{\text{ctrl}} = \mathbf{0}$ maps exactly to the midpoint of the allowed ranges:
+\begin{align*}
+V_h(t; \boldsymbol{\theta}_{\text{ctrl}}) &= 4.0 \cdot \sigma\left( \sum_a (\theta_h)_a \varphi_a(t) \right) \\
+V_n(t; \boldsymbol{\theta}_{\text{ctrl}}) &= 5.0 \cdot \sigma\left( \sum_a (\theta_n)_a \varphi_a(t) \right) \\
+V_c(t; \boldsymbol{\theta}_{\text{ctrl}}) &= 12.0 \cdot \tanh\left( \sum_a (\theta_c)_a \varphi_a(t) \right)
+\end{align*}
+where $\sigma(\cdot)$ is the standard logistic sigmoid.
+
+\subsection{The Cost Functional}
+
+The controller is formulated as a stochastic cost minimization problem. Given the current state estimate (the posterior mean from the filter) and the identified parameter vector, the cost functional evaluates the quality of a candidate schedule $\boldsymbol{\theta}_{\text{ctrl}}$.
+
+For the SWAT model, the primary physiological objective is to maximize the integrated testosterone amplitude over the horizon. However, because the Stuart-Landau bifurcation acts as a sharp ``cliff'' (where $T$ flatlines completely if the entrainment quality $E$ drops below $E_{\text{crit}}$), gradient-based planners and stochastic samplers can fail to find a gradient when initialized in the pathological ``flatline'' regime.
+
+To solve this, the cost functional includes an auxiliary \textit{shaping reward} on the entrainment quality $E(t)$. This provides immediate, step-by-step feedback to the controller to climb the bifurcation ramp ($E \to E_{\text{crit}}$) before testosterone has had time to recover (due to the slow $\tau_T = 48$\,h timescale). 
+
+The expected cost functional is:
+\[
+J(\boldsymbol{\theta}_{\text{ctrl}}) = \mathbb{E}_{\mathbf{W} \mid \boldsymbol{\theta}_{\text{ctrl}}} \left[ - \int_0^H \Big( T(t) + \lambda_E \cdot E(t) \Big) \, \mathrm{d}t  + \lambda_c \int_0^H \left(\frac{V_c(t)}{12}\right)^2 \mathrm{d}t \right]
+\]
+where:
+\begin{itemize}
+    \item The expectation is taken over the stochastic trajectories of the plant using Common Random Numbers (CRN) for variance reduction.
+    \item $T(t)$ is the primary testosterone reward.
+    \item $\lambda_E \cdot E(t)$ is the shaping reward. At a healthy operating point, $\int T \mathrm{d}t$ and $\int E \mathrm{d}t$ are roughly equal in magnitude, so $\lambda_E = 1.0$ perfectly balances the objective. (During Phase II debugging, $\lambda_E = 0.0$ is used to verify that the controller can discover the true optimum without shaping).
+    \item $\lambda_c \cdot (V_c/12)^2$ is a mild quadratic regularization term on the circadian phase shift, discouraging excessive phase disruption unless physiologically necessary.
+\end{itemize}
+
+\subsection{Tempered Control Posterior}
+
+Following the control-as-inference paradigm, the cost functional is converted into an unnormalized likelihood $p(\text{optimality} \mid \boldsymbol{\theta}_{\text{ctrl}}) = \exp(-\beta J(\boldsymbol{\theta}_{\text{ctrl}}))$, where $\beta > 0$ is an adaptive inverse temperature. 
+
+The optimal schedule coefficients are inferred by drawing samples from the tempered posterior:
+\[
+q_\beta(\boldsymbol{\theta}_{\text{ctrl}}) \propto \exp\big(-\beta J(\boldsymbol{\theta}_{\text{ctrl}})\big) \cdot \mathcal{N}(\boldsymbol{\theta}_{\text{ctrl}}; \mathbf{0}, \sigma_{\text{prior}}^2 \mathbf{I})
+\]
+This is executed using the exact same SMC$^2$ machinery (adaptive tempering and Hamiltonian Monte Carlo mutation) used for parameter estimation. The final output passed back to the plant is the posterior mean $\bar{\boldsymbol{\theta}}_{\text{ctrl}}$.
+
+\end{document}

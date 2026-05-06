@@ -1,0 +1,167 @@
+\section{Optimal-transport rescue inside the filter} \label{sec:ot-rescue}
+
+The Liu--West shrinkage of Section~\ref{sec:liu-west} keeps the inner
+state cloud well-behaved most of the time. Occasionally --- under a
+particularly informative observation, or when the parameter cloud
+visits a low-likelihood region during HMC exploration --- the inner
+filter's effective sample size collapses despite the smoothed
+resampling. The framework includes a low-rank Sinkhorn optimal-transport
+``rescue'' kernel that fires when this happens, blending a transport
+plan into the systematic resample by a sigmoid weight on the ESS
+ratio. This section explains what it does and why it has the form it
+does.
+
+\subsection{When SIR plus Liu--West is not enough}
+
+After the Liu--West shrinkage step of Section~\ref{sec:liu-west}, the
+inner state cloud's effective sample size $N_{\rm eff}$ is monitored
+once per bin. If it falls below an OT-rescue threshold (default
+$N_{\rm eff} / N < 0.05$, controlled by \texttt{ot\_ess\_frac}), the
+cloud is judged degenerate enough that systematic resampling will
+produce too many duplicates and the filter's ability to track the
+state will be lost. The rescue is a soft, sigmoid-blended OT
+resampling rather than a hard branch.
+
+The blending weight is
+\begin{equation}
+w_{\rm OT} \;=\; w_{\rm OT}^{\max} \;\cdot\;
+   \sigmoid\!\left(\frac{\text{ess\_thr} - N_{\rm eff}/N}
+                          {\text{ess\_temp}}\right),
+\label{eq:ot-blend}
+\end{equation}
+with $w_{\rm OT}^{\max}$ a small cap (default $0.01$, so even at full
+saturation only 1\% of the resample comes from OT),
+$\text{ess\_thr} = \texttt{ot\_ess\_frac}$, and
+$\text{ess\_temp} = \texttt{ot\_temperature}$. The output of the
+resampling step at each bin is then
+\begin{equation}
+X^{\rm out} \;=\; (1 - w_{\rm OT})\, X^{\rm sys+LW}
+                \;+\; w_{\rm OT}\, X^{\rm OT},
+\end{equation}
+i.e.\ a convex combination of the standard systematic+Liu--West output
+and the OT-resampled output. Because both inputs are
+$\Pcal$-preserving and the weight is in $[0, w_{\rm OT}^{\max}]$, the
+combination is also $\Pcal$-preserving.
+
+The continuous-blend formulation matters for the same reason
+ESS-scaled bandwidth matters in Section~\ref{sec:liu-west}: the outer
+SMC$^2$ HMC kernel (Section~\ref{sec:smc2}) needs the inner-PF
+log-likelihood to be a smooth function of $\thetadyn$. A discontinuous
+ESS-threshold branch would create gradient discontinuities at every
+particle that crosses the threshold, sabotaging the HMC step-size
+adaptation.
+
+\subsection{The OT step itself --- low-rank Sinkhorn} \label{sec:sinkhorn}
+
+The OT-rescue kernel takes the current particle cloud
+$\{X^{(i)}\}_{i=1}^{N}$ with weights $\{W^{(i)}\}$ and produces a new
+cloud whose empirical distribution approximates the same distribution
+as systematic resampling, but via a transport plan rather than a
+multinomial draw. The transport plan's smoothness with respect to
+$\thetadyn$ is what makes the gradient go through.
+
+\paragraph{Step 1 --- low-rank kernel factorisation.}
+Pick $r$ anchor particles by index (\texttt{anchor\_idx}, sampled
+uniformly without replacement) and form the Gaussian kernel between
+all $N$ particles and these $r$ anchors:
+\begin{equation}
+K_{NR}^{(i, j)} \;=\;
+   \exp\!\left(-\frac{\|X^{(i)} - X^{({\rm anchor}\,j)}\|^2}
+                       {2\,\epsilon}\right),
+\qquad i = 1, \ldots, N;\, j = 1, \ldots, r,
+\end{equation}
+column-normalised for stability. This is the Nystr\"om approximation
+of the full $N \times N$ Gaussian kernel by $K_{NR} K_{NR}^\top$. Cost:
+$O(N r)$ in time and memory. Implementation:
+\path{smc2fc/filtering/transport_kernel.py:compute_kernel_factor}.
+
+The low-rank form is essential because the full $N \times N$ kernel,
+combined with Sinkhorn's $O(N^2)$ matrix-vector products, would
+exhaust GPU memory at the rank-$\sim$400 cloud sizes the framework
+uses. Empirical default $r = 5$ (\texttt{ot\_rank}); tested up to
+$r = 50$ on tighter problems.
+
+\paragraph{Step 2 --- Sinkhorn iterations in scaling form.}
+Solve the entropy-regularised optimal transport problem with target
+marginals $a$ (current importance weights) and $b$ (uniform weights):
+find scalings $u, v \in \R^N_{>0}$ such that
+\begin{equation}
+\mathrm{diag}(u)\, K_{\rm approx}\, \mathrm{diag}(v)
+\quad\text{has marginals}\quad (a,\, b),
+\qquad K_{\rm approx} := K_{NR} K_{NR}^\top.
+\end{equation}
+Sinkhorn alternates the row-marginal and column-marginal projections
+\begin{equation}
+u^{(\ell+1)} = a / (K_{\rm approx} v^{(\ell)}),
+\qquad
+v^{(\ell+1)} = b / (K_{\rm approx}^\top u^{(\ell+1)}),
+\end{equation}
+each iteration costing $O(N r)$ via $K_{\rm approx} v = K_{NR}
+(K_{NR}^\top v)$. Default $\ell_{\max} = 2$ (\texttt{ot\_n\_iter}).
+Implementation: \path{smc2fc/filtering/sinkhorn.py:sinkhorn_scalings}.
+
+A subtle but important detail: the iteration is implemented via
+\texttt{jax.lax.fori\_loop}, not \texttt{lax.scan}. The reason
+(documented at the top of \path{sinkhorn.py}) is that \texttt{lax.scan}
+inside a particle-filter scan branch causes XLA to unroll all
+inner iterations, leading to compilation-time blow-up. \texttt{fori\_loop}
+keeps the inner iteration as a real on-device loop.
+
+\paragraph{Step 3 --- barycentric projection.}
+The transport plan
+$\Gamma = \mathrm{diag}(u)\, K_{\rm approx}\, \mathrm{diag}(v)$
+implicitly defines a coupling between source and target particles. The
+new particle positions are computed as the barycentric projection
+\begin{equation}
+X_i^{\rm OT} \;=\;
+   \frac{u_i \, [K_{\rm approx} (v \odot X)]_i}
+        {u_i \, [K_{\rm approx}\, v]_i}.
+\label{eq:barycentric}
+\end{equation}
+This is a convex combination of source positions, so it preserves any
+$[0, 1]^d$ box constraints automatically (no logit / sigmoid needed
+for state-bounded models). Implementation:
+\path{smc2fc/filtering/project.py:barycentric_projection}.
+
+\subsection{The full OT-rescue API}
+
+The three steps above are combined in
+\path{smc2fc/filtering/resample.py:ot_resample_lr}, which is the only
+function the inner PF actually calls. Its signature:
+\begin{quote}\small
+\verb|ot_resample_lr(particles, log_weights, rng_key, stochastic_indices,|\\
+\verb|               epsilon=0.5, n_iter=10, rank=50) -> (N, n_states)|
+\end{quote}
+The \texttt{stochastic\_indices} argument tells the OT kernel which
+state coordinates are subject to noise (and thus need rescuing);
+deterministic state components pass through unchanged. The function is
+fully differentiable through \texttt{jax.grad} --- this is the key
+practical feature, distinguishing it from systematic resampling which
+has zero gradient with respect to particle positions.
+
+\subsection{Implementation pointer}
+
+\begin{itemize}
+  \item \path{smc2fc/filtering/transport_kernel.py} ($\sim$75 lines):
+        Nystr\"om kernel factorisation, factor matvec.
+  \item \path{smc2fc/filtering/sinkhorn.py} ($\sim$90 lines): low-rank
+        Sinkhorn iterations via \texttt{fori\_loop}.
+  \item \path{smc2fc/filtering/project.py} ($\sim$45 lines): barycentric
+        projection.
+  \item \path{smc2fc/filtering/resample.py} ($\sim$100 lines): the
+        public \texttt{ot\_resample\_lr} API.
+  \item \path{smc2fc/filtering/gk_dpf_v3_lite.py:50} imports
+        \texttt{ot\_resample\_lr}; the sigmoid-blend interpolation
+        between systematic+LW and OT outputs is in the inner-PF body.
+\end{itemize}
+
+\subsection{Practical takeaway}
+
+The OT rescue is a \emph{safety net}, not the main rejuvenation
+mechanism. With the default \texttt{ot\_max\_weight = 0.01}, the OT
+contribution to the final particle cloud is tiny in normal operation
+and only becomes appreciable when the cloud is genuinely degenerate.
+Tuning advice: leave the OT-rescue defaults alone unless you see
+inner-PF log-likelihood NaNs or sustained $N_{\rm eff} < 5\%$ across
+many bins. If you do, the lever is \texttt{ot\_max\_weight} (raise to
+0.05--0.10) and \texttt{ot\_n\_iter} (raise to 5--10).

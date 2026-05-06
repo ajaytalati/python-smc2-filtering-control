@@ -1,0 +1,158 @@
+\section{Future work: optimising the soft-HMC controller}
+\label{sec:future-work}
+
+The chance-constrained variants of Section~\ref{sec:control-cost-variants}
+settled the question of \emph{which} cost surrogate to use: the soft
+sigmoid surrogate driven by HMC. This section is about the question
+that remains: how to make the soft-HMC controller faster without
+sacrificing the control quality that justified the choice in the
+first place. The hard-IS variant is not in scope here --- it is a
+documented dead-end (Section~\ref{sec:control-cost-variants}, the
+``empirical comparison'' remark) and is preserved only for regression
+testing.
+
+\subsection{The trade-off as observed today} \label{sec:fw-tradeoff}
+
+Running the soft-HMC controller's tempered SMC$^2$ with high-quality
+settings --- more leapfrog steps per HMC trajectory, more HMC moves
+per tempering level, finer tempering schedule --- produces better
+control plans but costs more wall-clock time. This is, currently, the
+framework's main practical bottleneck. Planning latency scales
+roughly linearly with HMC work per tempering level:
+\[
+\text{(wall-clock per plan)}
+\;\sim\; n_\lambda \cdot n_{\rm mcmc} \cdot n_{\rm leap}
+\cdot \text{(grad eval cost)},
+\]
+where $n_\lambda$ is the number of tempering levels, $n_{\rm mcmc}$ is
+the number of HMC moves per level, and $n_{\rm leap}$ is the leapfrog-
+step count per move. All three factors trade quality against speed,
+and the right operating point depends on the application's planning-
+latency budget. The remaining subsections collect the levers and the
+open directions for moving the Pareto frontier.
+
+\subsection{The tunable knobs and what each one costs} \label{sec:fw-knobs}
+
+Four configuration fields are first-line levers. Their definitions and
+default values are in the configuration reference (Section~\ref{sec:config});
+this subsection is about the quality--speed direction of each.
+
+\begin{center}\small
+\begin{longtable}{lp{3.5cm}p{3.5cm}p{4cm}}
+\toprule
+Knob & Quality direction & Speed direction & Diminishing-return knee \\
+\midrule
+\endhead
+\texttt{hmc\_num\_leapfrog} & Higher = better mixing per trajectory; the proposal travels further per move. & Lower = fewer gradient evaluations per move. & Acceptance plateau around the standard $\tau \approx \pi/(2\omega)$ leapfrog tuning; raising past that wastes compute. \\
+\texttt{num\_mcmc\_steps}     & Higher = more rejuvenation per tempering level, lower autocorrelation between tempering levels. & Lower = fewer rejuvenation moves per level. & Per-level autocorrelation typically halves with each doubling up to about $5$--$8$, then flattens. \\
+\texttt{target\_ess\_frac}    & Higher (closer to $1$) = smaller $\delta\lambda$ per step, gentler tempering, more reliable convergence. & Lower = larger $\delta\lambda$, fewer tempering levels. & Below $\sim 0.3$ the bisection routinely fails to find a feasible step and the run aborts. \\
+\texttt{max\_lambda\_inc}     & Smaller = caps each tempering jump tighter, more steps but each one safer. & Larger = bisection allowed to take bigger leaps. & Larger than the empirical first-window mean of $\delta\lambda$ has no effect; smaller than $\sim 0.01$ produces redundant levels. \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+The four knobs interact. Lowering \texttt{target\_ess\_frac} to cut
+the tempering-level count typically requires raising
+\texttt{num\_mcmc\_steps} to compensate for the larger $\delta\lambda$
+per step --- otherwise the cloud cannot keep up with the temperature
+change and HMC acceptance collapses. The combinations that survive
+this trade are application-specific.
+
+\subsection{Open directions} \label{sec:fw-directions}
+
+The following are candidate avenues for improving the soft-HMC
+controller's Pareto frontier. None has been benchmarked; they are
+listed in roughly decreasing order of how cheaply they could be
+explored.
+
+\paragraph{Profile first.} Before changing any algorithmic knob, run
+\texttt{jax.profiler.start\_trace} around a representative call to
+\path{smc2fc/control/tempered_smc_loop.py} and view the trace in
+TensorBoard. The wall-clock split between (i) HMC leapfrog gradient
+evaluations, (ii) the inner-PF likelihood, (iii) the on-device ESS
+bisection, and (iv) host--device transfer latency is the precondition
+for any informed knob change. The cheapest improvement may simply be
+removing a host sync that nobody noticed.
+
+\paragraph{Adaptive HMC step-size schedule along $\lambda$.} The
+existing diagonal-mass-matrix re-estimation
+(Section~\ref{sec:mass-matrix}) tightens the geometry per tempering
+level, but the step size $\epsilon$ stays fixed. A schedule that
+starts with a larger $\epsilon$ at low $\lambda$ (where the target is
+nearly the prior, broad and forgiving) and shrinks toward a target
+acceptance rate of $\approx 0.7$ at high $\lambda$ (where the
+posterior is tight and the geometry is most curved) could reduce the
+required $n_{\rm leap}$ at the easy end without sacrificing
+acceptance at the hard end. BlackJAX has a dual-averaging adapter
+that targets a fixed acceptance probability; wiring it into the
+JAX-native loop is straightforward.
+
+\paragraph{Per-tempering-level adaptive leapfrog count.} Currently
+\texttt{hmc\_num\_leapfrog} is a single integer applied at every
+tempering level. The optimal trajectory length depends on the local
+geometry and on how far apart consecutive tempering levels are; a
+schedule that tracks the per-level $\delta\lambda$ chosen by the
+bisection (longer trajectories when $\delta\lambda$ is large) would
+let the controller spend its leapfrog budget where it matters.
+
+\paragraph{Reuse the inference posterior as the controller's prior.}
+The controller's tempered SMC$^2$ currently uses a fixed Gaussian
+prior $\thetactrl \sim \Ncal(0, \sigma^2 I)$ regardless of what the
+filter has learned about $\thetadyn$. When the filter posterior is
+informative --- in particular, when its uncertainty has collapsed
+along the directions the controller cares about --- starting from a
+prior that already encodes that information would shorten the
+tempering schedule. The technical question is: what is the right
+mapping from the filter's $\thetadyn$ posterior to the controller's
+$\thetactrl$ prior? A heuristic such as ``set
+$\sigma_{\rm prior}^2$ proportional to the filter's posterior
+uncertainty along each direction'' is a starting point; a principled
+mapping would require some thought about the joint problem.
+
+\paragraph{Per-bridge HMC budget tuning.}
+\texttt{num\_mcmc\_steps\_bridge} is currently $3$ (vs $5$ for cold
+start). The bridge initialisation
+(Section~\ref{sec:bridge}) is by construction close to the new
+posterior, so fewer rejuvenation moves should be sufficient. The open
+question is whether $3$ is the right number or whether $1$--$2$ would
+do, and whether the answer depends on the magnitude of the
+window-to-window posterior shift. A simple sweep on a representative
+multi-window benchmark would settle it.
+
+\paragraph{Mixed-precision HMC.} The HMC inner loop is dominated by
+matrix--vector products in the gradient evaluation; the outer SMC$^2$
+ESS arithmetic and tempering bisection are not. Running HMC in
+\texttt{float32} and the rest of the pipeline in \texttt{float64} is
+a common $\sim 2\times$ speedup on GPU. The risk is that for
+ill-conditioned posterior geometries the lower precision degrades
+HMC acceptance enough to require more moves per level, eating the
+gain. Worth benchmarking.
+
+\paragraph{Smaller controller particle count with re-warm-starts.}
+The controller currently uses the same \texttt{n\_smc\_particles} as
+the inference side. The control posterior is typically lower-dimensional
+($d_c \approx 8$ vs $d_\theta \approx 16$ for typical applications)
+and arguably needs fewer particles to characterise its mean
+adequately. A reduction to $128$ or $96$ controller particles, paired
+with the next window's bridge warm-start (Section~\ref{sec:bridge}
+applied to the controller, not just to the filter), would scale the
+per-window controller cost down proportionally. This requires
+extending the bridge mechanism to the control posterior, which the
+current code does not do.
+
+\subsection{What's not on this list}
+
+A few things deliberately not in the future-work list:
+
+\begin{itemize}
+  \item Replacing HMC with NUTS. Documented dead-end; see
+        Section~\ref{sec:nuts-failed}.
+  \item Replacing the soft surrogate with the hard indicator.
+        Documented dead-end; see Section~\ref{sec:control-cost-variants}.
+  \item Replacing the Gaussian bridge with the SF/BW variant by
+        default. Documented as not paying for itself; see
+        Section~\ref{sec:bridge}.
+\end{itemize}
+
+These are not open questions. Future contributors should consult the
+relevant section before re-attempting.

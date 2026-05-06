@@ -1,0 +1,112 @@
+\section{The generic state-space setting} \label{sec:setting}
+
+This section pins down the abstractions \texttt{smc2fc} expects from the
+user's model. Everything in subsequent sections depends only on these
+two interfaces.
+
+\subsection{The hidden Markov model in continuous time}
+
+The framework assumes a continuous-time stochastic system observed at
+discrete times. The latent state $X(t) \in \R^{n_x}$ evolves under a
+controlled It\^o stochastic differential equation
+\begin{equation}
+\dd X(t) \;=\; b(X(t),\, U(t),\, \thetadyn)\, \dd t
+            \;+\; \sigma(X(t),\, \thetadyn)\, \dd W(t),
+\label{eq:sde}
+\end{equation}
+with drift $b: \R^{n_x} \times \R^{n_u} \times \R^d \to \R^{n_x}$,
+diffusion $\sigma: \R^{n_x} \times \R^d \to \R^{n_x \times n_x}$
+(typically diagonal in framework usage), Brownian motion $W(t)$, an
+exogenous control input $U(t) \in \R^{n_u}$, and a static parameter
+vector $\thetadyn \in \R^d$. Time is discretised on a uniform grid
+$t_n = n \Delta t$, $n = 0, 1, 2, \ldots$, and equation~\eqref{eq:sde}
+is integrated step-by-step by Euler--Maruyama:
+\begin{equation}
+X_{n+1} \;=\; X_n \;+\; b(X_n, U_n, \thetadyn) \Delta t
+              \;+\; \sigma(X_n, \thetadyn) \sqrt{\Delta t}\, \xi_{n+1},
+              \qquad \xi_{n+1} \sim \Ncal(0, I).
+\label{eq:em}
+\end{equation}
+At each time step $n \ge 1$ the user obtains an observation
+$Y_n \in \R^{n_y}$ via the user-supplied likelihood
+\begin{equation}
+Y_n \mid X_n \;\sim\; p\bigl(\,\cdot \mid X_n,\, C_n,\, \thetadyn\bigr),
+\label{eq:obs}
+\end{equation}
+where $C_n$ is any per-step exogenous regressor (e.g.\ a circadian
+forcing, a calendar feature) that the user wants to expose to the
+observation model. The framework supports Gaussian, Bernoulli, and
+mixed channels in $p(Y_n \mid X_n, \cdot)$ — all log-likelihoods are
+summed across channels and any per-bin presence mask supplied by the
+user.
+
+The framework does not place semantic constraints on $X_n$, $U_n$, or
+$Y_n$. It only requires that the drift, diffusion, observation
+likelihood, and prior $p(\thetadyn)$ are all evaluable and
+JAX-traceable.
+
+\subsection{The two abstractions the framework consumes} \label{sec:interfaces}
+
+\paragraph{(A) The forward simulator: \texttt{SDEModel}.}
+A frozen dataclass that bundles the drift, diffusion, observation
+samplers, and per-state physical bounds. Used by the user's
+\texttt{StepwisePlant} (Section~\ref{sec:mpc}) for closed-loop
+ground-truth simulation, and by the test infrastructure for synthetic
+data generation. See \path{smc2fc/simulator/sde_model.py}.
+
+\paragraph{(B) The inference target: \texttt{EstimationModel}.}
+A frozen dataclass that bundles the propagate function, the diffusion
+function, the observation log-weight function, and configuration of
+the parameter prior. The framework's outer SMC$^2$ engine reads only
+from this. See \path{smc2fc/estimation_model.py}.
+
+\bigskip
+The user supplies one of each. The two are typically thin wrappers
+around the same underlying drift and observation code; the split exists
+because the simulator side wants numpy-friendly per-step samplers
+suitable for a Python loop, while the inference side wants pure-JAX
+callables suitable for batching over many particles inside
+\texttt{jax.vmap}.
+
+\subsection{What the framework does \emph{not} require}
+
+\begin{itemize}
+  \item \emph{No closed-form transition density.} The framework only
+        needs to be able to \emph{sample} from
+        $p(X_n \mid X_{n-1}, U_n, \thetadyn)$, never to evaluate it
+        pointwise. This is what makes it applicable to nonlinear SDEs.
+  \item \emph{No tractable marginal likelihood.}
+        $p(Y_{1:T} \mid \thetadyn)$ never has to be evaluated exactly;
+        the bootstrap particle filter (Section~\ref{sec:pf}) provides
+        an unbiased estimator that the outer SMC$^2$ then operates on.
+  \item \emph{No Gaussianity.} Neither the transition kernel nor the
+        observation likelihood needs to be Gaussian. The HMC moves in
+        the outer SMC$^2$ act on the parameter vector $\thetadyn$, not
+        on the latent state.
+  \item \emph{No separation principle.} The framework does not assume
+        the controller can be designed assuming a perfect state
+        estimate. The receding-horizon loop of Section~\ref{sec:mpc}
+        explicitly threads an SMC$^2$ posterior through the controller
+        without separating estimation from control.
+\end{itemize}
+
+\subsection{Notational summary}
+
+\begin{center}\small
+\begin{tabular}{lll}
+\toprule
+Symbol & Meaning & Code \\
+\midrule
+$X_n \in \R^{n_x}$    & Latent state at step $n$                    & \texttt{state} (6D in FSA, 35D in SWAT) \\
+$Y_n \in \R^{n_y}$    & Observation at step $n$                    & per-channel \texttt{obs\_value} arrays \\
+$U_n,\, \Phi_n$       & Exogenous control input at step $n$        & \texttt{Phi} (sometimes \texttt{U}) \\
+$C_n$                 & Per-step exogenous regressor               & \texttt{C} \\
+$\thetadyn \in \R^d$  & Static parameter vector (inferred)         & \texttt{u} or \texttt{theta\_dyn} \\
+$\thetactrl$          & Control-schedule parameter vector          & \texttt{theta\_ctrl} \\
+$N$                   & Number of inner-PF state particles         & \texttt{n\_pf\_particles} \\
+$M$                   & Number of outer-SMC parameter particles    & \texttt{n\_smc\_particles} \\
+$\lambda$             & Tempering parameter, $0 \to 1$             & \texttt{lam} or \texttt{tempering\_param} \\
+$\Lhat_N(\thetadyn)$  & Unbiased likelihood estimator              & \texttt{log\_density(u, ...)} \\
+\bottomrule
+\end{tabular}
+\end{center}

@@ -1,0 +1,121 @@
+\section{Configuration and knobs} \label{sec:config}
+
+This section is the configuration reference for \texttt{SMCConfig}
+in \path{smc2fc/core/config.py}. For each field: what it does
+mathematically, sensible default ranges, and the diagnostic signal
+that says ``increase'' or ``decrease this''. The fields are grouped
+into four blocks (outer SMC, inner PF, OT rescue, bridge) following
+the order in which they appear in the dataclass.
+
+\subsection{Outer SMC$^2$ (the parameter loop)}
+
+\begin{center}\small
+\begin{longtable}{lp{3cm}p{8cm}}
+\toprule
+Field & Default & Meaning + tuning signal \\
+\midrule
+\endhead
+\texttt{n\_smc\_particles}    & $256$  & Parameter cloud size $M$. Variance of posterior moments scales as $1/\sqrt{M}$. Increase if posterior CIs are too wide; decrease for faster runs. \\
+\texttt{target\_ess\_frac}     & $0.5$  & ESS target for adaptive tempering. Lower (e.g.\ $0.3$) = faster but riskier. \\
+\texttt{num\_mcmc\_steps}     & $5$    & HMC moves per tempering level (cold start). Increase if posterior samples are correlated within a tempering level. \\
+\texttt{max\_lambda\_inc}      & $0.05$ & Cap on $\delta\lambda$ per cold-start tempering step. Smaller $\Rightarrow$ more tempering levels but each one safer. \\
+\midrule
+\texttt{hmc\_step\_size}      & $0.025$ & HMC leapfrog step size. Decrease if HMC acceptance is low; increase if HMC is wasting compute on tiny moves. Diagnostic: target acceptance rate $\approx 0.7$. \\
+\texttt{hmc\_num\_leapfrog}   & $8$    & Leapfrog steps per HMC trajectory. Higher = better mixing per move, more compute per move. \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+\subsection{Inner particle filter}
+
+\begin{center}\small
+\begin{longtable}{lp{3cm}p{8cm}}
+\toprule
+Field & Default & Meaning + tuning signal \\
+\midrule
+\endhead
+\texttt{n\_pf\_particles}     & $400$  & State cloud size $N$ inside the bootstrap filter. Variance of $\Lhat_N(\thetadyn)$ scales as $1/\sqrt{N}$. Increase if $\Lhat_N$ is too noisy (HMC acceptance drops because of noisy gradients). \\
+\texttt{bandwidth\_scale}      & $1.0$  & Multiplicative scale on the Silverman bandwidth used by the Liu--West shrinkage of Section~\ref{sec:liu-west}. Increase to $1.5$--$2.0$ if you observe state-cloud collapse. \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+\subsection{OT-rescue (Section~\ref{sec:ot-rescue})}
+
+\begin{center}\small
+\begin{longtable}{lp{3cm}p{8cm}}
+\toprule
+Field & Default & Meaning + tuning signal \\
+\midrule
+\endhead
+\texttt{ot\_ess\_frac}        & $0.05$ & ESS threshold for triggering OT-rescue. Below this fraction, the sigmoid-blend OT-resample fires. Leave at default unless you see sustained $N_{\rm eff} < 5\%$ across many bins. \\
+\texttt{ot\_temperature}      & $5.0$  & Sharpness of the sigmoid blend in \eqref{eq:ot-blend}. Larger = sharper transition. \\
+\texttt{ot\_max\_weight}      & $0.01$ & Cap on the OT contribution to the final particle cloud. Default 1\% is conservative; raise to $0.05$--$0.10$ if OT-rescue is firing but the cloud still degenerates. \\
+\texttt{ot\_rank}             & $5$    & Nystr\"om low-rank approximation rank $r$. Higher = better kernel approximation, more compute. Tested up to $50$. \\
+\texttt{ot\_n\_iter}          & $2$    & Sinkhorn iterations. Default 2 is enough for the rescue role; raise to $5$--$10$ for higher OT fidelity. \\
+\texttt{ot\_epsilon}          & $0.5$  & Gaussian-kernel bandwidth in OT. Smaller = sharper transport plan, more particle-collapse risk. \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+\subsection{Bridge (Section~\ref{sec:bridge})}
+
+\begin{center}\small
+\begin{longtable}{lp{3cm}p{8cm}}
+\toprule
+Field & Default & Meaning + tuning signal \\
+\midrule
+\endhead
+\texttt{num\_mcmc\_steps\_bridge} & $3$ & HMC moves per tempering level on warm-start (vs $5$ for cold start). The bridge initialisation is closer to the new posterior than the prior, so fewer rejuvenation moves are needed per level. \\
+\texttt{max\_lambda\_inc\_bridge}  & $0.10$ & Cap on $\delta\lambda$ per warm-start tempering step (double the cold-start cap). \\
+\texttt{bridge\_type}             & \texttt{"gaussian"} & One of \texttt{"gaussian"} (single Gaussian + LW shrinkage; the production default), \texttt{"mog"} (Gaussian mixture), \texttt{"schrodinger\_follmer"} (the BW-geodesic variant; see Section~\ref{sec:bridge}'s empirical assessment). \\
+\texttt{bridge\_mog\_components}   & $2$    & Number of components when \texttt{bridge\_type == "mog"}. \\
+\texttt{sf\_blend}                 & $0.5$  & SF only: $t \in [0, 1]$ along the BW geodesic. $0$ = previous posterior, $1$ = new-posterior moment match. \\
+\texttt{sf\_entropy\_reg}          & $0.0$  & SF only: entropic regularisation; $0$ = exact Bures--Wasserstein. \\
+\texttt{sf\_q1\_mode}              & \texttt{"is"} & SF only: how to estimate the new-posterior Gaussian. \texttt{"is"} = single-step importance sampling. \texttt{"annealed"} = K-stage tempered SMC with random-walk Metropolis (more robust in high-D, more expensive). \\
+\texttt{sf\_annealed\_n\_stages}   & $3$ & Path B (annealed) only: number of intermediate stages. \\
+\texttt{sf\_annealed\_n\_mh\_steps} & $2$ & RW-MH moves per Path B stage. \\
+\texttt{sf\_use\_q0\_cov}          & \texttt{False} & SF only: decoupled-mode flag --- use the SF mean update but the previous-posterior covariance. Avoids over-inflation when the new-posterior covariance is MCMC-noisy. \\
+\texttt{sf\_info\_aware}           & \texttt{False} & SF only: per-eigenvector info-aware blending using the local Fisher information. Holds the previous-posterior mean in weakly-identified directions across windows. Off by default for bit-identical regression. \\
+\texttt{sf\_info\_lambda\_thresh\_quantile} & $0.5$ & SF only (when \texttt{sf\_info\_aware = True}): quantile of FIM eigenvalues used as the soft threshold between ``well-identified'' and ``weakly identified''. \\
+\texttt{sf\_info\_blend\_temperature} & $1.0$ & SF only: $\tau$ in the sigmoid threshold. Smaller = sharper. \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+\subsection{Other config dataclasses}
+
+\paragraph{\texttt{RollingConfig}.} Window/stride/dt for the rolling-
+window framing. Fields: \texttt{window\_days}, \texttt{stride\_days},
+\texttt{dt}, \texttt{n\_substeps}, \texttt{max\_windows}.
+
+\paragraph{\texttt{MissingDataConfig}.} An opinionated default model
+of missing-data corruption (rest days, random per-channel dropout,
+broken-watch gap). Useful for stress-testing the filter against
+realistic data quality issues. Fields: \texttt{dropout\_rate},
+\texttt{broken\_watch\_days}, \texttt{rest\_days\_per\_week} plus
+the per-channel groupings \texttt{active\_channels},
+\texttt{passive\_channels}, \texttt{all\_obs\_channels}.
+
+\subsection{Tuning workflow}
+
+In order, when a new application doesn't converge:
+\begin{enumerate}
+  \item Diagnose first. Plot per-tempering-level ESS, HMC acceptance
+        rate, $\Lhat_N$ variance across particles, and
+        per-bin inner-PF ESS.
+  \item HMC acceptance below $\sim 0.4$? Reduce
+        \texttt{hmc\_step\_size}.
+  \item HMC acceptance above $\sim 0.9$? Raise
+        \texttt{hmc\_step\_size} (you're under-using each move).
+  \item Tempering bisection takes too many steps to find the right
+        $\delta\lambda$? Lower \texttt{max\_lambda\_inc} (cap each
+        step earlier).
+  \item Inner-PF ESS frequently dropping below $5\%$? Raise
+        \texttt{n\_pf\_particles} first; if not enough, raise
+        \texttt{ot\_max\_weight}.
+  \item Posterior moments still noisy after step 4? Raise
+        \texttt{n\_smc\_particles}.
+\end{enumerate}
+Do not change more than one knob at a time, and re-collect the
+diagnostics before deciding the next change.

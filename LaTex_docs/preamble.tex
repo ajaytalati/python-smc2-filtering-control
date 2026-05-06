@@ -1,62 +1,77 @@
-% ── Preamble for the FSA-v2 / SMC² / MPC lecture notes ────────────────
+% Preamble for the smc2fc framework documentation.
 \usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
 \usepackage{lmodern}
-
-\usepackage[margin=1in]{geometry}
-\usepackage{amsmath, amssymb, amsthm, mathtools}
-\usepackage{bm}
-\usepackage{graphicx}
-\usepackage{booktabs}
-\usepackage{array}
+\usepackage{amsmath, amssymb, amsthm}
 \usepackage{algorithm}
 \usepackage{algpseudocode}
-\usepackage{microtype}
-\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{graphicx}
 \usepackage{hyperref}
-\hypersetup{colorlinks=true, linkcolor=blue!50!black, urlcolor=blue!50!black, citecolor=blue!50!black}
+\usepackage{url}
+\usepackage{geometry}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{bm}
+\usepackage{tikz}
+\usetikzlibrary{positioning, arrows.meta, shapes.geometric, fit}
 
-% ── Theorem environments ──────────────────────────────────────────────
-\theoremstyle{plain}
-\newtheorem{theorem}{Theorem}
-\newtheorem{proposition}[theorem]{Proposition}
-\newtheorem{lemma}[theorem]{Lemma}
+\geometry{margin=1in}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,
+    urlcolor=cyan,
+}
 
 \theoremstyle{definition}
-\newtheorem{definition}[theorem]{Definition}
-\newtheorem{example}[theorem]{Example}
-\newtheorem{assumption}[theorem]{Assumption}
+\newtheorem{definition}{Definition}[section]
+\newtheorem{proposition}{Proposition}[section]
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{remark}{Remark}[section]
 
-\theoremstyle{remark}
-\newtheorem{remark}[theorem]{Remark}
-
-% ── Notation macros ───────────────────────────────────────────────────
-\newcommand{\R}{\mathbb{R}}
-\newcommand{\E}{\mathbb{E}}
-\newcommand{\Prob}{\mathbb{P}}
-\newcommand{\Var}{\mathrm{Var}}
-\newcommand{\Cov}{\mathrm{Cov}}
-\newcommand{\diag}{\mathrm{diag}}
-\newcommand{\tr}{\mathrm{tr}}
-\newcommand{\rank}{\mathrm{rank}}
-\newcommand{\dd}{\mathrm{d}}
-\newcommand{\ind}{\mathbf{1}}
-\newcommand{\Lcal}{\mathcal{L}}
-\newcommand{\Ncal}{\mathcal{N}}
-\newcommand{\Ucal}{\mathcal{U}}
-\newcommand{\Xcal}{\mathcal{X}}
-\newcommand{\Ycal}{\mathcal{Y}}
-\newcommand{\Ical}{\mathcal{I}}
-
-% Recurring symbols
-\newcommand{\Phimax}{\Phi_{\max}}
-\newcommand{\Fmax}{F_{\max}}
-\newcommand{\thetadyn}{\theta_{\mathrm{dyn}}}
-\newcommand{\thetactrl}{\theta_{\mathrm{ctrl}}}
+% Notation matching old doc so cross-reference works.
+\newcommand{\thetadyn}{\bm{\theta}_{\rm dyn}}
+\newcommand{\thetactrl}{\bm{\theta}_{\rm ctrl}}
 \newcommand{\Lhat}{\widehat{L}}
 \newcommand{\xhat}{\widehat{x}}
+\newcommand{\dd}{\mathrm{d}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\Pcal}{\mathbb{P}}
+\newcommand{\Ucal}{\mathcal{U}}
+\newcommand{\Xcal}{\mathcal{X}}
+\newcommand{\Ncal}{\mathcal{N}}
+\newcommand{\Phimax}{\Phi_{\rm max}}
+\newcommand{\Fmax}{F_{\rm max}}
+\newcommand{\sigmoid}{\mathrm{sigmoid}}
+\DeclareMathOperator*{\argmin}{argmin}
+\DeclareMathOperator*{\argmax}{argmax}
 
-% Operator names
-\DeclareMathOperator{\sigmoid}{\sigma}
-\DeclareMathOperator*{\argmin}{arg\,min}
-\DeclareMathOperator*{\argmax}{arg\,max}
+% Code listing style
+\definecolor{codegreen}{rgb}{0,0.6,0}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+\definecolor{backcolour}{rgb}{0.97,0.97,0.95}
+\lstdefinestyle{code}{
+    backgroundcolor=\color{backcolour},
+    commentstyle=\color{codegreen},
+    keywordstyle=\color{magenta},
+    numberstyle=\tiny\color{codegray},
+    stringstyle=\color{codepurple},
+    basicstyle=\ttfamily\footnotesize,
+    breakatwhitespace=false,
+    breaklines=true,
+    captionpos=b,
+    keepspaces=true,
+    numbers=left,
+    numbersep=5pt,
+    showspaces=false,
+    showstringspaces=false,
+    showtabs=false,
+    tabsize=2,
+    language=Python,
+}
+\lstset{style=code}

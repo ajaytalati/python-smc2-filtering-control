@@ -1,0 +1,157 @@
+\section{The bootstrap particle filter} \label{sec:pf}
+
+This section presents the inner Bayesian filtering layer. For a fixed
+parameter vector $\thetadyn$, the particle filter estimates the
+sequence of conditional state distributions
+$\pi_n(\dd x_n) := p(\dd x_n \mid Y_{1:n}, \thetadyn)$ and, as a
+by-product, returns an unbiased estimator of the marginal observation
+likelihood $p(Y_{1:T} \mid \thetadyn)$. That estimator is the hook
+that makes the outer SMC$^2$ of Section~\ref{sec:smc2} possible.
+
+\subsection{The Bayesian filtering recursion}
+
+Under the SDE--observation model of Section~\ref{sec:setting}, with
+$\thetadyn$ fixed, the filtering distribution satisfies the
+prediction--update recursion
+\begin{align}
+\pi_{n \mid n-1}(\dd x_n)
+   &= \int p(\dd x_n \mid x_{n-1}, U_n, \thetadyn)\,
+            \pi_{n-1}(\dd x_{n-1}),
+   \label{eq:filter-predict} \\
+\pi_n(\dd x_n)
+   &\propto p(Y_n \mid x_n, C_n, \thetadyn)\;
+            \pi_{n \mid n-1}(\dd x_n).
+   \label{eq:filter-update}
+\end{align}
+Equations~\eqref{eq:filter-predict}--\eqref{eq:filter-update} have
+closed form only when both densities are linear-Gaussian (the Kalman
+case). In the general nonlinear non-Gaussian setting they do not, and
+a Monte Carlo approximation is used.
+
+\subsection{Sequential importance resampling (SIR)}
+
+The bootstrap particle filter (Gordon, Salmond and Smith, 1993; Doucet
+and Johansen, 2011) approximates $\pi_n$ by a weighted empirical
+measure
+\begin{equation}
+\pi_n^N(\dd x_n) \;=\; \sum_{i=1}^{N} W_n^{(i)}\,
+                        \delta_{X_n^{(i)}}(\dd x_n),
+\qquad \sum_{i=1}^{N} W_n^{(i)} = 1,
+\end{equation}
+on a population of $N$ \emph{state particles} $\{X_n^{(i)}\}$. Each
+particle carries a normalised importance weight $W_n^{(i)}$. The
+recursion has three substeps per step: propagate, reweight, resample.
+This is summarised in Algorithm~\ref{alg:sir}.
+
+\begin{algorithm}[H]
+\caption{Bootstrap SIR for a fixed $\thetadyn$}
+\label{alg:sir}
+\begin{algorithmic}[1]
+\State Sample $X_0^{(i)} \sim p(\dd x_0 \mid \thetadyn)$ for
+       $i = 1, \dots, N$; set $W_0^{(i)} = 1/N$.
+\For{$n = 1, 2, \ldots$}
+  \State \textbf{Propagate.} For each $i$, draw
+         $X_n^{(i)} \sim p(\,\cdot \mid X_{n-1}^{(i)},\, U_n,\, \thetadyn)$
+         by one Euler--Maruyama step of \eqref{eq:em}.
+  \State \textbf{Reweight.} Set
+         $\tilde W_n^{(i)} = W_{n-1}^{(i)}\,
+            p(Y_n \mid X_n^{(i)},\, C_n,\, \thetadyn)$ and normalise
+         $W_n^{(i)} = \tilde W_n^{(i)} / \sum_j \tilde W_n^{(j)}$.
+  \State \textbf{ESS check.} Compute $N_{\mathrm{eff}} =
+         1/\sum_i (W_n^{(i)})^2$. If $N_{\mathrm{eff}} < N_{\rm thr}$,
+         systematically resample $\{X_n^{(i)}\}$ by $\{W_n^{(i)}\}$ and
+         reset $W_n^{(i)} \leftarrow 1/N$.
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
+\paragraph{Systematic resampling.} The framework uses the
+\emph{systematic} variant: with $u_0 \sim \Ucal[0, 1)$, the resampled
+indices are obtained by walking the cumulative weight $C(j) =
+\sum_{i \le j} W_n^{(i)}$ at the offsets $u_k = (k + u_0)/N$ for
+$k = 0, \ldots, N-1$. Systematic resampling is $O(N)$, has lower
+Monte Carlo variance than multinomial resampling, and is deterministic
+given $u_0$. Implementation:
+\path{blackjax.smc.resampling.systematic}, called from
+\path{smc2fc/filtering/gk_dpf_v3_lite.py}.
+
+\subsection{Liu--West shrinkage} \label{sec:liu-west}
+
+The textbook bootstrap filter of Algorithm~\ref{alg:sir} is, in
+production, run \emph{coupled} to the outer SMC$^2$ over $\thetadyn$
+(Section~\ref{sec:smc2}). At each tempering step the parameter cloud
+is jittered by HMC, and the inner filter is re-run. Without
+intervention, this coupled-sampler scheme suffers from
+\emph{parameter--state cloud collapse}: the inner state cloud's
+variance shrinks too quickly because the resampling is not aware of
+the parameter degree of freedom.
+
+The Liu--West (2001) shrinkage correction addresses this. Let $h$ be
+a Silverman bandwidth on the stochastic state subspace and define the
+shrinkage coefficient $a = \sqrt{1 - h^2}$. After resampling, each
+particle is moved toward the weighted state mean:
+\begin{equation}
+X_n^{(i)} \;\leftarrow\; a\, X_n^{(i)} \;+\; (1 - a)\, \mu_W,
+\qquad \mu_W = \sum_i W_n^{(i)}\, X_n^{(i)}.
+\label{eq:liu-west}
+\end{equation}
+The choice $a = \sqrt{1 - h^2}$ ensures the empirical variance of the
+shrunk cloud equals the unshrunk variance plus the kernel-bandwidth
+inflation, preserving the second moment exactly. In production the
+bandwidth itself is \emph{ESS-scaled}: when the cloud is healthy
+($N_{\rm eff} \approx N$) the bandwidth is near zero and the
+shrinkage is a near-identity; when the cloud collapses
+($N_{\rm eff} \to 1$) the bandwidth equals the Silverman default and
+full shrinkage fires.
+
+The continuous mapping $N_{\rm eff} \to h \to (\text{shrink amount})$
+replaces a discontinuous threshold and is critical for
+gradient-based outer-loop kernels: see the lengthy comment block in
+\path{smc2fc/filtering/_gk_kernel.py:38--56} for the engineering history
+(an MCLMC step-size tuner regression that was caused by the
+discontinuity and fixed by ESS-scaled bandwidth).
+
+\subsection{The unbiased marginal likelihood} \label{sec:pf-likelihood}
+
+A key property of the bootstrap filter, which makes the SMC$^2$
+algorithm of Section~\ref{sec:smc2} possible, is that it produces an
+unbiased estimator of the marginal observation likelihood. With the
+unnormalised weights $\tilde W_n^{(i)}$ from line~4 of
+Algorithm~\ref{alg:sir}, define
+\begin{equation}
+\Lhat_N(\thetadyn) \;:=\; \prod_{n=1}^{T}
+   \biggl(\frac{1}{N} \sum_{i=1}^{N} \tilde W_n^{(i)}\biggr).
+\label{eq:unbiased-likelihood}
+\end{equation}
+
+\begin{proposition}[Unbiasedness; Del Moral, 2004] \label{prop:unbiased}
+For any $N \ge 1$ and any $T \ge 1$,
+\(
+\E\bigl[\Lhat_N(\thetadyn)\bigr] = p(Y_{1:T} \mid \thetadyn).
+\)
+\end{proposition}
+
+A proof is in Del Moral (2004, Theorem 7.4.2). For the present notes
+the significance is operational: it allows us to plug
+$\Lhat_N(\thetadyn)$ in place of the (intractable) exact likelihood
+$p(Y_{1:T} \mid \thetadyn)$ inside any sampler over $\thetadyn$ and
+obtain a procedure that targets exactly the right posterior. This is
+precisely what SMC$^2$ does (Section~\ref{sec:smc2}).
+
+\subsection{Implementation pointer}
+
+The compile-once entry point is
+\path{smc2fc.filtering.gk_dpf_v3_lite.make_gk_dpf_v3_lite_log_density_compileonce}.
+Given an \texttt{EstimationModel} and inner-PF / OT-rescue
+hyperparameters, it returns a JIT-compiled callable
+\texttt{log\_density(u, grid\_obs, fixed\_init\_state, w\_start, key0)}
+that runs the full bootstrap filter for a given parameter vector
+$u = \thetadyn$ and observation buffer, returning $\log \Lhat_N(u)$
+plus a small state dict.
+
+The Gaussian-kernel resampling primitives that implement the
+ESS-scaled Liu--West shrinkage of Section~\ref{sec:liu-west} live in
+\path{smc2fc/filtering/_gk_kernel.py} (functions
+\texttt{smooth\_resample\_ess\_scaled\_lw} and friends). The optional
+optimal-transport rescue invoked inside the same scan is the subject
+of Section~\ref{sec:ot-rescue}.

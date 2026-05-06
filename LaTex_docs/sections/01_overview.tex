@@ -1,0 +1,147 @@
+\section{Overview} \label{sec:overview}
+
+The \texttt{smc2fc} package implements two coupled algorithms: a
+Sequential Monte Carlo$^2$ (SMC$^2$) Bayesian filter for nonlinear,
+non-Gaussian state-space models with intractable marginal likelihoods,
+and a stochastic-optimal-control receding-horizon controller built on
+the same machinery. The two share the same outer-loop tempered SMC and
+the same per-particle differentiable likelihood evaluator, applied to
+different log-densities: the Bayes posterior in the filter case, the
+control-as-inference posterior in the controller case.
+
+This document describes what is implemented today, with enough
+mathematical context to read the source files without an external
+textbook open in parallel.
+
+\subsection{Scope and non-scope}
+
+\paragraph{In scope.} The framework code under
+\path{smc2fc/}: the core SMC$^2$ engine (\path{smc2fc/core/}), the inner
+particle filter (\path{smc2fc/filtering/}), the control-spec abstraction
+and the tempered-control loop (\path{smc2fc/control/}). All
+mathematical content here applies to any user model that conforms to
+the framework's two interfaces (Section~\ref{sec:setting}).
+
+\paragraph{Out of scope.} Specific user models. \texttt{smc2fc} is
+designed to be coupled to a user-supplied SDE plus observation model;
+the FSA family of physiological models in the sibling
+\texttt{FSA\_model\_dev} repository is one such model and is documented
+separately. Nothing in this document depends on the FSA model's drift,
+state space, or parameters.
+
+\subsection{Architecture in one diagram} \label{sec:architecture}
+
+The framework has four layers, depicted in
+Figure~\ref{fig:architecture}. From inside out:
+
+\begin{enumerate}
+  \item \textbf{Inner particle filter.} For a fixed parameter vector
+        $\thetadyn$, runs an SDE-driven bootstrap particle filter over
+        the latent state. Returns an unbiased estimator of the marginal
+        observation likelihood $p(y_{1:T} \mid \thetadyn)$.
+        Implementation: \path{smc2fc/filtering/gk_dpf_v3_lite.py}.
+  \item \textbf{Outer SMC$^2$ over parameters.} Runs adaptive tempered
+        SMC over the parameter vector $\thetadyn$, calling the inner
+        filter to evaluate likelihoods and using HMC moves between
+        tempering steps to rejuvenate the particle cloud.
+        Implementations: \path{smc2fc/core/tempered_smc.py} (BlackJAX
+        wrapper, kept as a reference) and
+        \path{smc2fc/core/jax_native_smc.py} (the production
+        compile-once backend; see Section~\ref{sec:jax-native}).
+  \item \textbf{Controller.} Reuses the outer SMC$^2$ engine, but with
+        the data-likelihood replaced by a control-as-inference
+        cost-likelihood $\exp(-\beta J(\thetactrl))$ over a finite-
+        dimensional schedule parameter $\thetactrl$. Returns a
+        posterior cloud over schedules; the posterior mean is the
+        applied control. Implementation: \path{smc2fc/control/}.
+  \item \textbf{MPC driver.} Orchestrates the receding-horizon loop:
+        for each replan time, advance the plant under the previous
+        stride's control, refresh the parameter posterior on the new
+        observation window, then call the controller for the next
+        stride. The driver is user code; the framework provides the
+        ingredients.
+\end{enumerate}
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}[
+  node distance=8mm,
+  every node/.style={font=\small},
+  layer/.style={rectangle, rounded corners, draw, minimum height=8mm,
+                minimum width=46mm, align=center},
+  ext/.style={rectangle, draw, dashed, minimum height=8mm,
+              minimum width=46mm, align=center, fill=gray!10},
+  arrow/.style={-Stealth, thick},
+]
+\node[ext]   (model)   {User model: SDE + observation + prior};
+\node[layer, below=of model] (pf) {Inner particle filter\\\path{smc2fc/filtering/}};
+\node[layer, below=of pf]    (smc2) {Outer SMC$^2$ (HMC moves, adaptive tempering)\\\path{smc2fc/core/}};
+\node[layer, below=of smc2]  (ctrl) {Controller (control-as-inference)\\\path{smc2fc/control/}};
+\node[ext, below=of ctrl]    (mpc)  {User MPC driver: plant $\leftrightarrow$ filter $\leftrightarrow$ controller};
+
+\draw[arrow] (model) -- node[right] {drift, obs, prior} (pf);
+\draw[arrow] (pf)    -- node[right] {$\Lhat_N(\thetadyn)$ (unbiased)} (smc2);
+\draw[arrow] (smc2)  -- node[right] {posterior cloud over $\thetadyn$} (ctrl);
+\draw[arrow] (ctrl)  -- node[right] {posterior cloud over $\thetactrl$} (mpc);
+\draw[arrow, dashed] (mpc.east) to[out=0, in=0, looseness=2] node[right] {observations} (smc2.east);
+\end{tikzpicture}
+\caption{The four layers of the \texttt{smc2fc} framework. Solid blocks
+are framework code; dashed blocks are user code. The dashed arrow on
+the right closes the receding-horizon loop: each stride's observations
+become the next stride's likelihood input.}
+\label{fig:architecture}
+\end{figure}
+
+\subsection{Reading order}
+
+The document is structured to be readable straight through, but two
+shortcuts are useful.
+
+\paragraph{Mathematician's path.} If you want the mathematical anchors
+first, read in this order:
+Section~\ref{sec:setting} (the HMM setup),
+Section~\ref{sec:pf} (Bayesian filtering recursion and the unbiased
+likelihood property), Section~\ref{sec:smc2} (the tempered posterior),
+Section~\ref{sec:control} (control-as-inference),
+Section~\ref{sec:mpc} (receding-horizon principle).
+
+\paragraph{Engineer's path.} If you want to use or modify the code,
+read in this order:
+Section~\ref{sec:setting} (the two interfaces you must conform to),
+Section~\ref{sec:jax-native} (the production compile-once backend and
+how to switch between it and the BlackJAX wrapper),
+Section~\ref{sec:config} (every knob in \texttt{SMCConfig}, what each
+one does and how to tune it), Section~\ref{sec:control} (the two
+chance-constrained cost variants and which one to use),
+Appendix~\ref{app:code-api} (one-line API lookup).
+
+\subsection{Conventions}
+
+\begin{itemize}
+  \item $\thetadyn$ denotes the dynamics-model parameter vector
+        (inferred from data); $\thetactrl$ denotes the schedule
+        parameter vector (chosen by the controller). Both live in
+        $\R^d$ for some user-defined $d$.
+  \item $X_n$ is the latent state at step $n$, $Y_n$ the observation,
+        $\Phi_n$ (or generic $U_n$) the exogenous control input at the
+        same step.
+  \item $N$ is the number of \emph{state} particles (inner PF);
+        $M$ is the number of \emph{parameter} particles
+        (outer SMC$^2$). Code uses \texttt{n\_pf\_particles} and
+        \texttt{n\_smc\_particles} respectively.
+  \item File:line citations are checked against the current source at
+        the time of writing. If the line numbers drift (e.g.\ after a
+        refactor), the function name remains the canonical reference.
+\end{itemize}
+
+\subsection{What this document does not promise}
+
+The framework is research code, not a textbook implementation. It has
+been tuned against a small number of model classes (the FSA
+physiological models, the SWAT hydrological model). Hyperparameter
+defaults are reasonable starting points for similar classes; for
+genuinely different problems they will need re-tuning, and
+Section~\ref{sec:config} is the diagnostic guide for doing so. Where
+the framework has hit empirical limits, those limits are documented in
+Sections~\ref{sec:jax-native}--\ref{sec:control} and
+Section~\ref{sec:future-work}, not glossed.

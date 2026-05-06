@@ -1,308 +1,243 @@
-\section{Receding-horizon model-predictive control}\label{sec:mpc}
+\section{Receding-horizon model-predictive control} \label{sec:mpc}
 
-This section is the conceptual core of the document. It develops the
-finite-horizon stochastic optimal control problem, the receding-horizon
-principle, the various stochastic and output-feedback variants, and then
-specialises everything to the FSA-v2 closed-loop model-predictive
-controller in both mathematical and implementation form. A closing
-subsection sketches a linear--quadratic--Gaussian approximation that
-could be added as a cheap baseline.
+This section closes the loop. The filter of Sections~\ref{sec:pf}--%
+\ref{sec:bridge} produces a posterior over $\thetadyn$ on each
+observation window; the controller of Section~\ref{sec:control}
+produces a posterior over $\thetactrl$ given the current state estimate
+and the dynamics-parameter posterior. The MPC driver orchestrates the
+two: at each replan time, advance the plant under the previous stride's
+control, refresh the filter posterior on the new observation window,
+and call the controller for the next stride.
 
-\subsection{Finite-horizon stochastic optimal control}\label{sec:mpc-finite}
+\subsection{Finite-horizon stochastic optimal control}
+\label{sec:mpc-finite}
 
-Consider a discrete-time stochastic system on a state $X_k \in \Xcal$ and
-a control $U_k \in \Ucal$, with transition kernel
-$X_{k+1} \sim p(\,\cdot\mid X_k,\,U_k)$, a stage cost
-$\ell:\Xcal \times \Ucal \to \R$, and a terminal cost
-$V_f:\Xcal \to \R$. The \emph{open-loop} finite-horizon problem of length
-$H$ is
+Consider a discrete-time stochastic system on a state $X_k \in \Xcal$
+and a control $U_k \in \Ucal$, with transition kernel
+$X_{k+1} \sim p(\,\cdot \mid X_k,\, U_k)$, a stage cost
+$\ell: \Xcal \times \Ucal \to \R$, and a terminal cost
+$V_f: \Xcal \to \R$. The \emph{open-loop} finite-horizon problem of
+length $H$ is
 \begin{equation}
-  \min_{u_{0:H-1}\in\Ucal^H}
-    \;\E\!\left[\,\sum_{k=0}^{H-1} \ell(X_k,u_k)
-                  + V_f(X_H)\,\Big|\,X_0 = x\right],
-  \label{eq:open-loop-fh}
+\min_{u_{0:H-1} \in \Ucal^H}
+   \;\E\!\left[\,\sum_{k=0}^{H-1} \ell(X_k, u_k)
+                + V_f(X_H)\,\Big|\,X_0 = x\right],
+\label{eq:open-loop-fh}
 \end{equation}
-with the expectation taken over the joint law of $X_{1:H}$ given the
-chosen sequence $u_{0:H-1}$. Denote its optimal value by $V_H(x)$ and a
+with the expectation over the joint law of $X_{1:H}$ given the chosen
+sequence $u_{0:H-1}$. Denote its optimal value by $V_H(x)$ and a
 minimising sequence by $u_{0:H-1}^*(x)$. The mapping
 $x \mapsto u_0^*(x)$ is the open-loop optimal first-action policy.
 
-For FSA-v2 the state $X_k = (B_k,F_k,A_k)$ lives in
-$\Xcal = [0,1]\times[0,\infty)^2$, and the ``control sequence''
-is the eight-dimensional RBF-coefficient vector $\thetactrl$ that
-parameterises the entire schedule $\Phi(\,\cdot\,;\thetactrl)$ over
-$[0,T]$ via \eqref{eq:schedule-decoder}. The discrete-time abstract
-notation \eqref{eq:open-loop-fh} therefore maps onto the continuous
-schedule of Section~\ref{sec:control} by a one-to-one identification
-between admissible $u_{0:H-1}$ and admissible $\thetactrl$. The
-expectation in \eqref{eq:open-loop-fh} is the same one already written
-out in \eqref{eq:cost}.
+\subsection{The receding-horizon principle} \label{sec:mpc-receding}
 
-\subsection{The receding-horizon principle}\label{sec:mpc-receding}
-
-In \emph{receding-horizon} or \emph{model-predictive} control, the
-open-loop problem \eqref{eq:open-loop-fh} is solved repeatedly on a
-sliding window. At each replan time $t_n$, given a current state
-estimate $\xhat_n$, one
+In \emph{receding-horizon} or \emph{model-predictive} control,
+\eqref{eq:open-loop-fh} is solved repeatedly on a sliding window. At
+each replan time $t_n$, given a current state estimate $\xhat_n$:
 \begin{enumerate}
-  \item solves \eqref{eq:open-loop-fh} for $u_{0:H-1}^*(\xhat_n)$;
-  \item applies only the first action $u_0^*(\xhat_n)$ over a stride of
-        length $\Delta < H$;
-  \item observes new data, updates the state estimate to $\xhat_{n+1}$,
-        and returns to step~1.
+  \item Solve \eqref{eq:open-loop-fh} for $u_{0:H-1}^*(\xhat_n)$;
+  \item Apply only the first action (or the first stride of length
+        $\Delta < H$) to the plant;
+  \item Observe new data, update the state estimate to $\xhat_{n+1}$,
+        return to step 1.
 \end{enumerate}
-The resulting closed-loop policy is a function of $\xhat_n$ alone, so the
+The closed-loop policy is a function of $\xhat_n$ alone, so the
 controller is implementable. Stability of the closed loop is delicate.
 Mayne and Rawlings (2000) show that under suitable assumptions on the
 horizon length and the terminal cost / terminal set, the closed-loop
 state remains in a positively invariant set and converges to a
-neighbourhood of a desired equilibrium. For FSA-v2 we rely on the
-\emph{long-horizon} variant of that theory: the planning horizon
-$H$ is chosen long enough relative to the slowest time constant
-$\tau_B = 42$ days that the truncation error from neglecting trajectory
-beyond $H$ is small.
+neighbourhood of a desired equilibrium. The framework relies on the
+\emph{long-horizon} variant of that theory: the planning horizon $H$
+is chosen long enough relative to the slowest time constant in the
+dynamics that the truncation error from neglecting trajectory beyond
+$H$ is small.
 
-\subsection{Stochastic and output-feedback variants}\label{sec:mpc-variants}
+\subsection{Stochastic + output-feedback variants} \label{sec:mpc-variants}
 
 Three flavours of stochastic MPC are commonly distinguished.
 
 \begin{enumerate}
-  \item[(i)] \emph{Certainty-equivalent} MPC. Replace the expectation in
-        \eqref{eq:open-loop-fh} by evaluation at a point estimate
-        $\hat X = \E[X\mid \xhat_n]$, and solve the resulting deterministic
-        problem. Cheap, but discards uncertainty information.
+  \item[(i)] \emph{Certainty-equivalent} MPC. Replace the expectation
+        in \eqref{eq:open-loop-fh} by evaluation at a point estimate
+        $\hat X = \E[X \mid \xhat_n]$ and solve the resulting
+        deterministic problem. Cheap, but discards uncertainty.
   \item[(ii)] \emph{Expected-cost} (stochastic) MPC. Keep the
-        expectation, and approximate it by Monte Carlo (sampling
-        trajectories of the stochastic dynamics) or by scenario trees.
-  \item[(iii)] \emph{Output-feedback} MPC. When $X_k$ is not observed
-        directly, the controller acts on a state estimate $\xhat_n$
-        produced by an external estimator (Kalman, particle filter,
-        SMC${}^2$, etc.). For nonlinear non-Gaussian systems no
-        \emph{separation principle} holds in general --- the joint
-        design of the estimator and the controller is part of the
+        expectation, approximate it by Monte Carlo (sampling
+        trajectories under the stochastic dynamics) or by scenario
+        trees.
+  \item[(iii)] \emph{Output-feedback} MPC. When $X_k$ is not directly
+        observed, the controller acts on a state estimate $\xhat_n$
+        produced by an external estimator. For nonlinear non-Gaussian
+        systems no \emph{separation principle} holds in general; the
+        joint design of estimator and controller is part of the
         modelling, not a free composition.
 \end{enumerate}
 
-The FSA-v2 pipeline is in class (ii) and (iii) simultaneously. The state
-is unobserved (only the four-channel proxies of
-\eqref{eq:obs-hr}--\eqref{eq:obs-steps} are available), so a state
-estimator is required: this is the rolling-window SMC${}^2$ filter of
-Section~\ref{sec:smc2}. The expectation in the cost \eqref{eq:cost} is
-kept, evaluated by Monte Carlo on the SDE under common random numbers,
-and minimised in $\thetactrl$-space by the control SMC${}^2$ of
-Section~\ref{sec:control}. The full closed-loop policy is therefore the
-composition
+The \texttt{smc2fc} pipeline is in classes (ii) and (iii)
+simultaneously. The state is unobserved, so a state estimator is
+required: this is the rolling-window SMC$^2$ filter of
+Sections~\ref{sec:smc2}--\ref{sec:bridge}. The expectation in the
+cost \eqref{eq:cost} is kept, evaluated by Monte Carlo on the SDE
+under common random numbers, and minimised in $\thetactrl$-space by
+the control SMC$^2$ of Section~\ref{sec:control}. The full closed-
+loop policy is the composition
 \[
-  \text{(observations)}
-    \xrightarrow{\text{rolling SMC${}^2$ filter}} \xhat_n
-    \xrightarrow{\text{control SMC${}^2$, posterior mean}} \bar\theta
-    \xrightarrow{\eqref{eq:schedule-decoder}} \Phi(\,\cdot\,;\bar\theta)
-    \xrightarrow{\text{plant}} \text{(new observations)}.
+\text{(observations)}
+   \xrightarrow{\text{rolling SMC$^2$ filter}} \xhat_n
+   \xrightarrow{\text{control SMC$^2$, posterior mean}} \bar\theta
+   \xrightarrow{\eqref{eq:schedule-decoder}} U(\,\cdot\,; \bar\theta)
+   \xrightarrow{\text{plant}} \text{(new observations)}.
 \]
 There is no separation principle here. The fact that this composition
-works at all is an empirical claim, validated in
-Section~\ref{sec:results}.
+works at all is an empirical claim, validated on the model classes
+the framework has been tested against.
 
-\subsection{The FSA-v2 MPC pipeline --- mathematical statement}\label{sec:mpc-pipeline}
+\subsection{The closed-loop pipeline --- generic algorithm}
+\label{sec:mpc-pipeline}
 
-We now write down the closed-loop algorithm. Let $\Delta_w = 96$ bins be
-the filter window length (one day), $\Delta_s = 48$ bins the stride
-(twelve hours), and $H_T = 14 \cdot 96 = 1344$ bins the macrocycle
-(fourteen days), so that the number of windows is
-$N_w = (H_T - \Delta_w)/\Delta_s + 1 = 27$.
+Algorithm~\ref{alg:mpc} is the framework-level statement. Specific
+applications instantiate it via the bench-driver pattern of
+Section~\ref{sec:mpc-driver}.
 
 \begin{algorithm}[H]
-\caption{FSA-v2 closed-loop MPC}
-\label{alg:fsa-mpc}
+\caption{\texttt{smc2fc} closed-loop MPC (generic)}
+\label{alg:mpc}
 \begin{algorithmic}[1]
-\State Initialise the plant at $(B_0,F_0,A_0)$; initialise an empty
-       observation buffer $Y_{1:0} = \emptyset$.
-\For{$n = 1,\dots,N_w$}
-  \State \textbf{Filter update.} If $n=1$, run cold-start SMC${}^2$
-         (Algorithm~\ref{alg:smc2}) on $Y_{(n-1)\Delta_s+1:(n-1)\Delta_s+\Delta_w}$
-         to produce a posterior over $\thetadyn$ for the first window;
-         otherwise warm-start from the previous window's posterior via
-         the Schr\"odinger--F\"ollmer bridge of Section~\ref{sec:smc2}.
+\State Initialise the plant; initialise an empty observation buffer.
+\For{$n = 1, \ldots, N_w$}
+  \State \textbf{Filter update.} If $n = 1$, run cold-start SMC$^2$
+         (Algorithm~\ref{alg:smc2}) on the current observation window
+         to produce a posterior over $\thetadyn$; otherwise warm-start
+         from the previous window's posterior via the Gaussian bridge
+         (Section~\ref{sec:bridge}).
   \State \textbf{State extraction.} For a small set of $\thetadyn$
          particles drawn from the posterior, run the bootstrap filter
          (Algorithm~\ref{alg:sir}) forward to the stride endpoint and
-         compute the importance-weighted mean of the resulting
-         $(B,F,A)$; call this $\xhat_n$.
-  \State \textbf{Control plan.} Run the control SMC${}^2$ of
+         compute the importance-weighted mean of the resulting state
+         vector; call this $\xhat_n$.
+  \State \textbf{Control plan.} Run the control SMC$^2$ of
          Section~\ref{sec:control}, conditioned on $\xhat_n$ and the
-         posterior-mean dynamics parameters $\bar\theta_{\mathrm{dyn}}$,
-         to obtain the posterior-mean schedule coefficient
-         $\bar\theta_{\mathrm{ctrl}}$.
+         posterior-mean dynamics parameters $\bar\theta_{\rm dyn}$,
+         to obtain a posterior-mean schedule coefficient
+         $\bar\theta_{\rm ctrl}$.
   \State \textbf{Apply.} Decode
-         $\Phi(\,\cdot\,;\bar\theta_{\mathrm{ctrl}})$ via
+         $U(\,\cdot\,; \bar\theta_{\rm ctrl})$ via
          \eqref{eq:schedule-decoder} and apply only its first stride
          (length $\Delta_s$) to the plant; collect the resulting
-         observations and append them to the buffer.
+         observations and append to the buffer.
 \EndFor
 \end{algorithmic}
 \end{algorithm}
 
-The horizon over which the controller plans (line~5) is the full macrocycle
-remainder $H_T - (n-1)\Delta_s$, but only the first $\Delta_s$ bins of the
-plan are committed (line~6). This is the receding-horizon truncation of
-Section~\ref{sec:mpc-receding} applied to the FSA-v2 problem. Replanning
-occurs every twelve hours, at the wake-window boundary so that the
-morning-loaded burst envelope of \eqref{eq:phi-envelope} is delivered in
-full each day.
+The horizon over which the controller plans (line 5) is the full
+remaining macrocycle, but only the first $\Delta_s$ bins of the plan
+are committed (line 6). This is the receding-horizon truncation of
+Section~\ref{sec:mpc-receding} applied to whatever model the
+framework is driving.
 
-\subsection{Code-level structure of the MPC implementation}\label{sec:mpc-code}
+\subsection{Driver pattern: plant, filter, controller} \label{sec:mpc-driver}
 
-This subsection departs from the usual mathematical idiom and describes
-how the abstract loop of Section~\ref{sec:mpc-pipeline} is realised in
-the source code of the project. The reader who only wants the
-mathematics may skip to Section~\ref{sec:mpc-feasibility}; the reader
-who intends to run, modify, or extend the controller will find this
-useful. We name three artefacts.
+Application code instantiates Algorithm~\ref{alg:mpc} via three
+artefacts.
 
-\paragraph{(a) The plant interface, \texttt{StepwisePlant}.} The
-``plant'' in stochastic optimal control is whatever object the
-controller acts upon to produce new observations. In the code base it is
-the class \texttt{StepwisePlant} in
-\href{run:../version_2/models/fsa_high_res/_plant.py}{\texttt{version\_2/models/fsa\_high\_res/\_plant.py}}.
-A \texttt{StepwisePlant} carries the hidden true state $(B,F,A)$, the
-true dynamics parameters, and a global bin counter; its single mutating
-method is
+\paragraph{(a) The plant interface, \texttt{StepwisePlant}.}
+The ``plant'' is whatever object the controller acts upon to produce
+new observations. It is a user-supplied class with a single mutating
+method:
 \begin{quote}\small
-\verb|advance(stride_bins, Phi_daily)|
-$\;\to\;$ \texttt{(trajectory, obs\_HR, obs\_sleep, obs\_stress, obs\_steps)}.
+\verb|advance(stride_bins, U_schedule)|
+$\;\to\;$ \texttt{(trajectory, obs\_dict)}
 \end{quote}
-A call to \texttt{advance} expands the supplied daily-$\Phi$ array into
-the morning-loaded sub-daily envelope of \eqref{eq:phi-envelope}
-(preserving $\int_{\text{day}}\Phi\,\dd t = 24\,\Phi_d$ exactly), runs
-Euler--Maruyama for \texttt{stride\_bins} fifteen-minute steps, samples
-the four-channel observations of \eqref{eq:obs-hr}--\eqref{eq:obs-steps},
-and updates the internal state. Pedagogically, the
+A call to \texttt{advance} integrates the SDE for \texttt{stride\_bins}
+time steps under the supplied schedule, samples the per-channel
+observations, and updates the plant's internal state. Pedagogically,
 \texttt{StepwisePlant} is the digital embodiment of the ``real world''
-against which the controller is evaluated; mathematically, a single call
-samples one transition of the joint state-observation process under the
-chosen control over a stride of length $\Delta_s$.
+against which the controller is evaluated; mathematically, a single
+call samples one transition of the joint state-observation process
+under the chosen control over a stride of length $\Delta_s$. The
+framework does not provide a generic \texttt{StepwisePlant}; each
+user model implements its own (the FSA-v5 model's
+\texttt{StepwisePlant} is one example).
 
-\paragraph{(b) The MPC driver,
-\texttt{bench\_smc\_full\_mpc\_fsa.py}.} The receding-horizon
-orchestrator lives in
-\href{run:../version_2/tools/bench_smc_full_mpc_fsa.py}{\texttt{version\_2/tools/bench\_smc\_full\_mpc\_fsa.py}}.
-Its execution sequence implements Algorithm~\ref{alg:fsa-mpc} step by
-step. For each window~$n$ it
+\paragraph{(b) The MPC driver script.}
+The receding-horizon orchestrator is a user-side script. Its
+execution sequence implements Algorithm~\ref{alg:mpc} step by step:
+for each window $n$ it
 \begin{enumerate}
   \item runs the rolling-window filter by calling
-        \verb|run_smc_window| (cold-start, $n=1$) or
-        \verb|run_smc_window_bridge| with a Schr\"odinger--F\"ollmer
-        base measure (warm-start, $n\ge 2$);
+        \texttt{run\_smc\_window\_native} (cold-start, $n=1$) or
+        \texttt{run\_smc\_window\_bridge\_native} (warm-start,
+        $n \ge 2$), both from
+        \path{smc2fc/core/jax_native_smc.py};
   \item extracts the posterior-mean dynamics parameters and the
-        smoothed latent state $\xhat_n$ at the end of the window, the
-        latter computed by running Algorithm~\ref{alg:sir} forward on a
-        small set of $\thetadyn$ particles drawn from the posterior and
-        taking the weighted mean of the resulting $(B,F,A)$ samples;
+        smoothed latent state $\xhat_n$ at the end of the window;
   \item assembles a \texttt{ControlSpec} (cost functional, horizon
-        length, current state estimate, RBF basis);
-  \item calls the control SMC${}^2$ loop in
-        \href{run:../smc2fc/control/tempered_smc_loop.py}{\texttt{smc2fc/control/tempered\_smc\_loop.py}},
-        which returns a posterior-mean schedule coefficient
-        $\bar\theta_{\mathrm{ctrl}}$ and a corresponding $\Phi$
-        schedule;
-  \item calls \verb|plant.advance(stride_bins, Phi_daily)| to apply
-        only the first stride of that schedule;
+        length, current state estimate, schedule decoder);
+  \item calls the control SMC$^2$ loop in
+        \path{smc2fc/control/tempered_smc_loop.py}, which returns a
+        posterior-mean schedule coefficient $\bar\theta_{\rm ctrl}$
+        and a corresponding $U$ schedule;
+  \item calls
+        \verb|plant.advance(stride_bins, U_schedule)| to apply only
+        the first stride of that schedule;
   \item appends the resulting observations to the data buffer and
         shifts the window.
 \end{enumerate}
 
-\paragraph{(c) The posterior-mean handoff between windows.} The smoothed
-state $\xhat_n$ extracted in step~2 above is what initialises the next
-window's particle filter. Consecutive windows are therefore connected
-\emph{at the state level} by a single point estimate (the importance-weighted
-smoothed mean) and \emph{at the parameter level} by the SF
-Bures--Wasserstein bridge of Section~\ref{sec:smc2}. This is the
-practical realisation of the warm-start that gives the rolling SMC${}^2$
-its computational tractability: at fourteen days of fifteen-minute data
-the cold-start cost would be $27\times$ larger.
+\paragraph{(c) The posterior-mean handoff between windows.}
+The smoothed state $\xhat_n$ extracted in step 2 above is what
+initialises the next window's particle filter. Consecutive windows
+are therefore connected \emph{at the state level} by a single point
+estimate (the importance-weighted smoothed mean) and
+\emph{at the parameter level} by the Gaussian bridge of
+Section~\ref{sec:bridge}. This is the practical realisation of the
+warm-start that gives the rolling SMC$^2$ its computational
+tractability.
 
-\medskip
-\noindent
-Table~\ref{tab:mpc-files} collects the mapping between the steps of
-Algorithm~\ref{alg:fsa-mpc} and the source files that realise them.
+\subsection{Recursive feasibility and soft barriers}
+\label{sec:mpc-feasibility}
 
-\begin{table}[h]
-\centering
-\small
-\begin{tabular}{@{}lll@{}}
-\toprule
-Step in Algorithm~\ref{alg:fsa-mpc} & Concept & Source \\
-\midrule
-3 & rolling SMC${}^2$ filter      & \texttt{smc2fc/core/tempered\_smc.py} \\
-3 & SF Bures--Wasserstein bridge   & \texttt{smc2fc/core/sf\_bridge.py} \\
-3 & inner bootstrap filter         & \texttt{smc2fc/filtering/gk\_dpf\_v3\_lite.py} \\
-4 & smoothed-state extraction      & \texttt{version\_2/tools/bench\_smc\_full\_mpc\_fsa.py} \\
-5 & control SMC${}^2$ outer loop   & \texttt{smc2fc/control/tempered\_smc\_loop.py} \\
-5 & cost functional, RBF decoder   & \texttt{version\_1/models/fsa\_high\_res/control.py} \\
-6 & plant advance                   & \texttt{version\_2/models/fsa\_high\_res/\_plant.py} \\
-2,6 & sub-daily $\Phi$ envelope    & \texttt{version\_2/models/fsa\_high\_res/\_phi\_burst.py} \\
-\bottomrule
-\end{tabular}
-\caption{Mapping from Algorithm~\ref{alg:fsa-mpc} to the source code.}
-\label{tab:mpc-files}
-\end{table}
-
-\subsection{Recursive feasibility and the F-barrier}\label{sec:mpc-feasibility}
-
-The fatigue ceiling $\Fmax = 0.40$ is enforced through the soft-barrier
-penalty $\lambda_F \cdot \max(F-\Fmax,0)^2$ in the cost
-\eqref{eq:cost}, not through a hard constraint. The choice is
-deliberate. Under stochastic dynamics with state-dependent diffusion and
-unbounded driving noise, an exact hard constraint $F(t) \le \Fmax$ cannot
-be guaranteed by any controller without making the admissible-control
-set empty for some achievable initial conditions; this is the standard
+State constraints in the cost (e.g.\ a fatigue ceiling, an admissible
+operating envelope) are enforced through \emph{soft-barrier} penalties
+of the form $\lambda_b \cdot \max(g(X_t) - g_{\max}, 0)^2$ rather than
+through hard constraints. The choice is deliberate. Under stochastic
+dynamics with state-dependent diffusion and unbounded driving noise,
+an exact hard constraint $g(X_t) \le g_{\max}$ cannot be guaranteed
+by any controller without making the admissible-control set empty for
+some achievable initial conditions; this is the standard
 \emph{recursive feasibility} difficulty in stochastic MPC. A soft
-penalty preserves recursive feasibility -- there is always a feasible
-schedule -- and produces the constraint approximately, with the violation
-rate decreasing as $\lambda_F$ is increased. Empirically (see
-Section~\ref{sec:results}) the closed-loop F-violation rate is
-$1.28\%$ on the $84$-day open-loop benchmark and $0.00\%$ on the
-$14$-day closed-loop benchmark, well within the $5\%$ acceptance gate.
+penalty preserves recursive feasibility --- there is always a
+feasible schedule --- and produces the constraint approximately, with
+the violation rate decreasing as $\lambda_b$ is increased.
 
-\subsection{Robustness and the flat-cost-surface argument}\label{sec:mpc-robustness}
+The framework's chance-constraint formulation of
+Section~\ref{sec:control-cost-variants} is the more principled
+alternative when the ``bad set'' is precisely defined and a violation-
+rate budget is the natural specification. Soft barriers and chance
+constraints are not mutually exclusive; both can be combined in the
+same cost functional.
 
-The controller of Section~\ref{sec:mpc-pipeline} commits the posterior
-mean $\bar\theta_{\mathrm{ctrl}}$ rather than a sample from the control
-posterior or the full distribution. One might worry that this discards
-useful information, especially when the filter posterior over
-$\thetadyn$ is uncertain or biased. Empirically the policy is
-nevertheless robust to filter parameter drift, and the explanation is
-geometric: near the optimum, the cost $J(\thetactrl)$ is locally flat in
-the directions explored by the SMC${}^2$ cloud. A first-order Taylor
-expansion of $J$ at the posterior mean gives, for a perturbed estimate
-$\bar\theta + \delta$,
+\subsection{The flat-cost-surface argument} \label{sec:mpc-robustness}
+
+The controller commits the posterior mean $\bar\theta_{\rm ctrl}$
+rather than a sample from $q_\beta$ or its full distribution. One
+might worry that this discards useful information, especially when
+the filter posterior over $\thetadyn$ is uncertain or biased.
+Empirically the policy is nevertheless robust to filter parameter
+drift, and the explanation is geometric: near the optimum, the cost
+$J(\thetactrl)$ is locally flat in the directions explored by the
+SMC$^2$ cloud. A first-order Taylor expansion at the posterior mean
+gives, for a perturbed estimate $\bar\theta + \delta$,
 \begin{equation}
-  J(\bar\theta + \delta)
-   \;\approx\; J(\bar\theta) + \tfrac{1}{2}\delta^{\!\top} H \delta,
+J(\bar\theta + \delta)
+   \;\approx\; J(\bar\theta) + \tfrac{1}{2}\delta^\top H \delta,
    \qquad H = \nabla^2 J(\bar\theta),
 \end{equation}
 so the additional cost from using $\bar\theta$ in place of an unknown
 ``oracle'' optimum scales with the Hessian. When $H$ is small in the
-directions of greatest filter uncertainty, the closed-loop performance is
-correspondingly insensitive to filter accuracy. Section~\ref{sec:results}
-reports closed-loop performance on a record where only $3$ out of $26$
-estimable parameters pass a strict coverage gate; the controller
-nevertheless achieves a $+17\%$ amplitude gain. The flat-cost-surface
-argument is the mechanism.
-
-\subsection{A note on the linear alternative}\label{sec:mpc-lqg-pointer}
-
-For completeness we examined a closed-form linear alternative --
-linear-quadratic-Gaussian (LQG) control with a backward differential
-Riccati gain -- as a baseline. Such a controller is built on a
-linearisation of the FSA-v2 drift around a fixed operating point,
-which by construction \emph{discards the cubic Stuart--Landau term}
-$-\eta A^3$ that sits at the heart of the model's autonomic
-dynamics. The resulting linearised state space exhibits structural
-defects (no direct linear path from $\Phi$ to $A$, an unstable
-$A$-eigenvalue absent the cubic, and an inverted sign on the
-$F\!\to\!A$ coupling) that no choice of cost weights can repair. The
-LQG schedule and its empirical performance against the SMC${}^2$ MPC
-are recorded in Appendix~\ref{app:lqg} for completeness; on this plant
-the LQG controller does not match the SMC${}^2$ MPC, and we do not
-pursue it further in the main text.
+directions of greatest filter uncertainty, the closed-loop performance
+is correspondingly insensitive to filter accuracy. This is the
+mechanism by which a posterior-mean controller is reasonably robust
+even when the filter is rate-limited (e.g.\ early in the rolling
+schedule, before enough data has accumulated to identify the dynamics
+parameters tightly).

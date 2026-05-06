@@ -1,0 +1,197 @@
+\section{Code-API quick reference} \label{app:code-api}
+
+A one-line description of every public function and class in the
+\path{smc2fc/} package, organised by sub-package. The intent is the
+``which file is X in?'' lookup --- not a substitute for reading the
+docstrings.
+
+\subsection{\texorpdfstring{\texttt{smc2fc/core/}}{smc2fc/core/}}
+
+\begin{description}\small
+  \item[\texttt{config.SMCConfig}] Master configuration dataclass for
+        outer SMC$^2$, inner PF, OT-rescue, and bridge. See
+        Section~\ref{sec:config}.
+  \item[\texttt{config.RollingConfig}] Window/stride/dt configuration
+        for rolling-window framing.
+  \item[\texttt{config.MissingDataConfig}] Default model of
+        observation corruption (rest days, dropout, broken-watch
+        gaps) used in stress tests.
+  \item[\texttt{jax\_native\_smc.run\_smc\_window\_native}]
+        Cold-start tempered SMC$^2$ for one observation window.
+        JAX-native, compile-once. Production entry point for the
+        first window.
+  \item[\texttt{jax\_native\_smc.run\_smc\_window\_bridge\_native}]
+        Warm-start tempered SMC$^2$ for one observation window using
+        the SF/BW bridge initialisation. Production entry point for
+        windows $n \ge 2$ when \texttt{bridge\_type =
+        "schrodinger\_follmer"}.
+  \item[\texttt{jax\_native\_smc.run\_tempered\_chain}] The on-device
+        tempered loop itself (single-window, single
+        \texttt{lax.while\_loop}). Internal but exposed.
+  \item[\texttt{jax\_native\_smc.TemperedState}] \texttt{NamedTuple}
+        carrying particles, log-weights, current $\lambda$, and HMC
+        kernel state across iterations of the on-device loop.
+  \item[\texttt{jax\_native\_smc\_nuts.*}] NUTS variant of the above.
+        Documented dead-end; see Section~\ref{sec:nuts-failed}. Not
+        for production use.
+  \item[\texttt{tempered\_smc.run\_smc\_window}] BlackJAX-wrapped
+        cold-start equivalent of
+        \texttt{run\_smc\_window\_native}. Slower, easier to debug.
+  \item[\texttt{tempered\_smc.run\_smc\_window\_bridge}] BlackJAX-
+        wrapped Gaussian-bridge warm-start. The
+        \texttt{bridge\_type = "gaussian"} path lives here; the
+        JAX-native side currently only implements the SF variant.
+  \item[\texttt{mass\_matrix.estimate\_mass\_matrix}] Diagonal mass-
+        matrix estimator from a particle cloud (variance with a
+        small regularisation floor). Re-called per tempering level.
+  \item[\texttt{sampling.sample\_from\_prior}] Convenience prior
+        sampler in unconstrained space, used at cold start.
+  \item[\texttt{sf\_bridge.bures\_wasserstein\_map}] BW transport
+        matrix between two PSD covariances.
+  \item[\texttt{sf\_bridge.bw\_geodesic}] Closed-form Bures--
+        Wasserstein geodesic between two Gaussians, parameterised by
+        $t \in [0, 1]$.
+  \item[\texttt{sf\_bridge.estimate\_target\_gaussian}] Single-step
+        importance-sampling fit of $q_1$ (the new posterior) given
+        $q_0$ (the previous posterior).
+  \item[\texttt{sf\_bridge.estimate\_target\_gaussian\_annealed}]
+        $K$-stage tempered SMC fit of $q_1$ with random-walk
+        Metropolis. Activated by \texttt{sf\_q1\_mode = "annealed"}.
+  \item[\texttt{sf\_bridge.fit\_sf\_base}] Top-level entry point for
+        the SF/BW bridge: returns the blended Gaussian to seed the
+        next window.
+  \item[\texttt{sf\_bridge.estimate\_fim\_hessian}] Diagonal Fisher-
+        information estimate from the new-window log-likelihood
+        Hessian; used by the info-aware blending mode.
+  \item[\texttt{sf\_bridge.per\_eigenvector\_blend} /
+        \texttt{info\_aware\_bridge\_mean}] Per-direction blending
+        between $m_0$ and $m_1$ keyed off the FIM eigenvalues.
+        Activated by \texttt{sf\_info\_aware = True}.
+\end{description}
+
+\subsection{\texorpdfstring{\texttt{smc2fc/filtering/}}{smc2fc/filtering/}}
+
+\begin{description}\small
+  \item[\texttt{gk\_dpf\_v3\_lite.make\_gk\_dpf\_v3\_lite\_log\_density\_compileonce}]
+        Build the closed-over inner-PF log-likelihood for a single
+        observation window. The compile-once variant the JAX-native
+        backend consumes.
+  \item[\texttt{gk\_dpf\_v3\_lite.make\_gk\_dpf\_v3\_lite\_log\_density}]
+        Per-call variant; closes over data values rather than just
+        shapes. Used by the BlackJAX-wrapped backend.
+  \item[\texttt{\_gk\_kernel.compute\_ess}] Effective sample size from
+        log-weights.
+  \item[\texttt{\_gk\_kernel.silverman\_bandwidth}] Silverman's rule
+        bandwidth for the smoothing kernel.
+  \item[\texttt{\_gk\_kernel.log\_kernel\_matrix}] Log of the
+        Gaussian kernel matrix between particles, used by the
+        Liu--West smoothing step.
+  \item[\texttt{\_gk\_kernel.smooth\_resample\_basic}] Plain
+        systematic resample with Liu--West shrinkage and Gaussian
+        smoothing.
+  \item[\texttt{\_gk\_kernel.smooth\_resample\_ess\_scaled}] As
+        above, with bandwidth scaled by ESS to avoid over-smoothing
+        when ESS is high.
+  \item[\texttt{\_gk\_kernel.smooth\_resample}] Adaptive wrapper that
+        dispatches to one of the variants above depending on ESS.
+  \item[\texttt{\_gk\_kernel.smooth\_resample\_ess\_scaled\_lw}]
+        Log-weighted variant for use inside the bootstrap filter
+        likelihood evaluation.
+  \item[\texttt{transport\_kernel.compute\_kernel\_factor}] Nystr\"om
+        low-rank kernel factor between $N$ particles and $r$ random
+        anchors; the $K_{NR}$ matrix in
+        Section~\ref{sec:ot-rescue}.
+  \item[\texttt{transport\_kernel.factor\_matvec}] Mat-vec via the
+        Nystr\"om factorisation; $O(Nr)$ instead of $O(N^2)$.
+  \item[\texttt{transport\_kernel.factor\_matvec\_batch}] Batched
+        version of the same.
+  \item[\texttt{sinkhorn.sinkhorn\_scalings}] Sinkhorn iterations on
+        the low-rank-kernel-factored transport problem, returning the
+        $(u, v)$ scaling vectors.
+  \item[\texttt{project.barycentric\_projection}] Barycentric
+        projection of a source cloud onto a target cloud given
+        Sinkhorn scalings $(u, v)$ and the kernel factor.
+  \item[\texttt{resample.ot\_resample\_lr}] Top-level OT-rescue:
+        Sinkhorn $\to$ projection $\to$ sigmoid blend with the
+        systematic-resample output.
+\end{description}
+
+\subsection{\texorpdfstring{\texttt{smc2fc/control/}}{smc2fc/control/}}
+
+\begin{description}\small
+  \item[\texttt{control\_spec.ControlSpec}] Dataclass describing the
+        controller's task: cost callable, schedule decoder, horizon
+        length, initial state estimate, reference dynamics
+        parameters.
+  \item[\texttt{config.SMCControlConfig}] Configuration dataclass for
+        the controller's tempered-SMC$^2$ loop (counterpart to
+        \texttt{SMCConfig} on the inference side).
+  \item[\texttt{tempered\_smc\_loop.run\_tempered\_smc\_loop\_native}]
+        JAX-native control SMC$^2$ loop: tempers the prior toward
+        the cost-as-likelihood and returns the posterior cloud
+        (mean = recommended $\bar\theta_{\rm ctrl}$).
+  \item[\texttt{tempered\_smc\_loop.run\_tempered\_smc\_loop}]
+        BlackJAX-wrapped reference equivalent.
+  \item[\texttt{rbf\_schedules.RBFSchedule}] Gaussian-RBF schedule
+        decoder \eqref{eq:schedule-decoder}: maps a coefficient
+        vector to a $U(t)$ trajectory.
+  \item[\texttt{calibration.calibrate\_beta\_max}] Choose the high-
+        $\lambda$ inverse temperature from the cost spread of the
+        prior cloud.
+  \item[\texttt{calibration.build\_crn\_noise\_grids}] Pre-sample
+        common-random-number diffusion shocks for use across the
+        tempering schedule.
+  \item[\texttt{diagnostics.plot\_cost\_histogram} /
+        \texttt{plot\_schedule\_comparison} /
+        \texttt{plot\_trajectories} / \texttt{print\_smc\_step} /
+        \texttt{evaluate\_gates}] Post-hoc inspection helpers; not on
+        the run-time critical path.
+  \item[\texttt{lqg.controller.LQGSpec} / \texttt{LQGController} /
+        \texttt{build\_lqg\_open\_loop\_schedule}] LQG baseline with
+        a finite-horizon Riccati solver. Provides a sanity-check
+        comparator to the tempered-SMC$^2$ controller.
+  \item[\texttt{lqg.linearize.linearize\_drift\_at}] Local
+        linearisation of the SDE drift at an operating point; used
+        by the LQG baseline.
+  \item[\texttt{lqg.riccati.solve\_riccati\_backward} /
+        \texttt{compute\_lqr\_gain}] Backward Riccati integration and
+        LQR gain extraction.
+\end{description}
+
+\subsection{\texorpdfstring{\texttt{smc2fc/simulator/}}{smc2fc/simulator/}}
+
+\begin{description}\small
+  \item[\texttt{sde\_model.StateSpec}] Description of a single SDE
+        state component (name, prior, bounds).
+  \item[\texttt{sde\_model.ChannelSpec}] Description of a single
+        observation channel (which states it sees, noise model).
+  \item[\texttt{sde\_model.SDEModel}] The user-supplied model
+        interface: drift, diffusion, observation kernel, parameter
+        priors. Section~\ref{sec:setting} expands on this.
+  \item[\texttt{sde\_solver\_diffrax.solve\_deterministic\_jax}]
+        Deterministic-mean trajectory via diffrax (used for warm-
+        starts and diagnostics).
+  \item[\texttt{sde\_solver\_diffrax.solve\_sde\_jax}] Stochastic SDE
+        solve via diffrax with optional control schedule.
+  \item[\texttt{sde\_observations.generate\_all\_channels}] Sample
+        per-channel observations from a trajectory.
+\end{description}
+
+\subsection{\texorpdfstring{\texttt{smc2fc/transforms/} and top-level}{smc2fc/transforms/ and top-level}}
+
+\begin{description}\small
+  \item[\texttt{transforms.unconstrained.build\_transform\_arrays}]
+        Build the bound/scale arrays for the unconstrained-space
+        reparameterisation.
+  \item[\texttt{transforms.unconstrained.constrained\_to\_unconstrained}
+        / \texttt{unconstrained\_to\_constrained}] Bijection between
+        the user-facing constrained $\thetadyn$ and the HMC-friendly
+        unconstrained $u$.
+  \item[\texttt{transforms.unconstrained.log\_prior\_unconstrained}]
+        Log-prior in unconstrained space (with Jacobian correction).
+  \item[\texttt{transforms.unconstrained.split\_theta}] Slice an
+        unconstrained vector into dynamics and control halves.
+  \item[\texttt{estimation\_model.EstimationModel}] User-side
+        inference interface (parameter list, bounds, log-prior,
+        link to \texttt{SDEModel}).
+\end{description}
