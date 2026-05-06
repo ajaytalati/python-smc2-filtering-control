@@ -129,17 +129,38 @@ Python reference at
 
 ### GPU saturation
 
-A separate
-[`tools/bench_gpu_bistable.jl`](../../tools/bench_gpu_bistable.jl)
-runs the bootstrap PF at truth on K = 1,000,000 fp32 particles
-resident on `CUDA.CuArray`. The framework's GPU PF path is wired
-end-to-end (Phase 6 follow-up #2, see SMC2FC.jl README) and 4.6 GB
-VRAM is allocated, but the per-step inner work decomposes into ~10
-small CUDA kernel launches per step × 432 steps ≈ 4,320 launches per
-PF call. **Launch latency dominates** over compute, so SM utilisation
-hovers near 0 % on `nvidia-smi dmon`. To actually saturate the SMs the
-inner step needs to fuse into a single `KernelAbstractions.@kernel` —
-tracked as Phase 6 follow-up #2.5 in the SMC2FC.jl README.
+Two GPU benches sit next to each other:
+
+1. [`tools/bench_gpu_bistable.jl`](../../tools/bench_gpu_bistable.jl) —
+   runs the framework's `bootstrap_log_likelihood` with `CuArray`
+   buffers (Phase 6 follow-up #2). Wires end-to-end, allocates 4.6 GB
+   VRAM, but the per-step inner work decomposes into ~10 small CUDA
+   kernel launches × 432 steps ≈ 4,320 launches per PF call.
+   **Launch latency dominates over compute** → sm % near 0 on
+   `nvidia-smi dmon`. ~1.6× faster than CPU.
+
+2. [`tools/bench_gpu_bistable_fused.jl`](../../tools/bench_gpu_bistable_fused.jl)
+   — Phase 6 follow-up **#2.5, now landed**. A single
+   `KernelAbstractions.@kernel` fuses the entire T = 432-step
+   per-particle PF trajectory into ONE launch (one thread per
+   particle, the full time loop runs inside the kernel body). Total
+   launches per PF call: 1, plus a tiny `logsumexp` at the end.
+   **GPU saturated** — `nvidia-smi dmon -s u -c 120 -d 1` reports
+   **sm % = 100** for 10 consecutive samples during the 10-second
+   sustained 5000-call run.
+
+   Numbers (K = 1M fp32 particles, T = 432 obs steps, RTX 5090):
+   - Single call: 18 ms (cold JIT) → 2.1 ms (warm sustained)
+   - Throughput: **2.45e10 particle-steps / sec** (11,529× faster
+     than CPU at K = 5k Float64, which manages 2.12e6 ops/sec)
+   - VRAM: 3.25 GiB (noise grids dominate — `(K, T+1)` Float32 ×2)
+
+   Caveat: this fused kernel runs the bootstrap PF **without
+   per-step resampling** — the trade-off that makes the trajectory
+   embarrassingly parallel. For T ≤ ~500 and K ≥ 10⁵ the estimator
+   variance is acceptable. For longer horizons (degeneracy collapses
+   the cloud), use the framework's multi-launch path which has
+   per-step Liu-West shrinkage + systematic resampling.
 
 ### Threading
 

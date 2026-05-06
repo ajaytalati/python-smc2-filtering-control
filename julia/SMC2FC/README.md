@@ -191,7 +191,33 @@ Both items the v1 README flagged as deferred have been delivered:
    evaluated three ways — CPU per-particle, CPU batched, GPU batched —
    all three agree within PF Monte Carlo σ.
 
-Open work that is genuinely out of scope here:
+Phase 6 follow-up #2.5 — fused single-kernel GPU PF — landed:
+
+   The framework's `bootstrap_log_likelihood` (CuArray-backed) is
+   correct end-to-end but **launch-bound**: each PF step decomposes
+   into ~10 small CUDA kernel launches × T steps ≈ thousands of
+   launches per call. A demo at K = 1M fp32 reports `nvidia-smi`
+   sm % near 0 — the GPU sits idle waiting for the next launch.
+
+   The fix is a single `KernelAbstractions.@kernel` that fuses the
+   per-particle PF trajectory into ONE launch (one thread per
+   particle, the full T-step loop inside the kernel body). Demo:
+   [`version_1_Julia/tools/bench_gpu_bistable_fused.jl`](../../version_1_Julia/tools/bench_gpu_bistable_fused.jl)
+   — at K = 1M fp32 / T = 432 / RTX 5090:
+
+   - 2.45e10 particle-steps/sec (sustained); **11,529× faster** than
+     CPU at K = 5k Float64.
+   - `nvidia-smi dmon` reports sm % = 100 for 10 consecutive 1-s
+     samples during a 10 s sustained run.
+   - 18 ms cold-JIT → 2.1 ms warm sustained per call.
+   - 3.25 GiB VRAM for noise grids (K × (T+1) Float32 × 2).
+
+   Caveat: the fused kernel runs bootstrap PF **without per-step
+   resampling** (the trade-off that makes the trajectory
+   embarrassingly parallel). Acceptable for T ≤ ~500 + K ≥ 10⁵; for
+   longer horizons use the framework's multi-launch path.
+
+   **What's still genuinely out of scope** in this port:
    - **Enzyme reverse-mode AD** as the production backend instead of
      ForwardDiff. Charter §13 names Enzyme as the preferred AD; the
      hooks are in `HMC.jl` (`build_target(...; ad_backend=:Enzyme)`),
@@ -200,6 +226,10 @@ Open work that is genuinely out of scope here:
    - **Full FSA-v5 model** wired against this framework end-to-end.
      The framework is model-agnostic (charter §17), so this lives in
      `models/fsa_high_res/` and is its own port effort.
+   - **General fused-kernel framework support**: the bistable demo
+     above hand-rolls one kernel per model. A model-agnostic
+     `EstimationModel.fused_step_kernel!` field that compiles into
+     the framework's generic GPU PF driver is a follow-up.
 
 ## How this composes with the Python `smc2fc/`
 
