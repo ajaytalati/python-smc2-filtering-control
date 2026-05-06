@@ -113,17 +113,65 @@ Driver: [`tools/bench_smc_control_bistable.jl`](../../tools/bench_smc_control_bi
 
 ## B3 — Closed-loop (filter → plan → apply)
 
-Pending. The closed-loop bench is the next port deliverable. It
-composes B1 (filter Phase 1, 0–24 h, no control) with B2 (planner
-running on the posterior-mean params for Phase 2, 24–72 h) and a
-plant-side rollout to compare:
-  - SMC²-with-posterior controller (B3 path)
-  - SMC²-with-truth oracle (uses B1's truth bypass)
-  - default schedule
+Pipeline:
+  Phase 1 (0 ≤ t < 24 h, no control): simulate true plant → 144 obs →
+    run SMC² over 8D θ → posterior-mean params + posterior-mean state at t=24h.
+  Phase 2 (24 ≤ t < 72 h, planned control): run SMC²-as-controller TWICE,
+    once with posterior-mean params (closed-loop), once with truth params
+    (oracle). Default schedule = `u_target = u_on = 0.5` throughout.
+    Apply each schedule to the TRUE plant (100 trials each), record cost
+    + basin-transition rate.
 
-Driver to be added: `tools/bench_smc_closed_loop_bistable.jl`. See the
-Python reference at
-[`../../../version_1/tools/bench_smc_closed_loop_bistable.py`](../../../version_1/tools/bench_smc_closed_loop_bistable.py).
+### Phase 1 posterior (rel.err vs truth)
+
+| param   | **Python** | **Julia** |
+|---------|------------|-----------|
+| α       | 6.1 %      | 32 %      |
+| a       | 0.8 %      | 23 %      |
+| σ_x     | 0.4 %      | 39 %      |
+| γ       | 5.1 %      | 23 %      |
+| σ_u     | 0.3 %      | 36 %      |
+| σ_obs   | 3.0 %      | 2.6 %     |
+
+The Python's MCLMC sampler with the JAX-side full-window run gets a
+much tighter posterior on the dynamics params from the same 144 Phase-1
+obs. The Julia bench uses AdvancedHMC.jl + ForwardDiff at `n_smc = 32`
+(small cloud for 24-thread CPU + ~16 s wall) and recovers σ_obs to
+within 3 % but the dynamics params at 22–39 %. Bumping `n_smc` toward
+the Python's effective cloud size would close most of that gap. The
+B3 gates measure **closed-loop quality** (does the planner do well
+under the posterior?), not posterior tightness — so this only matters
+indirectly through the schedule shape.
+
+### Phase 2 closed-loop performance
+
+| schedule                 | transition rate (Python) | transition rate (Julia) |
+|--------------------------|--------------------------|--------------------------|
+| **SMC²-with-posterior**  | **100 %**                | **100 %**                |
+| SMC²-with-truth (oracle) | 100 %                    | 100 %                    |
+| default u_on=0.5         | 100 %                    | 100 %                    |
+
+| gate                                          | Python  | Julia  |
+|------------------------------------------------|---------|--------|
+| closed-loop transition rate ≥ 80 %            | 100 % ✓ | 100 % ✓ |
+| closed-loop cost ≤ 1.20 × oracle              | 0.988× ✓ | **0.885× ✓** |
+
+The SMC²-with-posterior is **statistically tied with the oracle** in
+both languages — the framework's filter→control pipeline composes
+end-to-end without the posterior uncertainty hurting closed-loop
+quality.
+
+Convergence (Julia, 24 threads):
+  Phase 1 filter:    6 tempering levels, ~16 s
+  Phase 2 posterior: 5 tempering levels, ~3 s
+  Phase 2 oracle:    5 tempering levels, ~2 s
+  Plant rollouts:    100 trials × 3 schedules, < 1 s
+
+Plot: [`B3_closed_loop_diagnostic.png`](B3_closed_loop_diagnostic.png) —
+2×2 panel grid, panel-for-panel match of the Python:
+[`../../../version_1/outputs/bistable_controlled/B3_closed_loop_diagnostic.png`](../../../version_1/outputs/bistable_controlled/B3_closed_loop_diagnostic.png).
+
+Driver: [`tools/bench_smc_closed_loop_bistable.jl`](../../tools/bench_smc_closed_loop_bistable.jl).
 
 ## Side notes
 

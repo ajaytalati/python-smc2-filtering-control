@@ -1,0 +1,14 @@
+filter_n_temp=6
+filter_elapsed=15.579263045
+rel_err_alpha=0.3225706039207097
+rel_err_a=0.2327054060494248
+rel_err_sigma_x=0.38889186187897007
+rel_err_gamma=0.22745286814514587
+rel_err_sigma_u=0.36366894186584314
+rel_err_sigma_obs=0.02619735188221381
+rate_post=1.0
+rate_oracle=1.0
+rate_default=1.0
+cost_post=0.01082929739395616
+cost_oracle=0.01223668153835105
+cost_default=0.0125
