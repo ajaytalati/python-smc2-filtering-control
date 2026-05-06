@@ -1,0 +1,1400 @@
+\documentclass[11pt,a4paper]{article}
+\input{preamble.tex}
+
+\title{A Joint LEAN4-and-Julia Charter\\
+  for the FSA + \texttt{smc2fc} Stack\\
+  \large Part I: LEAN4 as the formal source of truth for FSA models.\\
+  Part II: Julia as the production framework for inference and control.\\
+  Together: a typed pipeline from LaTeX equations to running code,\\
+  with no Python pattern-matching surface for LLM agents to fall through.}
+\author{Ajay Talati \quad+\quad Claude (post-mortem author)}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This document is a two-part post-mortem-and-charter for a project
+that has been burned once too often by LLM coding agents pattern-
+matching their way through Python+JAX scientific code. \textbf{Part I}
+records the failure mode that made the FSA-v5 model implementation
+and its import into the \texttt{smc2fc} framework a multi-day,
+expensive process: \emph{LLM coding agents pattern-match on variable
+names instead of building a semantic model of types, roles,
+dimensions, and pipeline position}. It prescribes the structural
+fix on the model side: LEAN4 as the formal source of truth, with
+Python as a secondary, differentially-tested artefact.
+\textbf{Part II} extends the same diagnosis to the
+\texttt{smc2fc} framework itself --- also Python, also
+agent-touched, also exposed to the same pattern-matching surface
+--- and prescribes the matching structural fix: a Julia port
+optimised for Julia idioms (multiple dispatch, parametric types,
+native loops, \texttt{AbstractArray} dispatch), with both CPU and
+GPU backends in scope from day one. Part II is explicitly \emph{not}
+a Python-in-Julia re-skin; an idiomatic Julia codebase is the
+deliverable, and the work amounts to roughly seven hours of focused
+translation between two scientific computing languages. The two
+parts together form a single typed pipeline: LaTeX equations →
+LEAN4 reference (model side) → Julia framework (\texttt{smc2fc}
+side), with Python remaining in service as the differentially-tested
+fast path. This document exists so that no future iteration
+relitigates the question.
+\end{abstract}
+
+\tableofcontents
+
+\newpage
+\part{LEAN4-First Charter for FSA Model Development}
+\label{part:lean4}
+
+\section*{Part I scope note}
+
+What follows in Part I is the standalone LEAN4 charter, included
+here verbatim so this document is self-contained for an agent who
+has not read the original at
+\path{FSA_model_dev/LaTex_docs/lean4_first_charter.pdf}. Part I
+addresses the \textbf{model side}: how new mathematical models
+(FSA-v5 today, future variants tomorrow) are specified and
+verified before any Python implementation is written. Part II
+(below) extends the same discipline to the \texttt{smc2fc}
+framework that consumes those models.
+
+\section{The problem in one paragraph}
+\label{sec:problem-lean4}
+
+The current FSA development cycle is: write the mathematical model
+in LaTeX; ask an agent to port it to Python; spend days hunting bugs
+the agent introduced; eventually ship, often with errata documented
+post-deployment. The bottleneck is \emph{agent pattern-matching}, not
+modelling complexity. A junior human collaborator with the same LaTeX
+source would not make the same class of mistake, because they would
+read the equations, internalise that $\theta_{\rm ctrl} \in
+\mathbb{R}^{16}$ and $\theta_{\rm dyn} \in \mathbb{R}^{37}$ are
+different objects, and refuse to compare them as scalar intervals.
+LLM agents reach for the strongest training association of the name
+\texttt{theta} and write the most-likely-looking code. The fix has
+to be structural --- something that makes the wrong code refuse to
+compile --- not motivational.
+
+The audience for this document is two-fold: (a) the user, as a
+personal accountability artefact recording why the LEAN4-first
+process is being adopted and at what point; and (b) every future
+Claude (or other LLM) coding agent that touches an FSA model, who
+must read this charter at session start and follow the process it
+prescribes.
+
+\section{Concrete evidence}
+\label{sec:evidence}
+
+This section anchors the post-mortem in named, citable incidents.
+No vague complaints; every claim has a file path or commit hash
+attached.
+
+\subsection{Variable-name collisions in the live code}
+\label{sec:evidence-collisions}
+
+The same identifier \texttt{theta} refers to two fundamentally
+different mathematical objects in two parts of the codebase, and
+each carries a different dimension, role, and domain.
+
+\paragraph{(a) \texttt{theta} as 16-D RBF schedule coefficients
+(controller decision variable).} In
+\path{models/fsa_high_res/control.py}, lines 61--65:
+\begin{lstlisting}[language=Python]
+def schedule_from_theta(theta: jnp.ndarray) -> jnp.ndarray:
+    theta_B = theta[:n_anchors]
+    theta_S = theta[n_anchors:]
+    raw_B = c_Phi + jnp.einsum('a,ta->t', theta_B, Phi_design)
+\end{lstlisting}
+Here \texttt{theta} is a length-16 vector ($2 \times n_{\rm anchors}$,
+with $n_{\rm anchors} = 8$), interpreted as RBF basis coefficients
+that, after a sigmoid envelope, parameterise the dual-channel
+control schedule $\Phi(t)$. It is the controller's
+\emph{decision variable}. It lives in $\mathbb{R}^{16}$. Its prior
+breadth is the scalar \texttt{sigma\_prior} in
+\path{smc2fc/control/config.py:28}.
+
+\paragraph{(b) \texttt{theta} as 37-D dynamics-parameter posterior
+(SMC$^2$ inference target).} In
+\path{models/fsa_high_res/estimation.py}, the function
+\verb|get_init_theta()| at line 513--520:
+\begin{lstlisting}[language=Python]
+def get_init_theta():
+    """Return prior-mode parameter vector (length = len(PARAM_PRIOR_CONFIG))."""
+    return np.array([_mode(pt, pa) for _, (pt, pa)
+                     in PARAM_PRIOR_CONFIG.items()],
+                    dtype=np.float32)
+\end{lstlisting}
+Here \texttt{theta} is a length-37 vector of physiological
+parameters --- rate constants, amplitudes, decay times, observation
+noise scales --- whose posterior the SMC$^2$ machinery infers from
+data. It is the inference \emph{target}, not a decision variable.
+It lives in $\mathbb{R}^{37}$. Its prior is component-wise
+log-normal, not Gaussian; the prior breadth varies per parameter.
+
+\paragraph{Why this matters.} An agent reading either file sees
+\texttt{theta}, a flat numpy array, and reaches for ``Gaussian prior
+on $\theta$'' --- which is correct in case (a) and wrong in case
+(b). An agent reasoning across files conflates the two and treats
+``the prior on $\theta$'' as a single concept with a single dimension
+and a single breadth. There is no warning sign in the Python code
+itself; the type is just \texttt{jnp.ndarray} in both places.
+
+\subsection{The Bug 5 incident}
+\label{sec:bug5}
+
+The named incident that motivated this charter, recorded verbatim
+from the user's feedback memory at
+\path{~/.claude/projects/.../memory/feedback_no_fabricated_bugs.md}:
+
+\begin{quote}\itshape
+During the FSA-v5 verification session on 2026-05-06 I logged a
+``Bug 5'' that claimed $\theta \in [-0.4, +0.5]$ for the controller's
+RBF schedule prior to keep the system in the healthy island.
+$\theta$ is a 16-dim vector (RBF coefficients across both Phi
+channels and \texttt{n\_anchors=8} anchors). The healthy island is a
+2D region in $(\Phi_B, \Phi_S)$ \textbf{control output space}, not in
+$\theta$ space. Comparing them as scalar intervals is incoherent. I
+conflated:
+\begin{itemize}
+\item SMC$^2$ parameter posterior $\theta$ (37-dim, the inferred
+  parameters)
+\item Controller RBF schedule $\theta$ (16-dim, the decision
+  variables)
+\end{itemize}
+both of which use \texttt{sigma\_prior} in the bench code, mentally
+collapsed to a single scalar. The bench code in front of me had
+\texttt{theta\_B = theta[:n\_anchors]} --- explicit vector indexing
+--- and I didn't internalize it.
+\end{quote}
+
+The agent in question was me. The user's verdict was ``stupid
+mistake''; the request was for guardrails. This document is the
+guardrail.
+
+\subsection{Plan churn in \texttt{claude\_plans/}}
+\label{sec:plan-churn}
+
+The repository's \path{claude_plans/} directory accumulates one
+markdown file per plan-mode session. The CLAUDE.md convention is
+that meaningful updates to a plan add a \verb|> Updated:| audit
+line below the title. As of this writing the directory contains
+eight plan files, of which \emph{seven have zero \texttt{Updated:}
+lines} --- they were drafted, never executed, never closed:
+
+\begin{itemize}\small
+  \item \path{FSA_v5_Implementation_Plan_for_the_fsa_high_res_Folder_2026-05-04_2238.md} (0 updates).
+  \item \path{Lyapunov_Stability_Analysis_for_FSA_v4_Plan_2026-05-04_1448.md} (0 updates).
+  \item \path{Ajays Notes Plan to update to version 5.md} (0 updates).
+  \item \path{Advice_on_smc2fc_Port_Cost_Function_Architecture_2026-05-05_1055.md} (0 updates --- advice-only, never tied to a closed task).
+  \item \path{Techical documentation plan - FSA_version_5_technical_guide tex.md} (0 updates).
+  \item \path{Ajays Notes - 1.md}, \path{Ajays Notes - 2.md} (0 updates).
+\end{itemize}
+
+The single plan that did execute is
+\path{FSA_dev_sandbox_mirror_the_SWAT_model_dev_pattern_v4_branch_2026-05-04_2353.md}
+(1 update line, 13/13 tests green at completion). The ratio of
+abandoned to executed plans (7:1) is not a sign of laziness; it is
+a sign that planning sessions repeatedly re-derive the same
+mathematical model in slightly-different shapes because no formal
+artefact pins the model down.
+
+\subsection{Errata after deploy}
+\label{sec:errata}
+
+Commit \texttt{d886f36} on the v4 branch:
+\begin{quote}\itshape
+docs: add FSA-v4 errata, open-loop limitation, and SMC$^2$ vs OT
+comparison.
+
+Documents the gap between the §4 narrative and the actual behaviour
+of \texttt{tools/optimize\_dynamic\_plan\_v4.py}, then frames smc2fc
+as the structural remedy.
+\end{quote}
+A documentation-correction commit recording bugs caught
+\emph{after} deployment, not during development. The fact that
+errata was needed at all is the evidence that the in-development
+verification was not strong enough; it does not matter how many
+tests pass on the final commit if the bugs are documented in a
+follow-up commit instead of caught at the place they were
+introduced.
+
+\section{Root-cause analysis}
+\label{sec:rca-lean4}
+
+\paragraph{LLMs are surface pattern-matchers.} They read source
+code primarily as text, not as a typed graph of objects with
+roles. When an agent sees \texttt{theta}, the most-trained
+association fires; the surrounding context is treated as
+secondary. This is not a defect of any particular model; it is the
+structural consequence of how the system is built. Asking an agent
+to ``be more careful'' is asking it to override its own training
+prior every time --- which empirically does not happen reliably,
+as §\ref{sec:bug5} demonstrates.
+
+\paragraph{Python provides no formal scaffolding to compensate.}
+\texttt{jnp.ndarray} is the type of both the 16-D control
+coefficient vector and the 37-D parameter posterior. There is no
+shape-aware static analyser running in the loop, no role tagging
+in the type system, no proof obligation attached to a function
+signature that the inputs satisfy any pre-condition. The senior
+engineer (the user) ends up as the only line of defence, and the
+\pounds\pounds\pounds\ in tokens is the cost of the user catching agent errors after
+the fact.
+
+\paragraph{Why ``tell agents to be more careful'' doesn't work.}
+The user's feedback memory at \path{feedback_no_fabricated_bugs.md}
+encodes a PRIMARY RULE --- \emph{build a semantic model BEFORE any
+claim} --- which is correct as a principle but unenforceable as a
+process. The rule depends on the agent \emph{choosing} to think
+rather than pattern-match. §\ref{sec:bug5} is the empirical proof
+that the choice is not reliably made. Every agent session is one
+roll of the dice on whether the rule fires that day.
+
+\section{The structural fix: LEAN4 as the source of truth}
+\label{sec:fix}
+
+\subsection{Dependent types make the collision a compile error}
+
+A LEAN4 function with the signature
+\[
+\texttt{evaluateCost} : \texttt{RBFCoeffs}\;16 \to \mathbb{R}
+\]
+syntactically refuses any value not of the exact type
+\texttt{RBFCoeffs 16}. The 37-dimensional parameter posterior
+$\theta_{\rm dyn} : \texttt{ParameterVector}\;37$ is a different
+type, and \texttt{lake build} will reject any code that conflates
+them. Pattern-matching on names becomes harmless because the type
+system catches the consequence at compile time, before any
+incoherent reasoning reaches the user.
+
+The two-dimensional output region $(\Phi_B, \Phi_S)$ from
+§\ref{sec:bug5} would, in LEAN4, have a type like
+\texttt{ControlOutput} that is \emph{not} the type of any prior on
+$\theta$. Writing $\theta \in [-0.4, +0.5]$ would not compile, full
+stop, because the right-hand side is a scalar interval and the
+left-hand side is a vector. The agent could not have made the
+mistake.
+
+\subsection{LEAN4 is also a programming language}
+
+LEAN4 compiles to native code via C. \texttt{lake build} produces
+a binary; a thin Python \texttt{ctypes} wrapper exposes each
+verified function as a Python callable. The same LEAN4 file is
+both the formal specification and the executable reference
+implementation. There is no ``the spec drifted from the code''
+failure mode because the spec \emph{is} the code.
+
+\subsection{mathlib already has the infrastructure}
+
+The mathematical objects FSA-v5 needs ---
+finite-dimensional real vector spaces, matrix operations,
+exponentials and logarithms, Hill functions, sigmoids,
+piecewise-linear schedule decoders, ODE integration --- are all
+already library imports in \texttt{mathlib}. There is no novel
+mathematics to formalise. Transcribing the FSA-v5 LaTeX into LEAN4
+is genuinely just translation.
+
+\subsection{What this does not solve}
+
+\begin{itemize}
+\item \emph{Floating-point semantics.} The gap between the LEAN4
+  notion of $\mathbb{R}$ and IEEE-754 double-precision arithmetic
+  is real and not addressed by this charter; it is bounded by the
+  tolerance threshold in the differential test (§\ref{sec:process}
+  step 6).
+\item \emph{GPU correctness.} The differential test runs the
+  Python implementation on whatever backend it normally uses
+  (JAX/XLA, GPU); the LEAN4 binary is CPU-only. Disagreements
+  driven by GPU-specific behaviour are out of scope for the LEAN4
+  reference itself and trusted as before.
+\item \emph{The transcription itself.} If the LaTeX$\to$LEAN4
+  transcription is wrong, both the LEAN4 reference and (likely)
+  the agent-written Python will be wrong in the same way. This is
+  why the LaTeX$\to$LEAN4 step is human-reviewed line-by-line; it
+  is the one place reviewer attention has to land.
+\end{itemize}
+
+\section{The new development process}
+\label{sec:process}
+
+The standing rule going forward, and the charter every future
+agent must follow:
+
+\begin{quote}\bfseries
+For every new mathematical model, every model extension, and every
+import into \texttt{smc2fc}, the LEAN4 specification is written
+before any Python implementation. The LEAN4 native binary is the
+authoritative reference. Python is differentially tested against
+it. Disagreement beyond a tolerance threshold is by construction a
+Python bug.
+\end{quote}
+
+Per function, the workflow is:
+
+\begin{enumerate}
+\item \textbf{LaTeX equations (as today).} Drift, diffusion, cost,
+  plant, schedule decoder, observation model --- written in
+  \path{LaTex_docs/sections/} using the existing notation
+  conventions.
+\item \textbf{LEAN4 transcription.} A new \path{lean/} directory in
+  the repo. The LaTeX equations are transcribed into LEAN4
+  \emph{definitions} (typed, with dimensions encoded in the type)
+  and \emph{implementations} (runnable code). Line-by-line,
+  side-by-side with the LaTeX. Straight translation, no design
+  work, no novel mathematics.
+\item \textbf{LEAN4 native compilation.} \texttt{lake build}
+  produces a native binary. A Python \texttt{ctypes} wrapper in
+  \path{lean/python_bridge/} exposes each function as a Python
+  callable.
+\item \textbf{Python implementation (agent-written, fast path).}
+  The agent writes the JAX/Python implementation as today,
+  optimised for GPU. The agent is permitted to pattern-match;
+  step 6 catches the consequences.
+\item \textbf{(Optional) property proofs.} Lipschitz, basin-of-
+  attraction theorems, monotonicity --- the kind of statement that
+  makes the LEAN4 spec a \emph{proof} not just a typed transcription.
+  Defer unless a specific incident motivates one. The charter does
+  not gate on these.
+\item \textbf{Differential testing.} A \texttt{pytest} harness using
+  \texttt{hypothesis} for random-input generation evaluates BOTH the
+  LEAN4 binary AND the Python implementation on a battery of inputs
+  sampled from the physiological-bound box. Any disagreement beyond
+  a tolerance threshold (default $10^{-6}$ in single-step drift,
+  $10^{-4}$ in integrated trajectory) is a Python bug.
+\item \textbf{\texttt{smc2fc} port.} The port is a thin shim from
+  the verified LEAN4 reference into the framework's
+  \texttt{EstimationModel} / \texttt{SDEModel} interfaces. The
+  shim is also differentially tested against the LEAN4 binary
+  before being merged.
+\end{enumerate}
+
+\section{Scope and timing (model side)}
+\label{sec:scope-lean4}
+
+\textbf{This is translation work, not research.} The LaTeX spec
+already exists; LEAN4 has the linear-algebra and ODE infrastructure;
+\texttt{mathlib} supplies the lemmas. The full FSA-v5 model is
+\textbf{one day's work for a competent human developer}. Any
+estimate quoting weeks per function is inflation; the user has
+explicitly rejected that framing and this document is bound by the
+rejection.
+
+\begin{center}\small
+\begin{tabular}{lll}
+\toprule
+Function & File & LEAN4 transcription \\
+\midrule
+FSA-v5 drift              & \path{models/fsa_high_res/_dynamics.py} & $\sim 2$ hours \\
+Cost (chance-constrained) & \path{models/fsa_high_res/control_v5.py} & $\sim 1.5$ hours \\
+StepwisePlant             & \path{models/fsa_high_res/_plant.py} & $\sim 1$ hour \\
+Schedule decoder (RBF)    & \path{models/fsa_high_res/control.py} & $\sim 30$ min \\
+Observation model         & (in \path{estimation.py}) & $\sim 1$ hour \\
+FFI wrapper + diff tests  & \path{lean/python_bridge/} & $\sim 2$ hours \\
+\midrule
+Total                     & --- & $\sim 8$ hours \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The LEAN4 source is roughly the same length as the LaTeX it
+transcribes. Most of the time goes into wiring up the FFI bridge
+and writing the differential-test harness; the math itself is
+direct.
+
+The cost/value frame: a single 8-hour LEAN4 transcription pass
+amortises across \emph{every future FSA version, every future model
+extension, and every future agent attempting a port to
+\texttt{smc2fc}}. The alternative --- paying for repeated agent
+rounds of pattern-match-then-hunt-bugs --- is what burned the
+\pounds\pounds\pounds\ this charter exists to stop.
+
+\section{What is and isn't covered (model side)}
+\label{sec:in-out-lean4}
+
+\paragraph{In scope.} Drift, cost, plant, schedule decoder,
+observation model. Typed LEAN4 reference implementations plus
+differential tests. The agent-written FSA-v5 surface in
+\path{models/fsa_high_res/} (2{,}200 Python LOC across 4 files;
+the LEAN4 transcription is much shorter).
+
+\paragraph{Out of scope (still trusted).} The SMC$^2$/PF framework
+code in \texttt{smc2fc/core/} and \texttt{smc2fc/filtering/} is
+already tested upstream and is not subject to \emph{this Part}.
+\textbf{Note:} Part II below proposes a Julia port of the framework
+that does subject this code to type-safety scrutiny by structural
+means; that is the joint deliverable of this combined charter.
+HMC and NUTS internals, the JAX-native compile-once architecture,
+GPU correctness, and IEEE-754 floating-point semantics are
+trusted as before.
+
+\paragraph{Trusted by transcription.} The LaTeX$\to$LEAN4 step is
+human-reviewed line-by-line. This is the one place reviewer
+attention has to land; the rest of the process is mechanical.
+
+\section{Audit checklist (model-side agent)}
+\label{sec:checklist-lean4}
+
+A future agent runs this checklist at session start, before
+touching any FSA-related Python file:
+
+\begin{itemize}
+\item[$\square$] Is there a LEAN4 reference for the function I am
+  about to touch? \emph{If no:} the charter says I am not allowed
+  to write the Python until the LEAN4 reference exists. Stop and
+  flag.
+\item[$\square$] Does \texttt{lake build} succeed on the current
+  commit (the LEAN4 reference type-checks)?
+\item[$\square$] Does the Python differential test pass against
+  the LEAN4 binary on the current commit (\texttt{pytest
+  tests/test\_lean4\_diff.py} is green)?
+\item[$\square$] Have I written down --- in plain English ---
+  the type, role, and pipeline position of every variable I am
+  about to reason about? (Per the PRIMARY RULE in
+  \path{feedback_no_fabricated_bugs.md}.)
+\item[$\square$] If I am about to claim a bug: do I have a
+  reproducer (input $\to$ both implementations $\to$ disagreement
+  beyond the tolerance threshold)? \emph{If no:} it is not a bug,
+  it is an open question; record it as such and move on.
+\end{itemize}
+
+If any box is unchecked, the agent does not proceed. The session
+is paused; the user is notified; the missing artefact is produced
+before any code is changed.
+
+\section{Closing of Part I}
+\label{sec:closing-lean4}
+
+The point of Part I is accountability on the model side. The named
+incident in §\ref{sec:bug5} was caused by an agent (me) pattern-
+matching on \texttt{theta} across two architectural layers it does
+not unify. The cost was burned trust and burned time. The charter
+prescribed in §\ref{sec:process} makes that class of error
+structurally impossible: the LEAN4 type-checker is unforgiving, and
+disagreements between LEAN4 and Python are by construction Python
+bugs.
+
+LEAN4 is never wrong about types. Python is. Agents pattern-match;
+LEAN4 does not. Part I is the bridge that makes the agent's
+limitations harmless on the model side.
+
+\textbf{Bridge to Part II.} The LEAN4 charter solves half of the
+problem --- the model side. What about the framework
+\texttt{smc2fc} itself? It is also Python, also agent-touched,
+also exposed to the same pattern-matching surface, and the
+empirical evidence in §\ref{sec:evidence} (the \texttt{theta} 16-D
+vs 37-D collision, the closure-of-data recompile bug, the
+NUTS-inside-vmap-inside-\texttt{lax.while\_loop} cliff) is at least
+as pointed about \texttt{smc2fc} internals as it is about
+\texttt{models/fsa\_high\_res/}. Part II prescribes the matching
+structural fix for the framework side.
+
+\newpage
+\part{Julia Port Charter for the \texttt{smc2fc} Framework}
+\label{part:julia}
+
+\section{The problem in one paragraph (framework side)}
+\label{sec:problem-julia}
+
+The \texttt{smc2fc} codebase is doing the right mathematics; the
+failure mode is the same as the FSA-v5 model side: agent
+pattern-matching across a Python codebase with no type-level
+enforcement of dimensions or roles. Part I solves half of this ---
+the model side --- by making LEAN4 the formal source of truth for
+the math \texttt{smc2fc} consumes. Part II solves the other half
+by porting the framework itself to a language where the type system
+catches the pattern-matching errors at compile time. The audience
+is the same two populations: the user (accountability) and future
+LLM agents (constitution loaded at session start).
+
+\section{The Python + LLM perfect storm}
+\label{sec:storm}
+
+Python and LLM coding agents combine into a particularly bad
+failure surface for the kind of math \texttt{smc2fc} does. This
+section names the four failure modes inside \texttt{smc2fc/}
+specifically.
+
+\subsection{Everything is \texttt{jnp.ndarray}}
+\label{sec:storm-ndarray}
+
+Python+JAX has one type for every numerical object regardless of
+shape, role, or origin. Concrete signatures from the live code:
+
+\paragraph{(a)} \path{smc2fc/core/jax_native_smc.py:67} ---
+\begin{lstlisting}[language=Python]
+def _ess_at_delta(loglikelihood_fn, particles, delta):
+    ...
+\end{lstlisting}
+\texttt{particles} is a 2-D array of shape \texttt{(n\_smc, d)}; the
+type annotation is just \texttt{jnp.ndarray}. An agent passing a
+single particle (a 1-D array of shape \texttt{(d,)}) gets a
+runtime broadcast surprise --- the function returns a wrong-shape
+result silently.
+
+\paragraph{(b)} \path{smc2fc/filtering/_gk_kernel.py:185} ---
+\begin{lstlisting}[language=Python]
+def smooth_resample_basic(particles, log_weights, ...):
+    ...
+\end{lstlisting}
+\texttt{log\_weights} could be a 1-D vector of length \texttt{n\_pf}
+(if the caller is operating on a single particle filter) or a 2-D
+\texttt{(n\_smc, n\_pf)} block (if the caller has already
+\texttt{vmap}'d over the SMC$^2$ outer cloud). Nothing in the
+signature says which. The function happens to work in both cases
+because of broadcasting; an agent reasoning about either case
+internalises one of the two and writes downstream code that breaks
+in the other.
+
+\paragraph{(c)} \path{smc2fc/core/tempered_smc.py} --- the
+BlackJAX-wrapped backend captures \texttt{data} in a closure per
+window. This is the bug §6 of the framework documentation
+documents: per-window recompiles dominate the runtime. The Python+
+JAX foible is invisible at the call site; an agent reading the
+function signature has no way to predict that \texttt{data} ends up
+hashed into the JIT cache key.
+
+\subsection{Mutability and pure-functional code coexist invisibly}
+
+In \path{smc2fc/control/diagnostics.py} the \texttt{matplotlib}
+helpers are imperative side-effectful Python; in
+\path{smc2fc/core/jax_native_smc.py} the SMC loop is
+pure-functional for JIT compatibility. Both files use the same
+\texttt{def} keyword, the same \texttt{jnp.ndarray} types, the same
+import style. An agent editing one file reaches for the pattern of
+the other and silently breaks the JIT contract --- mutating an
+array inside what was a pure function, capturing a non-traceable
+Python object inside a JIT'd closure. The LEAN4 charter's PRIMARY
+RULE (``build a semantic model before any claim'') has to fire on
+every cross-file edit; empirically it does not.
+
+\subsection{Closures over data are a recompile landmine}
+
+A long-running session that thinks it is reusing a JIT-compiled
+function silently re-traces because a dataclass's \texttt{\_\_hash\_\_}
+changed. Documented in framework-doc §6.1; an agent cannot infer
+this from any signature in the file because the cause lives in
+JAX's tracing semantics, not in the Python source.
+
+\subsection{The vmap/while-loop nesting cliff}
+\label{sec:storm-vmap}
+
+§6.4 of the framework documentation records that NUTS-inside-
+\texttt{vmap}-inside-\texttt{lax.while\_loop} is 60--85$\times$
+slower than HMC because of dynamic-tree-building inside nested
+control flow. This is a Python+JAX architectural consequence, not a
+mathematical one --- and it is exactly the kind of trap an agent
+walks into by pattern-matching ``NUTS is a strict upgrade from HMC''
+from training data. The signature
+\verb|nuts.build_kernel(...)| says nothing about the nesting cliff;
+the agent has to know JAX's compilation model to predict the
+disaster.
+
+\section{Why Julia narrows the failure surface}
+\label{sec:why-julia}
+
+\subsection{Multiple dispatch + parametric types}
+
+A Julia function declared
+\begin{lstlisting}
+function ess_at_delta(loglik::F, particles::Matrix{Float64},
+                      delta::Float64) where {F<:Function}
+    ...
+end
+\end{lstlisting}
+refuses anything else at compile-time. \texttt{Vector\{Float64\}}
+and \texttt{Matrix\{Float64\}} are different types; passing one
+where the other is expected does not silently broadcast. The
+single-particle vs particle-cloud confusion from
+§\ref{sec:storm-ndarray}(a) becomes a method-not-found error at the
+call site, not a wrong-shape result downstream.
+
+\subsection{Functional style is the default}
+
+Mutation is opt-in via the \texttt{!} suffix convention:
+\texttt{resample!(particles, weights)} mutates in place;
+\texttt{resample(particles, weights)} returns a fresh array. An
+agent reading any function signature can tell instantly which
+mode it is in. The Python invisibility from §\ref{sec:storm}'s
+``imperative diagnostics file vs pure-functional SMC loop file''
+disappears.
+
+\subsection{Code reads like the LaTeX}
+
+A Julia drift function with parametric types reads almost
+identically to the equation it transcribes:
+\begin{lstlisting}
+function drift(x::FSAState{6}, theta::DynParams)::FSATangent{6}
+    ...
+end
+\end{lstlisting}
+This is much closer to the LEAN4 spec from Part I than the
+equivalent Python. An agent moving between LEAN4 and Julia is
+moving between two flavours of typed dispatch; an agent moving
+between LEAN4 and Python is moving between a typed system and an
+untyped one and has to translate types out of sight at every step.
+
+\subsection{No two-language problem}
+
+Python+JAX exists because Python is too slow for the inner loop;
+JAX is the workaround that ships the inner loop to XLA. Julia is
+fast natively. The JIT-traced / non-traced split that creates the
+invisible mutability landmine of §\ref{sec:storm} is a
+\emph{Python} artefact; in Julia, the inner and outer loops are
+the same kind of code.
+
+\subsection{Static analysis catches the rest}
+
+\texttt{JET.jl} runs a static type analysis on the entire package
+and flags every type uncertainty. This is a single command:
+\begin{lstlisting}
+julia --project=. -e 'using JET; report_package(SMC2FC)'
+\end{lstlisting}
+There is no analogue in Python (\texttt{mypy} doesn't reach into
+JAX trees, and even where it does, the pervasive
+\texttt{jnp.ndarray} type defeats it).
+
+\subsection{LEAN4 alignment}
+
+A LEAN4 specification for the FSA model (per Part I) translates
+to Julia almost one-to-one because both languages are
+dispatch-based and type-driven. The LEAN4 $\to$ Julia
+transcription is shorter than LEAN4 $\to$ Python by roughly the
+ratio of the language verbosities. The combined LEAN4 reference
+plus Julia framework forms a single coherent typed pipeline
+\emph{from the LaTeX equations to the running code}. Python sits
+awkwardly in the middle of this pipeline today; remove it from
+the framework side and the pipeline aligns.
+
+\section{Existing Julia scaffolding --- what we re-use}
+\label{sec:scaffolding}
+
+The bulk of \texttt{smc2fc/} is wiring well-known algorithms
+together. Julia already has each of those algorithms as a
+maintained library; the port is mostly \emph{replacing custom code
+with library calls}. The table below is the per-module mapping.
+
+\begin{center}\footnotesize
+\begin{longtable}{p{4.5cm}p{4.5cm}p{6cm}}
+\toprule
+Python \texttt{smc2fc} module & Julia replacement & Notes \\
+\midrule
+\endhead
+\path{core/jax_native_smc.py} HMC kernel & \texttt{AdvancedHMC.jl} & The original HMC implementation BlackJAX modelled on. Direct drop-in. \\
+\path{core/tempered_smc.py} & Custom (built on \texttt{AbstractMCMC.jl}) & No exact analogue but the abstractions are there; $\sim 150$ lines of Julia. \\
+\path{core/sf_bridge.py} BW geodesic & \texttt{LinearAlgebra} (stdlib) + \texttt{Distributions.jl} & Matrix square root, multivariate Gaussian. $\sim 50$ lines. \\
+\path{core/mass_matrix.py} & \texttt{Statistics.var} (stdlib) & Literal one-liner. \\
+\path{filtering/sinkhorn.py} + \path{transport_kernel.py} + \path{resample.py:ot_resample_lr} & \texttt{OptimalTransport.jl} & Maintained, supports entropic + low-rank. \\
+\path{filtering/_gk_kernel.py} Liu--West & Custom ($\sim 80$ lines) & Standard moment-match + Gaussian smoother; trivial in Julia. \\
+\path{filtering/gk_dpf_v3_lite.py} & Custom ($\sim 150$ lines) & Bootstrap filter loop; reuses \texttt{Distributions.jl} for log-density. \\
+\path{simulator/sde_solver_diffrax.py} & \texttt{StochasticDiffEq.jl} (part of \texttt{DifferentialEquations.jl}) & Gold standard. Replaces diffrax wholesale. \\
+\path{transforms/unconstrained.py} & \texttt{Bijectors.jl} & The Julia ecosystem's standard bijection library. \\
+Einsum-style ops (Liu--West kernels, RBF designs) & \texttt{Tullio.jl} or built-in broadcasting & Often broadcasting alone suffices. \\
+Autodiff for HMC gradients & \texttt{Enzyme.jl} (preferred) or \texttt{Zygote.jl} & \texttt{Enzyme.jl} is more efficient for the kind of code here. \\
+Static analysis & \texttt{JET.jl} & The ``Julia answer to the LLM pattern-match risk''. \\
+Testing harness & \texttt{Test.jl} (stdlib) & Standard. \\
+GPU arrays & \texttt{CUDA.jl} & NVIDIA backend; \texttt{CuArray} parametric type plays naturally with the generic \texttt{AbstractArray\{T,N\}} dispatch the rest of the package uses. \\
+Cross-device kernels & \texttt{KernelAbstractions.jl} & Write a kernel once, runs on CPU (\texttt{CPU()}) or GPU (\texttt{CUDABackend()}). Used where broadcasting alone won't suffice. \\
+\midrule
+\multicolumn{3}{l}{\emph{Performance-critical scaffolding (added per external review):}} \\
+\midrule
+Small fixed-size arrays (state, params) & \texttt{StaticArrays.jl} & \textbf{Critical.} \texttt{SVector\{6, Float64\}} is stack-allocated, zero-overhead, strictly sized. The Julia equivalent of XLA unrolling small arrays into registers. Without it, \texttt{State\{6\}} and \texttt{DynParams} would heap-allocate on every step and the inner SDE/SMC loop would regress badly versus JAX. \\
+Particle cloud layout & \texttt{StructArrays.jl} & Struct-of-Arrays (SoA) memory layout. A \texttt{Particle} struct stored in a \texttt{StructArray} reads as \texttt{for p in particles} but the underlying memory is contiguous per field; coalesced GPU access. \\
+Parameter blocks & \texttt{ComponentArrays.jl} & Flat \texttt{AbstractVector} view of nested \texttt{DynParams} / \texttt{CtrlParams} with dot-access syntax (\texttt{theta.k\_FB}). Plug-and-play glue between \texttt{AdvancedHMC.jl}, \texttt{Enzyme.jl}, and the domain types. \\
+Likelihood / posterior interface & \texttt{DensityInterface.jl} & Standard wrapper that makes any log-density function plug-and-play with \texttt{AdvancedHMC.jl} and the wider Julia MCMC ecosystem. \\
+Particle-filter primitives & \texttt{AdvancedPS.jl} (optional) & Battle-tested SMC sweeps, particle-Gibbs samplers, robust resampling schemes from the Turing ecosystem. May replace the $\sim 150$-line custom bootstrap-filter loop in \path{src/Filtering/Bootstrap.jl}. \\
+CPU thread parallelism & \texttt{Polyester.jl} (or \texttt{Base.Threads}) & Replaces JAX's \texttt{vmap} on the CPU backend. \texttt{Polyester.@batch} has lower overhead than \texttt{Threads.@threads} for tight inner loops. \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+The custom code in the port --- the SMC$^2$ tempering loop, the
+bootstrap filter wrapper, Liu--West shrinkage, the
+cost-as-likelihood controller loop, the bridge-warm-start glue ---
+is roughly \textbf{1{,}000--1{,}200 lines of Julia}. Compare to the
+$\sim 5{,}600$ lines of Python the port replaces. The reduction is
+mostly the disappearance of JAX-specific boilerplate (closures,
+\texttt{Partial} wrappers, \texttt{lax.while\_loop} scaffolding,
+manual \texttt{jit} placement).
+
+\section{Hybrid CPU/GPU execution strategy}
+\label{sec:hybrid}
+
+The §\ref{sec:storm-vmap} ``vmap/while-loop nesting cliff'' has a
+deeper architectural cause that informs how the Julia port should
+allocate work to hardware. SMC$^2$ is structurally
+\emph{heterogeneous}: its inner loop and its outer loop have
+diametrically opposed hardware preferences, and the Python+JAX
+implementation could not separate them because JAX's JIT/closure
+model effectively forces all inside-trace work onto the same device.
+Julia's per-function compilation lifts that constraint, and the port
+should exploit it from day one.
+
+\subsection{The two phases of SMC$^2$ have opposite hardware
+profiles}
+
+\paragraph{Inner loop (particle filter, SDE simulation).} Massively
+parallel, SIMD-friendly, predictable control flow. Advancing
+$N \sim 10^4$ SDE trajectories simultaneously is the textbook
+GPU workload. Ideal hardware: \textbf{NVIDIA RTX 5090} (or
+equivalent --- the dominant cost is memory bandwidth $\times$ CUDA
+core count).
+
+\paragraph{Outer loop (parameter rejuvenation: HMC / NUTS).}
+Highly branchy, sequential per chain, dynamic control flow ---
+particularly NUTS, where the trajectory length is determined by a
+U-turn check whose branch pattern varies per particle. GPUs
+suffer from \emph{warp divergence} when neighbouring threads take
+different branches; this is exactly what causes the §\ref{sec:storm-vmap}
+60--85$\times$ slowdown. Ideal hardware: \textbf{Intel Core
+Ultra 9 285K} (or equivalent --- a strong-IPC, deep-cache,
+branch-predictor-rich CPU).
+
+\subsection{The Julia hybrid pipeline}
+
+The Julia port should run the two phases on the hardware they want
+and connect them with a low-bandwidth interface across the PCIe
+bus. The data-flow per outer SMC$^2$ iteration:
+
+\begin{enumerate}
+\item \textbf{Phase A (GPU).} The current parameter cloud
+  $\{\theta^{(m)}\}_{m=1}^M$ lives on the host. For each
+  $\theta^{(m)}$, a particle filter with $N$ state particles
+  is run \emph{on the GPU} via
+  \texttt{CuArray}-resident state, advancing all particles in
+  parallel via \texttt{KernelAbstractions.@kernel} or
+  \texttt{StochasticDiffEq.jl}'s GPU dispatch. The output is a
+  scalar $\widehat{L}_N(\theta^{(m)})$ per outer particle.
+\item \textbf{Phase B (PCIe, summary statistics only).} Only the
+  scalar $\widehat{L}_N(\theta^{(m)})$ (and, if HMC, its gradient
+  with respect to the 37-D $\theta^{(m)}$) is transferred from
+  device to host. Transferring a scalar or a 37-D vector across
+  PCIe Gen 5 takes microseconds --- entirely negligible against the
+  SDE integration time. The $N \times d$ particle state matrix is
+  \emph{not} transferred; it stays GPU-resident.
+\item \textbf{Phase C (CPU).} Tempered SMC$^2$ outer loop runs on
+  the host. Adaptive $\delta\lambda$ via bisection. Mass-matrix
+  re-estimation. HMC (or, optionally, NUTS) rejuvenation moves
+  via \texttt{AdvancedHMC.jl} on the CPU, where the dynamic
+  control flow benefits from branch prediction. The
+  multi-core architecture is exploited by wrapping the outer
+  particle loop in \texttt{Threads.@threads} or
+  \texttt{Polyester.@batch} --- each thread driving its own
+  GPU dispatch for inner work.
+\item \textbf{Phase D (PCIe, parameter vectors only).} The new
+  parameter proposals $\{\theta'^{(m)}\}$ are sent back across
+  PCIe to the GPU. 37-D vectors $\times M$ outer particles is
+  again negligible bandwidth.
+\item \textbf{Repeat.}
+\end{enumerate}
+
+\subsection{Why this was infeasible in Python+JAX}
+
+The JAX backend bakes the log-likelihood into a single JIT-compiled
+closure. Inside that closure, any device split has to be expressed
+as JAX operations, which means the entire trace must lower to one
+backend (XLA-CPU or XLA-GPU). Forcing the inner loop to GPU and
+the outer loop to CPU within the same JIT trace would require
+host-callback boundaries that defeat the JIT, or a two-program
+architecture with high-frequency device handoffs that defeat
+XLA's fusion. Either way, the per-iteration cost of the boundary
+exceeds the saving from the right-hardware allocation. So the
+JAX implementation chose ``all on GPU'', NUTS-inside-vmap-inside-
+\texttt{lax.while\_loop}, and paid the §\ref{sec:storm-vmap} 60--
+85$\times$ tax.
+
+In Julia, each function compiles independently. The
+\texttt{run\_particle\_filter!(filter\_state::GPUFilterState,
+theta::CuArray)} method dispatches to a CUDA kernel; the
+\texttt{rejuvenate!(cloud::CPUParameterCloud, log\_lik::Vector)}
+method dispatches to ordinary CPU code calling
+\texttt{AdvancedHMC.jl}. The boundary between them is just two
+function calls and one \texttt{Array(scalar\_loglik)} transfer ---
+no JIT trace to keep happy, no monolithic compilation unit to
+fragment.
+
+\subsection{Architectural type boundaries}
+
+Two parametric types make the hybrid contract explicit:
+\begin{lstlisting}
+# Particle states: GPU-resident.
+struct GPUFilterState{T}
+    particles::CuArray{T, 2}      # (n_pf, d_state)
+    weights::CuArray{T, 1}        # (n_pf,)
+end
+
+# Outer parameter cloud: CPU-resident.
+struct CPUParameterCloud{T}
+    theta::Matrix{T}              # (n_smc, d_theta), CPU
+    log_lik::Vector{T}            # (n_smc,), CPU
+end
+\end{lstlisting}
+The likelihood function consumed by \texttt{AdvancedHMC.jl}
+handles the host-device transfer internally:
+\begin{lstlisting}
+function compute_likelihood(theta_cpu::AbstractVector{Float64},
+                            filter_state::GPUFilterState)
+    theta_gpu = CuArray(theta_cpu)              # 37-D, microseconds
+    log_lik_gpu = run_particle_filter!(filter_state, theta_gpu)
+    return Array(log_lik_gpu)[1]                # scalar back, microseconds
+end
+\end{lstlisting}
+When \texttt{Enzyme.jl} or \texttt{Zygote.jl} differentiates this
+for HMC gradients, the VJP also handles the host-device boundary
+correctly --- the autodiff stays inside whichever device is doing
+the work and only the gradient w.r.t.\ \texttt{theta\_cpu}
+crosses back.
+
+\subsection{What this does to the NUTS question}
+
+§\ref{sec:storm-vmap} records that NUTS-inside-vmap-inside-
+\texttt{lax.while\_loop} is the architecturally infeasible
+combination, not NUTS itself. Under the hybrid pipeline, NUTS runs
+on the CPU where its branchy dynamic-tree-building is well-
+matched to the hardware. The 60--85$\times$ slowdown that ruled
+NUTS out in Python therefore \emph{does not transfer} to the
+Julia port. The default Julia port still uses HMC (replicating the
+framework-doc default), but NUTS becomes a viable future-work
+candidate under §\ref{sec:in-out-julia}'s ``what changes when the
+Python+JAX architectural constraints are removed'' frame.
+
+\section{The port plan --- file-by-file mapping}
+\label{sec:port-plan}
+
+The Julia package is named \texttt{SMC2FC.jl} and lives at
+\path{python-smc2-filtering-control/julia/SMC2FC/} (sister directory
+to the Python \path{smc2fc/}). The port proceeds bottom-up so that
+lower layers are tested before upper layers depend on them.
+
+\subsection{Strategic principle: optimise for Julia, not a Python
+re-skin}
+\label{sec:port-principle}
+
+The most common mistake an agent will make on this port is
+translating Python line-by-line. The result is a wooden,
+Python-shaped Julia package that realises none of Julia's actual
+advantages --- and is therefore not worth the porting effort at
+all. The point of doing this work is to land in a codebase that
+is \emph{idiomatic Julia}: shorter, faster, more type-safe, and
+better matched to the LEAN4 spec language than the Python
+original. \textbf{A ``Python in Julia syntax'' port fails the
+charter even if it type-checks and passes the differential test},
+because it does not realise any of the §\ref{sec:why-julia}
+benefits.
+
+The translation discipline is therefore to port the
+\emph{algorithm} and let Julia's native features (loops, multiple
+dispatch, broadcasting, \texttt{AbstractArray} dispatch) express it
+the Julia way:
+
+\paragraph{Replace JAX control flow primitives with native Julia
+loops.} \texttt{jax.lax.scan}, \texttt{jax.lax.fori\_loop},
+\texttt{jax.lax.while\_loop} exist in JAX because Python's
+interpreter overhead makes a plain \texttt{for} loop unusably slow.
+\textbf{Julia has no such overhead.} A standard
+\texttt{for k in 1:n} loop in Julia is fast under both ordinary
+execution and \texttt{Enzyme.jl} / \texttt{Zygote.jl} autodiff. Do
+not port \texttt{lax.scan} to a \texttt{Tullio.jl} reduction or to
+a \texttt{KernelAbstractions.jl} kernel out of habit --- port it to
+a \texttt{for} loop. The control-flow scaffolding that bloats the
+JAX source files (the $\sim 5{,}600 \to \sim 1{,}200$ LOC reduction
+from §\ref{sec:scaffolding} comes mostly from this) collapses into
+ordinary Julia.
+
+\paragraph{Replace conditional logic with multiple dispatch.}
+Where Python branches on flags (e.g.\ the \texttt{bridge\_type}
+switch in \path{core/sf_bridge.py}, the soft-vs-hard
+chance-constrained switch in \path{control_v5.py}), Julia
+dispatches on a small set of marker types:
+\begin{lstlisting}
+struct GaussianBridge end
+struct SchrodingerFollmerBridge end
+
+bridge_init(::GaussianBridge, prev_cloud, new_cloud) = ...
+bridge_init(::SchrodingerFollmerBridge, prev_cloud, new_cloud) = ...
+\end{lstlisting}
+The conditional logic disappears into method definitions; each
+behaviour lives in its own method, the dispatcher chooses at
+compile time, and the agent cannot accidentally reach the wrong
+branch.
+
+\paragraph{Flatten nesting.} Python's \texttt{vmap}-over-particles
++ \texttt{lax.while\_loop}-over-tempering +
+\texttt{lax.scan}-over-bins nests three primitives because each
+layer needs its own JAX-recognised iterator. In Julia: nested
+\texttt{for} loops, end of story. Broadcasting
+(\texttt{f.(particles)}) handles the \texttt{vmap} layer; ordinary
+loops handle the rest.
+
+\paragraph{Use \texttt{AbstractArray\{T,N\}} in signatures, not
+concrete \texttt{Array} or \texttt{CuArray}.} This is the
+GPU-portability discipline from §\ref{sec:scaffolding} stated as a
+translation rule: write the function once against the abstract
+type, run it on whichever backend the caller supplied. The agent
+should never need to write two versions of any function.
+
+\paragraph{Zero-allocation inner loop --- opt-in mutability where it
+counts.} JAX is pure-functional and relies on XLA to fuse and
+eliminate the intermediate arrays each step would otherwise
+allocate. Julia has no such fuser. A naive \texttt{for} loop that
+returns a fresh \texttt{x\_new = f(x)} array on every iteration
+\emph{will run substantially slower than the equivalent JAX
+\texttt{lax.scan}}. The discipline is therefore: keep the
+\emph{public API} functional (the \texttt{!} convention from
+§\ref{sec:why-julia}.2 still holds at module boundaries), but in
+the \emph{inner hot loops}, preallocate the working buffers once
+and use in-place mutating operations:
+\begin{lstlisting}
+# Hot SDE step: NO per-iteration allocation.
+function step!(x::AbstractVector, dt::Float64, theta::DynParams)
+    x .= x .+ dt .* drift(x, theta)
+    return x  # x has been mutated in place
+end
+\end{lstlisting}
+A reasonable rule of thumb: every Phase 2--5 inner loop should be
+benchmarked with \texttt{BenchmarkTools.@btime} and report
+\texttt{0 allocations} per iteration (or a single allocation that is
+amortised). Anything else is a missed optimisation, not a
+shippable result.
+
+\paragraph{Explicit CPU multithreading via
+\texttt{Threads.@threads} or \texttt{Polyester.@batch}.} A subtlety
+the previous bullets do not capture: JAX's \texttt{vmap} parallelises
+the per-particle work on multi-core CPUs implicitly. A plain Julia
+\texttt{for p in particles ... end} is sequential. To match (or beat)
+the JAX-on-CPU baseline, outer particle loops have to be wrapped in a
+threading macro:
+\begin{lstlisting}
+# Outer SMC loop, CPU multithreaded.
+Threads.@threads for m in 1:n_smc
+    log_lik[m] = inner_pf_loglikelihood(theta_dyn[m], data)
+end
+
+# Or, lower-overhead, for tight loops:
+Polyester.@batch for m in 1:n_smc
+    log_lik[m] = inner_pf_loglikelihood(theta_dyn[m], data)
+end
+\end{lstlisting}
+On the GPU backend, \texttt{KernelAbstractions.@kernel} replaces
+both. The agent should not ship any outer-particle loop in serial
+form on the CPU backend.
+
+\paragraph{Heavy broadcasting can hide allocations --- use
+\texttt{@.} or explicit loops in hot paths.} The earlier
+``broadcasting suffices'' note is true for simple operations, but
+chained broadcasting on custom structs can quietly create
+intermediate temporary arrays unless every operation is fused into a
+single \texttt{@.} block:
+\begin{lstlisting}
+# Slow: each `.` may allocate a temporary.
+x_new = a .+ b .* sin.(c) .- d
+
+# Fast: single fused broadcast, no temporaries.
+x_new = @. a + b * sin(c) - d
+
+# Fastest in tight inner loops: explicit loop with @inbounds @simd.
+@inbounds @simd for i in eachindex(x_new)
+    x_new[i] = a[i] + b[i] * sin(c[i]) - d[i]
+end
+\end{lstlisting}
+For complex inner-loop particle state transitions, the explicit
+\texttt{@inbounds @simd} form (CPU) or a \texttt{KernelAbstractions}
+kernel (GPU) is safer and usually faster than chained broadcasting.
+
+\paragraph{Type stability is the \#1 Julia performance killer ---
+\texttt{JET.jl} is the lint that catches it.} A function whose
+return type the compiler cannot infer at compile time falls back to
+runtime dynamic dispatch on every call. Inside a hot SMC$^2$ inner
+loop, a single type-unstable line can cost 10--100$\times$ in
+performance and is invisible at the source level. \texttt{JET.jl}'s
+\texttt{report\_package} catches this. The audit checklist
+(§\ref{sec:checklist-julia}) requires it green; if it flags a
+\texttt{Union\{Float64, Nothing\}} return in a hot path, the agent
+must refactor (e.g.\ replace \texttt{Nothing} sentinels with
+\texttt{NaN}, narrow the input types, or hoist the conditional out
+of the loop) before shipping.
+
+These principles apply pervasively across the phases that follow.
+The phase descriptions list \emph{what} to port; this subsection
+is \emph{how} to port it.
+
+\subsection{Phase 1 --- Foundations (\textasciitilde 1 hour)}
+
+\begin{enumerate}
+\item \texttt{Project.toml} + \texttt{Manifest.toml} with the
+  dependency graph from §\ref{sec:scaffolding} (including
+  \texttt{CUDA.jl} and \texttt{KernelAbstractions.jl}).
+\item \texttt{src/Types.jl} --- the parametric types that encode
+  the dimensional distinctions Python erases. Concretely:
+  \begin{itemize}
+  \item \texttt{State\{6\} = SVector\{6, Float64\}} (from
+    \texttt{StaticArrays.jl}) --- stack-allocated, fixed-size,
+    zero-overhead.
+  \item \texttt{DynParams = ComponentVector\{Float64\}} (from
+    \texttt{ComponentArrays.jl}) --- dot-access syntax
+    (\texttt{theta.k\_FB}) on a flat \texttt{AbstractVector} that
+    \texttt{AdvancedHMC.jl} and \texttt{Enzyme.jl} accept directly.
+  \item \texttt{ParticleCloud = StructArray\{Particle\}} (from
+    \texttt{StructArrays.jl}) --- struct-of-arrays layout for
+    coalesced GPU access.
+  \item \texttt{GPUFilterState\{T\}} and \texttt{CPUParameterCloud\{T\}}
+    --- the hybrid-execution type boundary from
+    §\ref{sec:hybrid}. The former wraps \texttt{CuArray} fields
+    (state particles, weights); the latter is plain
+    \texttt{Matrix\{T\}} / \texttt{Vector\{T\}}. Multiple
+    dispatch chooses the right kernel based on which type is
+    passed; the agent does not write two versions of any
+    function.
+  \item Marker types for dispatch: \texttt{struct GaussianBridge
+    end}, \texttt{struct SchrodingerFollmerBridge end},
+    \texttt{struct SoftSurrogate end}, \texttt{struct
+    HardIndicator end}.
+  \end{itemize}
+  All variable-length array fields use the abstract
+  \texttt{AbstractArray\{T,N\}} where they could be either CPU
+  (\texttt{Array}) or GPU (\texttt{CuArray}); fields that the
+  hybrid contract pins to a specific device use the concrete
+  type so the dispatcher can route correctly. This composite
+  type-system is the LEAN4-charter-spirit applied to the
+  framework.
+\item \texttt{src/Config.jl} --- translation of
+  \path{core/config.py} \texttt{SMCConfig} as a \texttt{@kwdef}
+  struct, plus a \texttt{backend::Symbol = :cpu} field
+  (\texttt{:cpu} or \texttt{:cuda}) that selects the array
+  constructor.
+\item \texttt{src/Transforms.jl} --- wraps \texttt{Bijectors.jl}
+  for the unconstrained-space mapping.
+\end{enumerate}
+
+\subsection{Phase 2 --- Filtering (\textasciitilde 2 hours, GPU-resident)}
+
+Phase 2 is the inner SMC$^2$ loop and per the hybrid strategy of
+§\ref{sec:hybrid} it runs \emph{on the GPU}: state particles are
+\texttt{CuArray}-resident and the kernels dispatch to CUDA via
+\texttt{StochasticDiffEq.jl} or \texttt{KernelAbstractions.@kernel}.
+
+\begin{enumerate}\setcounter{enumi}{4}
+\item \texttt{src/Filtering/Kernels.jl} --- Liu--West shrinkage
+  moment match, Gaussian smoothing kernels, ESS computation. CUDA-
+  dispatched via \texttt{AbstractArray\{T,N\}}-generic code.
+\item \texttt{src/Filtering/Bootstrap.jl} --- the inner bootstrap
+  filter, producing $\widehat{L}_N(\theta_{\rm dyn})$. The output
+  is a single scalar (or a small vector if computing a gradient)
+  that crosses back to the host CPU via PCIe; particle states
+  stay on the GPU.
+\item \texttt{src/Filtering/OT.jl} --- wraps
+  \texttt{OptimalTransport.jl} for the OT rescue; implements the
+  sigmoid blend with the systematic-resample output.
+\item Tests for Phase 2: differential against Python on a battery
+  of random SDE+observation pairs. Tolerance $10^{-6}$ on per-step
+  weights, $10^{-4}$ on integrated likelihood. \textbf{Tests run
+  twice: once with \texttt{CPU()} arrays, once with
+  \texttt{CUDA.CuArray}; both must pass within the same
+  tolerance.}
+\end{enumerate}
+
+\subsection{Phase 3 --- Outer SMC$^2$ (\textasciitilde 1.5 hours, CPU-resident)}
+
+Phase 3 is the outer SMC$^2$ loop and per §\ref{sec:hybrid} it
+runs \emph{on the CPU}: parameter cloud, log-likelihood vector,
+mass matrix, and HMC trajectories are all
+\texttt{Array}-resident. The likelihood callable provided to
+\texttt{AdvancedHMC.jl} performs a host-to-device transfer of
+the 37-D parameter vector and a device-to-host transfer of the
+scalar log-likelihood per gradient evaluation; both are
+microsecond-scale across PCIe Gen 5.
+
+\begin{enumerate}\setcounter{enumi}{8}
+\item \texttt{src/SMC2/Tempering.jl} --- adaptive
+  $\delta\lambda$ via bisection on CPU. Direct port of
+  \texttt{\_solve\_delta\_for\_ess}; the JAX
+  \texttt{lax.while\_loop} of the Python becomes a plain Julia
+  \texttt{while} loop per §\ref{sec:port-principle}.
+\item \texttt{src/SMC2/HMC.jl} --- wraps \texttt{AdvancedHMC.jl}
+  for the rejuvenation moves on the CPU's branch-predictor-rich
+  cores; re-estimates the diagonal mass matrix per tempering
+  level. The likelihood closure dispatches into Phase 2's GPU
+  filter for evaluation.
+\item \texttt{src/SMC2/TemperedSMC.jl} --- the outer loop, calling
+  Phase 2 for likelihood, Phase 3.1--3.2 for tempering and HMC.
+\item \texttt{src/SMC2/Bridge.jl} --- Gaussian + BW-geodesic
+  warm-starts, dispatched on marker types per
+  §\ref{sec:port-principle}.
+\item Tests for Phase 3: differential against Python on the same
+  benchmark \path{tests/test_obs_consistency_v5.py} already uses;
+  both backends.
+\end{enumerate}
+
+\subsection{Phase 4 --- Control (\textasciitilde 1 hour)}
+
+\begin{enumerate}\setcounter{enumi}{13}
+\item \texttt{src/Control/Spec.jl} --- \texttt{ControlSpec}
+  struct (cost callable, decoder, horizon, initial state).
+\item \texttt{src/Control/Calibration.jl} --- $\beta_{\max}$
+  auto-calibration.
+\item \texttt{src/Control/RBFSchedule.jl} --- RBF schedule
+  decoder.
+\item \texttt{src/Control/TemperedSMC.jl} --- re-uses Phase 3.3
+  with the cost-as-likelihood substitution.
+\item Tests for Phase 4: differential against Python on the
+  chance-constrained controller benchmark; both backends.
+\end{enumerate}
+
+\subsection{Phase 5 --- Plant + Simulator (\textasciitilde 0.5
+hour)}
+
+\begin{enumerate}\setcounter{enumi}{18}
+\item \texttt{src/Simulator/SDEModel.jl} --- wraps
+  \texttt{StochasticDiffEq.jl}.
+\item \texttt{src/Simulator/Observations.jl} --- per-channel
+  observation sampling.
+\end{enumerate}
+
+\subsection{Phase 6 --- End-to-end + GPU benchmark
+(\textasciitilde 1.5 hours)}
+
+\begin{enumerate}\setcounter{enumi}{20}
+\item Full-pipeline test: run a complete inference + control loop
+  on the FSA-v5 model (consuming the LEAN4 reference from Part I),
+  compare end-to-end against the Python pipeline on the same
+  inputs. Run on \textbf{both backends}
+  (\texttt{backend = :cpu} and \texttt{backend = :cuda}); confirm
+  numerical agreement to within the same tolerances as Phase 2.
+\item \texttt{JET.jl} static analysis pass; fix any flagged type
+  uncertainties.
+\item Benchmark per-window cost on CPU and GPU against the
+  JAX-native Python baseline of $\sim 1$ second/window. Record
+  the numbers in the package README; this is the artefact that
+  justifies the port to anyone reading it later.
+\end{enumerate}
+
+\section{Scope and timing (framework side)}
+\label{sec:scope-julia}
+
+\textbf{This is translation between two scientific computing
+languages.} The user has explicitly rejected inflated estimates.
+With the existing Julia scaffolding from §\ref{sec:scaffolding}
+doing the heavy lifting, the port is:
+
+\begin{center}\small
+\begin{tabular}{ll}
+\toprule
+Phase & Estimate \\
+\midrule
+Phase 1 --- Foundations                        & 1 hour \\
+Phase 2 --- Filtering (CPU + GPU)              & 2 hours \\
+Phase 3 --- Outer SMC$^2$ (CPU + GPU)          & 1.5 hours \\
+Phase 4 --- Control (CPU + GPU)                & 1 hour \\
+Phase 5 --- Plant + Simulator (CPU + GPU)      & 0.5 hour \\
+Phase 6 --- End-to-end + GPU benchmark         & 1.5 hours \\
+\midrule
+\textbf{Total}                                 & \textbf{$\sim 7.5$ hours of focused work} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{The CPU/GPU dual-target adds essentially nothing} to the
+per-phase budgets above because Julia's generic dispatch on
+\texttt{AbstractArray\{T,N\}} means the same code runs on both
+\texttt{Array} (CPU) and \texttt{CuArray} (GPU); the library
+packages (\texttt{AdvancedHMC.jl}, \texttt{StochasticDiffEq.jl},
+\texttt{OptimalTransport.jl}, \texttt{Distributions.jl},
+\texttt{Bijectors.jl}) already have GPU support upstream. The
+marginal GPU cost is in (a) running the existing test suite a
+second time on \texttt{CuArray}, and (b) the Phase 6 benchmark
+--- both already accounted for in the table.
+
+For a developer competent in both languages, this is a single
+focused day's work. Most of it is wiring library calls together
+and running differential tests; the algorithmic content is not
+re-derived but transcribed. The resulting Julia is markedly
+shorter ($\sim 1{,}200$ LOC vs $\sim 5{,}600$ LOC) because the
+boilerplate that Python+JAX requires (closures, \texttt{Partial}
+wrappers, \texttt{lax.while\_loop} scaffolding, manual
+\texttt{jit} placement) collapses in Julia.
+
+\textbf{The 7.5-hour estimate assumes an idiomatic, performance-
+optimised Julia port, not a line-by-line Python re-skin.} A wooden
+translation that ports each \texttt{lax.scan} to a \texttt{Tullio}
+reduction and keeps Python-shaped control flow would technically
+compile in less time, but it would not realise any of the
+§\ref{sec:why-julia} benefits and would fail the
+§\ref{sec:port-principle} discipline. The estimate above is for
+code written the Julia way: plain \texttt{for} loops, multiple
+dispatch on marker types, \texttt{AbstractArray\{T,N\}}
+signatures, \texttt{StaticArrays.SVector} for fixed-size objects,
+\texttt{StructArrays} where the natural memory layout is
+struct-of-arrays, \texttt{Threads.@threads} or
+\texttt{Polyester.@batch} on outer particle loops, and
+\texttt{JET.jl}-clean type stability throughout. The
+performance-discipline patterns of §\ref{sec:port-principle}
+shape \emph{how} the budgeted hours are spent; they do not add
+hours, because the right Julia idioms are typically shorter and
+faster than their Python+JAX equivalents (the
+$\sim 5{,}600 \to \sim 1{,}200$ LOC reduction is exactly that
+shrinkage). If the agent finds itself porting an algorithm faster
+than the table predicts, the result should still be checked
+against §\ref{sec:port-principle} --- speed of writing is not the
+objective; an idiomatic, type-safe, GPU-portable, zero-allocation-
+inner-loop Julia codebase is.
+
+The cost/value frame: a single 7.5-hour port amortises across
+\emph{every future model the framework runs} (the JAX-native vs
+BlackJAX backend split disappears; the per-window recompile
+landmine disappears; the NUTS-inside-vmap cliff disappears; the
+agent pattern-match risk on framework internals disappears). The
+current trajectory --- paying repeatedly for agent rounds of
+pattern-match-then-debug-Python+JAX-internals --- is what this
+charter exists to stop.
+
+\section{What is and isn't covered (framework side)}
+\label{sec:in-out-julia}
+
+\paragraph{In scope.} A Julia package \texttt{SMC2FC.jl}
+providing filtering (bootstrap PF + OT rescue), outer SMC$^2$
+(tempered + HMC + adaptive mass matrix + bridges),
+control-as-inference, an SDE simulator, and the
+unconstrained-space transforms. \textbf{Both CPU and GPU (CUDA)
+backends are in scope from day one}, and the production
+configuration is the \textbf{hybrid pipeline of
+§\ref{sec:hybrid}}: GPU for the inner particle filter, CPU for
+the outer SMC$^2$ rejuvenation. CPU-only and GPU-only
+configurations are also tested as diagnostic baselines.
+Differential tests against the Python implementation on the
+existing benchmarks for all configurations.
+
+\paragraph{Out of scope (Python stays in service).} The Python
+\texttt{smc2fc/} package continues to exist during and after the
+port. The Julia port does \emph{not} replace it; it sits
+alongside as a type-checked alternative implementation. Existing
+user code that imports the Python package is unaffected.
+
+\paragraph{Out of scope for the default port (settled in framework
+doc).} The hard-vs-soft chance-constrained finding (use soft
+only) and the SF/BW-vs-Gaussian-bridge equivalence finding carry
+over from Python; the Julia port replicates the soft-HMC +
+Gaussian-bridge defaults.
+
+\paragraph{Re-opened by the hybrid architecture (future work).}
+The NUTS-as-HMC-replacement finding from framework-doc §6.4 is a
+\emph{Python+JAX architectural} result: NUTS-inside-vmap-inside-
+\texttt{lax.while\_loop} suffers warp divergence and dynamic-tree-
+expansion costs that combine for a 60--85$\times$ slowdown. The
+Julia hybrid pipeline of §\ref{sec:hybrid} runs NUTS on the CPU
+where its branchy control flow is well-matched to the hardware,
+which means \emph{the empirical reason the framework rejected NUTS
+does not transfer to Julia}. The default Julia port still uses
+HMC for parity with the Python implementation, but a NUTS-on-
+hybrid benchmark is a candidate for the Phase 6 follow-on once the
+HMC port is green.
+
+\section{Audit checklist (framework-side agent)}
+\label{sec:checklist-julia}
+
+A future agent runs this at session start, before touching any
+Julia file:
+
+\begin{itemize}
+\item[$\square$] Is there a Python reference for the function I
+  am about to port?
+\item[$\square$] Does the LEAN4-first charter's process (Part I)
+  apply (i.e.\ am I porting model code that should consume a
+  LEAN4 spec)? If yes, does the spec exist?
+\item[$\square$] Have I declared parametric types for every
+  input and output, capturing the dimensional information Python
+  erases?
+\item[$\square$] Have I left array fields as
+  \texttt{AbstractArray\{T,N\}} so the same code accepts
+  \texttt{Array} (CPU) and \texttt{CuArray} (GPU)?
+\item[$\square$] Did I port the \emph{algorithm}, not the
+  \emph{code}? Specifically: no \texttt{jax.lax.scan} /
+  \texttt{lax.fori\_loop} / \texttt{lax.while\_loop} analogues
+  survived the translation --- they became plain Julia
+  \texttt{for} loops. (Per §\ref{sec:port-principle}.)
+\item[$\square$] Did I express type-dispatched behaviours via
+  multiple dispatch (one method per marker struct) rather than
+  as flag-driven conditionals carried over from Python? (Per
+  §\ref{sec:port-principle}.)
+\item[$\square$] Did I use \texttt{StaticArrays.SVector} for
+  fixed-size small objects (\texttt{State\{6\}}, parameter
+  blocks, RBF coefficient vectors) rather than \texttt{Vector}?
+  (Heap-allocated \texttt{Vector}s in the inner loop regress
+  versus JAX.)
+\item[$\square$] Did I use \texttt{StructArrays} or
+  \texttt{ComponentArrays} where the natural memory layout is
+  Struct-of-Arrays (particle clouds, parameter blocks)?
+\item[$\square$] Are inner loops zero-allocation?
+  Verify with \texttt{BenchmarkTools.@btime}; an inner SDE step,
+  Liu--West shrinkage step, or HMC leapfrog step should report
+  \texttt{0 allocations} per iteration.
+\item[$\square$] Are outer particle loops parallelised on the
+  CPU backend (\texttt{Threads.@threads} or
+  \texttt{Polyester.@batch})? On the GPU backend, replaced by a
+  \texttt{KernelAbstractions} kernel?
+\item[$\square$] Does the function I just ported respect the
+  hybrid contract from §\ref{sec:hybrid}? Specifically: does
+  inner-loop SDE/PF work stay on the GPU (\texttt{CuArray}
+  fields), does outer-loop HMC/tempering work stay on the
+  CPU (\texttt{Array} fields), and is the only host--device
+  transfer the scalar log-likelihood (or the small parameter
+  vector going the other way)?
+\item[$\square$] If I wrote a likelihood callable that
+  \texttt{AdvancedHMC.jl} consumes, does it explicitly perform
+  the host-to-device transfer on the parameter vector and the
+  device-to-host transfer on the scalar log-likelihood, with
+  nothing else crossing the bus per evaluation?
+\item[$\square$] Does
+  \texttt{julia --project=. -e 'using Pkg; Pkg.test()'} pass on
+  \textbf{both} the CPU and the CUDA test paths?
+\item[$\square$] Does
+  \texttt{julia --project=. -e 'using JET; report\_package(SMC2FC)'}
+  report no type uncertainties \emph{or} type instabilities?
+  (Type instability is the \#1 Julia performance killer; flag
+  any \texttt{Union\{...\}} return in a hot inner loop.)
+\item[$\square$] Does the differential test against the Python
+  implementation pass within the tolerance threshold for the
+  function I just ported, on both backends?
+\item[$\square$] Have I updated the §\ref{sec:port-plan} port-mapping
+  table to mark this file as ported?
+\end{itemize}
+
+If any box is unchecked, the agent does not proceed.
+
+\section{Closing of Part II}
+
+The point of Part II is accountability on the framework side.
+Python+JAX is a perfect storm for the kind of mathematical work
+\texttt{smc2fc} does: untyped arrays, invisible JIT contracts,
+closures over data, nesting cliffs. LLM agents pattern-matching
+through that surface burn the user's time and tokens hunting the
+consequences. Julia narrows the surface by structural means --- a
+single command (\texttt{julia --project=. -e 'using JET;
+report\_package(SMC2FC)'}) catches the kind of error that takes a
+human reviewer hours to find in the JAX/Python stack.
+
+Combined with Part I, this charter establishes a single typed
+pipeline:
+
+\begin{center}
+\fbox{\parbox{0.9\textwidth}{\centering
+\textbf{LaTeX equations} $\to$
+\textbf{LEAN4 reference} (model side, Part I) $\to$
+\textbf{Julia framework} (\texttt{smc2fc} side, Part II)\\[0.3em]
+\emph{with Python remaining in service as the differentially-tested
+fast path on both sides.}
+}}
+\end{center}
+
+LEAN4 is never wrong about types. Julia narrows the dispatch surface
+to the point that pattern-matching does not silently produce wrong
+results. Python is fast and well-tested but pattern-match-friendly
+to a fault; it stays in service \emph{as the fast path that gets
+checked against the typed reference}, not as the source of truth.
+
+The total commitment in human hours --- $\sim 8$ for Part I,
+$\sim 7.5$ for Part II, single-day-each scale --- is the price
+of replacing repeated multi-day rounds of agent pattern-match-then-
+debug with a one-shot translation that holds for every future
+model and every future agent.
+
+\end{document}
