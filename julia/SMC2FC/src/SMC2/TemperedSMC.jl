@@ -102,7 +102,9 @@ function _tempered_step!(particles::Matrix{Float64},
             cfg.hmc_step_size,
             inv_mass,
             cfg.hmc_num_leapfrog,
-            local_rng,
+            local_rng;
+            ad_backend = cfg.ad_backend,
+            sampler    = cfg.sampler,
         )
     end
     copyto!(particles, new_particles)

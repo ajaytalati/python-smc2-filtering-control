@@ -105,19 +105,32 @@ function loglik(u)
     return target - SMC2FC.log_prior_unconstrained(u, priors)
 end
 
-# Phase 1 filter budget — tightened from the v1 (n_smc=32, max_λ_inc=0.25)
-# which gave dynamics-param posteriors with 22–39 % rel.err. The Python
-# reference (MCLMC, full window) gets 0.4–6.1 % rel.err. With AdvancedHMC
-# + ForwardDiff the per-leapfrog cost is high, so we lean on threading
-# (24 cores) rather than per-particle parallelism: bigger n_smc + finer
-# tempering schedule + more MCMC moves per level.
+# Phase 1 filter budget — v5 with NUTS sampler.
+#
+# Sampler choice rationale:
+#   - v1 used HMC with hmc_num_leapfrog=4: low-budget proposals, posterior
+#     22-39% rel.err on dynamics params.
+#   - v3 used HMC with bigger budget (n_smc=96, num_mcmc=6): closed half
+#     the gap to Python (5.9% on α, 12-18% on others).
+#   - v4 tried Enzyme reverse-mode AD: empirically 2.7× slower than
+#     ForwardDiff at d_θ=8 because ForwardDiff's 8 partials fit in one
+#     AVX-256 register and amortise the SDE-step overhead in one SIMD pass.
+#     Documented in models/bistable_controlled/loglik_enzyme.jl.
+#   - v5 (this): switch to NUTS — adaptive trajectory length picks its own
+#     leapfrog count per move based on a U-turn check. Typically 3-5x more
+#     mixing per gradient eval than fixed-step HMC on poorly-conditioned
+#     posteriors. Cost varies per call; we keep n_smc and num_mcmc moderate.
+#
+# Both filter and control loops can use NUTS via cfg.sampler = :NUTS.
 cfg_outer = SMCConfig(
-    n_smc_particles  = 96,           # 3× v1 — outer cloud width
-    target_ess_frac  = 0.6,           # tighter resampling trigger
-    num_mcmc_steps   = 6,             # 2× v1 — more decorrelation per level
-    max_lambda_inc   = 0.12,          # 2× as many tempering levels
-    hmc_step_size    = 0.035,
-    hmc_num_leapfrog = 5,
+    n_smc_particles  = 64,
+    target_ess_frac  = 0.5,
+    num_mcmc_steps   = 4,           # NUTS does more work per step → fewer steps
+    max_lambda_inc   = 0.10,
+    hmc_step_size    = 0.025,
+    hmc_num_leapfrog = 8,            # ignored under :NUTS
+    sampler          = :NUTS,
+    ad_backend       = :ForwardDiff, # FD wins at d_θ=8 (engineering finding)
 )
 
 print("Running filter ... ")

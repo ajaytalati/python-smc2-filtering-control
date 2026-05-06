@@ -54,6 +54,25 @@ Base.@kwdef struct SMCConfig
     # :cpu  — Array         (CPU thread-parallel via Polyester / Threads)
     # :cuda — CUDA.CuArray  (GPU via CUDA.jl + KernelAbstractions.jl)
     backend::Symbol               = :cpu
+
+    # ── AD backend for AdvancedHMC.jl gradients (Phase 6 follow-up) ─────────
+    # :ForwardDiff — robust default; cost = (1 + d_θ) PF evals per gradient
+    #               where d_θ is the active partial count. Good for d ≲ 8.
+    # :Enzyme      — reverse-mode; cost = ~1 PF eval per gradient (matches
+    #               JAX/Python). Charter §13's named production backend.
+    #               Requires the inner PF to be Enzyme-mutation-clean.
+    ad_backend::Symbol            = :ForwardDiff
+
+    # ── MCMC sampler kind for the per-tempering-level rejuvenation ─────────
+    # :HMC  — fixed leapfrog count = `hmc_num_leapfrog` (the v1 default).
+    # :NUTS — No-U-Turn Sampler with adaptive trajectory length. Each
+    #         transition picks its own leapfrog count by detecting when
+    #         the trajectory makes a U-turn; per-call cost varies but
+    #         total mixing per gradient eval is typically much higher
+    #         than fixed-step HMC, especially on poorly-conditioned
+    #         posteriors. `hmc_num_leapfrog` is unused under :NUTS;
+    #         `hmc_step_size` becomes the integrator step size.
+    sampler::Symbol               = :HMC
 end
 
 
