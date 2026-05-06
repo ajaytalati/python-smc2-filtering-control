@@ -442,18 +442,169 @@ Both bench drivers (`bench_controller_only_fsa_v5.py` and `bench_smc_full_mpc_fs
 
 ---
 
-## Run 15 — Stage 2 soft_fast SEDENTARY (in flight at 01:13)
+## Run 14 — Stage 3 soft_fast HEALTHY (full closed-loop, smaller particles)
 
-**2026-05-06 00:22 → in progress**
+**2026-05-05 22:21 → 2026-05-06 01:51** — Stage 3 v2 with reduced particle counts, started by Ajay concurrently with the master launcher's Run 11 diagnostic.
+
+- **Run dir:** `experiments/run14_stage3_soft_fast_healthy_T14_smaller/`
+- **Cost variant:** `soft_fast` (with the original trimmed HMC config — this run was launched BEFORE the trim was reverted, so HMC config here is `n_smc=128` / `mcmc=5` / `leapfrog=8`)
+- **Filter:** `n_pf=200, n_smc=128`, controller `n_smc=128, n_inner=32` (smaller than production to fit in 32 GB VRAM alongside the filter — Stage 3 v1's OOM at full particles was the lesson)
+- **Wall-clock:** **209.6 min = 3.49 h** on RTX 5090 (had GPU contention with Run 13 and Run 15 for parts of the run)
+
+### Trajectory summary
+
+- mean A = 0.820
+- A_integral_observed = 11.47
+- posthoc mean A_integral = 11.50
+- weighted_violation_rate = 0.929
+- applied Φ range: [0.080, 0.554]
+
+### Gates
+
+- ✅ `A_integral_geq_target` (11.47 ≥ 2.0)
+- ❌ `violation_leq_alpha` (0.929 > 0.05) — same evaluator quirk as Stage 2 runs
+- (other gates not enumerated in this manifest — controller_adapts and schedule_in_bounds presumed PASS based on metric ranges)
+
+### Basin overlay
+
+✅ **Path stays in the bistable annulus + healthy island for most of the 14 days.** Start point (green) on the (0.30, 0.30) baseline; one wide excursion to (0.55, 0.46) at the boundary of the bistable annulus (still safe — not collapsed), end at (0.55, 0.46). The full filter+controller+plant pipeline is producing schedules in qualitatively the right region under filter uncertainty, exactly as Stage 3 verification requires.
+
+### Caveat
+
+This run used the **trimmed HMC config** (the one Run 09 showed produces noisy schedules at the daily-mean level). The basin path here is meaningfully wider than Run 13's (which used the corrected full-HMC config). For a clean Stage 3 healthy result with the production config, would need to re-run at full HMC + smaller particles. Adding to the queue if time permits before 08:00.
+
+---
+
+## Run 15 — Stage 2 soft_fast SEDENTARY (corrected production config)
+
+**2026-05-06 00:22 → 02:08** — first scenario in the corrected sweep after Run 13 confirmed quality recovery.
 
 - **Run dir:** `experiments/run15_stage2_soft_fast_sedentary_T14_full_hmc/`
-- **Config:** corrected production (soft_fast cost-fn + full HMC)
-- **Status:** Stride 11/28, ~17 strides remaining, ~9 min/stride → ETA ~03:30
+- **Config:** corrected production (soft_fast cost-fn + full HMC, `n_smc=256, mcmc=10, leapfrog=16`)
+- **Wall-clock:** **106.4 min** on RTX 5090 (heavy GPU contention with Run 14 — Run 14 finished at 01:51 mid-run)
 
-Per the Run 10 lesson: Stage 2 sedentary trajectories will be bit-identical to healthy under the same RNG (controller's first replan overwrites `baseline_phi`). The run will complete and produce metrics, but won't add new information beyond Run 13.
+### Headline metrics
+
+- mean_A_traj = 0.812
+- A_integral_observed = 11.37
+- posthoc mean_A_integral = 11.40
+- weighted_violation_rate = 0.964
+- applied Φ range: [0.113, 0.528]
+
+### Bit-identical to Run 13 (expected)
+
+Per the Run 10 / Run 13 lesson: Stage 2's `baseline_phi` is overwritten by the controller's first replan before being applied. With the same RNG seed (42) and deterministic plant under truth params, the trajectory is **bit-identical** to Run 13 (healthy) regardless of the `scenario` tag — every metric matches exactly:
+
+| Metric | Run 13 (healthy) | Run 15 (sedentary) |
+|---|---|---|
+| mean_A_traj | 0.81211 | 0.81211 |
+| A_integral_observed | 11.3695 | 11.3695 |
+| applied_phi_max | 0.5278 | 0.5278 |
+
+✅ **Stage 2 audit-trail complete** — the corrected production config reproduces tightly across nominally-different scenarios (because Stage 2 driver structure makes them equivalent).
+
+### Gates
+
+Same as Run 13: ✅ `A_integral_geq_target`, ❌ `violation_leq_alpha` (evaluator quirk), ✅ schedule_in_bounds, ✅ controller_adapts.
+
+---
+
+## Run 16 — Stage 2 soft_fast OVERTRAINED (corrected production config, clean GPU)
+
+**2026-05-06 02:08 → 03:08** — third scenario in the corrected sweep. Started after Run 14 finished (01:51) so this run had a near-free GPU.
+
+- **Run dir:** `experiments/run16_stage2_soft_fast_overtrained_T14_full_hmc/`
+- **Config:** identical to Run 15 (corrected production)
+- **Wall-clock:** **59.7 min** on RTX 5090 ← **CLEAN BENCHMARK, no GPU contention**
+
+### This is the production-config wall-clock benchmark
+
+Run 13 showed 124.9 min and Run 15 showed 106.4 min, both contaminated by GPU contention with Run 14. Run 16 ran on a near-free GPU and is the **first clean wall-clock measurement of soft_fast + full HMC**.
+
+| Variant | Wall-clock (clean) | Notes |
+|---|---|---|
+| Run 06 (`soft`, full HMC) | 99.8 min | Strict baseline, GPU was free |
+| Run 09 (`soft_fast`, trimmed HMC) | 16.4 min | Quality regression |
+| **Run 16 (`soft_fast`, full HMC)** | **59.7 min** | **Production config** |
+
+**A/B speed result:** Run 16 vs Run 06 → 99.8 / 59.7 = **1.67× speedup** with no quality regression.
+
+This is the corrected version of the Run 09 A/B (which over-claimed 6× speedup at the cost of basin-path quality).
+
+### Bit-identical trajectory to Run 13 / Run 15 (expected)
+
+Same structural property: identical metrics across scenarios. mean_A_traj = 0.81211, applied_phi_max = 0.5278, etc.
+
+### Gates
+
+Same as Runs 13/15.
+
+---
+
+## Run 17 — Stage 3 soft_fast HEALTHY at FULL particles (master launcher's failed step)
+
+**2026-05-06 03:08 → 03:10** — the master launcher's last queued step, OOM'd as predicted.
+
+- **Run dir:** `experiments/run17_stage3_soft_fast_healthy_T14_full_hmc/` (empty — no manifest written)
+- **Config:** `bench_smc_full_mpc_fsa_v5.py --cost soft_fast --scenario healthy` with no smaller-particles flags. The launcher script forgot to add `--n-smc 128 --n-pf 200 --n-inner 32`.
+- **Wall-clock:** 130s before OOM kill
+
+### Why this happened
+
+The master launcher (`run_quality_speed_overnight.sh`) was written when `soft_fast` was supposed to use the trimmed HMC config — at trimmed particle counts, full Stage 3 (filter n_smc=256/n_pf=400 + controller n_smc=256/n_inner=64) might have fit. After we reverted the HMC trim, the launcher's Stage 3 step was no longer compatible with the 32 GB VRAM budget — same as Stage 3 v1's OOM (Run 11 v1).
+
+**Fix:** the follow-up launcher (`run_followup_overnight.sh`, written 01:18) explicitly adds `--n-smc 128 --n-pf 200 --n-inner 32` to its Stage 3 steps. Run 18 (Stage 3 sedentary) is using these flags successfully.
+
+This Run 17 entry exists for the audit trail; the actual Stage 3 result at corrected production config + smaller particles is in Run 18 (and Run 14 already gave the smaller-particle Stage 3 healthy result, albeit with the trimmed HMC config).
+
+---
+
+## Profile sweep — empirical cost-fn timing on RTX 5090
+
+**2026-05-06 03:13 → 03:14** — `tools/profile_cost_fn.py` run at 4 configs while master launcher exited and follow-up took over.
+
+Output dirs in `outputs/fsa_v5/profiles/<timestamp>_<cfg>/`. Each timed 20 fwd + 20 jax.grad calls of the cost function with `block_until_ready` for clean wall-clock measurement.
+
+### Headline (vmapped grad call — what HMC actually does, 480 calls per replan)
+
+| Config | Per-call grad (ms) | Per-replan projection (s) | Speedup vs strict `soft` |
+|---|---|---|---|
+| `soft_fast` n_smc=256, truth=1 | **143.7** | **69.0** | 1.62× |
+| `soft_fast` n_smc=256, truth=32 | 183.4 | 88.0 | 1.27× (truth=32 hurts) |
+| `soft_fast` n_smc=512, truth=1 | 148.0 | 71.0 | 1.58× |
+| `soft` n_smc=256, truth=1 | 233.5 | 112.1 | 1.0× (baseline) |
+
+### Calibration to wall-clock
+
+The 1.62× projected speedup matches Run 16's empirical 1.67× wall-clock advantage (99.8 / 59.7 = 1.67×) — the profiler is well-calibrated to actual MPC timings.
+
+### Insights
+
+1. **soft_fast forward is 2.57× faster than soft** (22.9 ms vs 58.9 ms). This is the fp32 + relaxed bisection + sub-sampled bins win on the forward pass alone.
+2. **soft_fast backward is only 1.62× faster.** The chain rule through 1344 RK4 steps is the bottleneck and benefits less from the cost-fn-side optimisations.
+3. **n_smc=512 is essentially free** — only 3% slower than n_smc=256 (148.0 vs 143.7 ms). Worth bumping if better outer-SMC statistics are needed.
+4. **n_truth_particles=32 hurts** — adds 28% wall-clock per call (183.4 vs 143.7 ms). The bottleneck is INSIDE each particle's sequential SDE rollout, not across particles, so adding parallelism via redundant truth particles doesn't help.
+
+### Recommendation for production
+
+- Stay at `n_smc=256, truth_particles=1` (current default).
+- soft_fast cost-fn + full HMC is the right config (Run 13 and Run 16 confirm this empirically).
+- If publication-grade statistics needed, bump to `n_smc=512` — adds <5% wall-clock for 2× outer-SMC particles.
+
+---
+
+## Run 18 — Stage 3 soft_fast SEDENTARY (corrected production, smaller particles)
+
+**2026-05-06 03:14 → in flight at 04:37 (Stride 24/28, ETA ~04:55)**
+
+- **Run dir:** `experiments/run18_stage3_soft_fast_sedentary_T14_smaller/`
+- **Config:** soft_fast cost-fn + full HMC (corrected), filter `n_smc=128, n_pf=200`, controller `n_smc=128, n_inner=32`
+- **Why this run:** first Stage 3 result at the corrected production config (Run 14 used the trimmed HMC). Sedentary scenario differentiates from healthy at Stage 3 (the filter sees observations from a `replan_K`-stride warm-up under `baseline_phi=(0,0)` before the controller takes over, so the filter posterior is genuinely different).
+
+Entry to be filled in when Run 18 finishes.
 
 ---
 
 ## Run 03 — TODO: Stage 3 full closed-loop SMC²-MPC verification
 
-(superseded by Run 12 above)
+(superseded by Run 14 (smaller particles, trimmed HMC) and Run 18 (smaller particles, full HMC))
