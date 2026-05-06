@@ -19,9 +19,11 @@ using CUDA
 using KernelAbstractions
 using LogExpFunctions: logsumexp
 using Statistics: mean
+using Random: AbstractRNG, MersenneTwister
 
 export BistableGPUTarget, gpu_log_density, gpu_log_density_with_grad
 export BistableGPUTargetBatched, gpu_log_density_batched, gpu_fd_gradient_batched
+export gpu_grads_parallel_chains, parallel_hmc_one_move!
 
 # ── Fused per-particle PF kernel (lifted from bench_gpu_bistable_fused.jl) ─
 
@@ -415,6 +417,141 @@ function gpu_fd_gradient_batched(target::BistableGPUTargetBatched,
         g[i] = (lls[1 + 2*(i-1) + 1] - lls[1 + 2*(i-1) + 2]) / (2h)
     end
     return val, g
+end
+
+# ── Parallel-chains gradient: M chains × (1 + 2d) FD perturbations in
+#    ONE kernel launch ───────────────────────────────────────────────────────
+
+"""
+    gpu_grads_parallel_chains(target, U_unc::AbstractMatrix{Float64}; h=1e-3)
+        -> (vals::Vector{Float64}, grads::Matrix{Float64})
+
+Compute log-density value AND finite-difference gradient at M different
+θ values in ONE kernel launch. `U_unc` is `(M, d)` — each row is one θ.
+
+Layout of the batched call: M chains × (1 + 2d) perturbations =
+M·(1+2d) chains in one launch. With M = 64 and d = 8, that's 1088 chains
+× K_per_chain particles in a single GPU dispatch — saturates the SMs
+per leapfrog step and replaces M×(1+2d) sequential calls.
+
+Returns:
+  vals  — `(M,)` primal log-densities (one per chain)
+  grads — `(M, d)` FD gradients
+
+Throws if `M·(1+2d) > target.M_max`.
+"""
+function gpu_grads_parallel_chains(target::BistableGPUTargetBatched,
+                                     U_unc::AbstractMatrix{Float64};
+                                     h::Float64 = 1e-3)
+    M = size(U_unc, 1)
+    d = size(U_unc, 2)
+    n_perturb_per_chain = 1 + 2 * d
+    n_total = M * n_perturb_per_chain
+    n_total ≤ target.M_max || throw(ArgumentError(
+        "n_total $(n_total) > M_max $(target.M_max). Build target with bigger M_max."))
+
+    # Build the (n_total, d) flat θ matrix:
+    #   chain m's perturbations occupy rows (m-1)*(1+2d)+1 .. m*(1+2d)
+    #   row 1 of each block: primal
+    #   rows 2..1+2d: ±h on dim 1, ±h on dim 2, …
+    U_flat = Matrix{Float64}(undef, n_total, d)
+    @inbounds for m in 1:M
+        base_row = (m - 1) * n_perturb_per_chain
+        U_flat[base_row + 1, :] = U_unc[m, :]
+        for i in 1:d
+            U_flat[base_row + 1 + 2*(i-1) + 1, :] = U_unc[m, :]
+            U_flat[base_row + 1 + 2*(i-1) + 1, i] += h
+            U_flat[base_row + 1 + 2*(i-1) + 2, :] = U_unc[m, :]
+            U_flat[base_row + 1 + 2*(i-1) + 2, i] -= h
+        end
+    end
+
+    lls_flat = gpu_log_density_batched(target, U_flat)
+
+    # Decode per-chain primal + FD gradient
+    vals  = Vector{Float64}(undef, M)
+    grads = Matrix{Float64}(undef, M, d)
+    @inbounds for m in 1:M
+        base = (m - 1) * n_perturb_per_chain
+        vals[m] = lls_flat[base + 1]
+        for i in 1:d
+            grads[m, i] = (lls_flat[base + 1 + 2*(i-1) + 1] -
+                            lls_flat[base + 1 + 2*(i-1) + 2]) / (2h)
+        end
+    end
+    return vals, grads
+end
+
+
+"""
+    parallel_hmc_one_move!(U::Matrix{Float64}, target, ε, L, prior_mean, prior_sigma, rng;
+                            inv_mass = ones(d))
+
+Take ONE HMC move on each of M chains in parallel. `U` is `(M, d)` —
+positions for each chain. Mutates U in place; rejected moves keep the
+old position. Returns the number of accepted moves.
+
+Each leapfrog step does ONE batched kernel launch over M·(1+2d) sub-chains.
+Total kernel launches per move: L (one per leapfrog step).
+"""
+function parallel_hmc_one_move!(U::AbstractMatrix{Float64},
+                                  target::BistableGPUTargetBatched,
+                                  ε::Float64,
+                                  L::Int,
+                                  prior_mean::AbstractVector{Float64},
+                                  prior_sigma::AbstractVector{Float64},
+                                  rng::AbstractRNG;
+                                  inv_mass::AbstractVector{Float64} = ones(size(U, 2)))
+    M, d = size(U)
+    momentum = randn(rng, M, d) ./ sqrt.(inv_mass)'   # sample p ~ N(0, M)
+
+    # Save initial state for MH accept
+    U0  = copy(U)
+    p0  = copy(momentum)
+
+    # Initial gradient + value (for both step 0 and final accept check)
+    function tempered_grads(U_in)
+        # log p(y|θ) + log p(θ)
+        vals_data, grads_data = gpu_grads_parallel_chains(target, U_in)
+        # add prior: -0.5 sum((u-μ)/σ)² and grad -(u-μ)/σ²
+        grads_prior = -(U_in .- prior_mean') ./ (prior_sigma' .^ 2)
+        vals_prior  = -0.5 .* vec(sum(((U_in .- prior_mean') ./ prior_sigma') .^ 2; dims = 2))
+        return vals_data .+ vals_prior, grads_data .+ grads_prior
+    end
+
+    val_init, grad_init = tempered_grads(U)
+
+    # Half-step momentum
+    p = momentum .+ (ε / 2) .* grad_init
+    # Full position step
+    U_new = U .+ ε .* p .* inv_mass'
+
+    # L-1 inner full leapfrog steps
+    for _ in 2:L
+        _, grad = tempered_grads(U_new)
+        p .= p .+ ε .* grad
+        U_new .= U_new .+ ε .* p .* inv_mass'
+    end
+
+    # Final half-step momentum
+    val_final, grad_final = tempered_grads(U_new)
+    p .= p .+ (ε / 2) .* grad_final
+
+    # MH accept per chain
+    K0     = 0.5 .* vec(sum(p0       .^ 2 .* inv_mass'; dims = 2))
+    K_new  = 0.5 .* vec(sum(p        .^ 2 .* inv_mass'; dims = 2))
+    log_α  = (val_final .- K_new) .- (val_init .- K0)
+
+    n_acc = 0
+    @inbounds for m in 1:M
+        if log(rand(rng)) < log_α[m]
+            U[m, :] = U_new[m, :]
+            n_acc += 1
+        end
+        # else: keep U[m, :] (already U0 unchanged in this method since we
+        # mutated U_new not U)
+    end
+    return n_acc
 end
 
 end # module BistableGPUPF
