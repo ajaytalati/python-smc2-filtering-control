@@ -8,6 +8,33 @@ This package is **Part II of the joint LEAN4-and-Julia charter** for the
 FSA + smc2fc stack; the charter PDF lives at
 [`LaTex_docs/julia_port_charter.pdf`](../../LaTex_docs/julia_port_charter.pdf).
 
+## ⭐ Recommended high-perf path: GPU parallel-chains HMC + ChEES
+
+For models with a GPU-friendly drift function (most SDE models qualify),
+the **production sampler stack** is parallel-chains HMC where all `n_smc`
+rejuvenation chains run in **one batched kernel launch per leapfrog step**.
+The reference implementation lives next to the bistable model:
+
+  - Pattern: [`version_1_Julia/models/bistable_controlled/gpu_pf.jl`](../../version_1_Julia/models/bistable_controlled/gpu_pf.jl)
+  - Bench:   [`version_1_Julia/tools/bench_b3_gpu_parallel.jl`](../../version_1_Julia/tools/bench_b3_gpu_parallel.jl)
+  - Architecture notes + B3 numbers: [`version_1_Julia/HANDOFF.md`](../../version_1_Julia/HANDOFF.md)
+
+Measured on RTX 5090 (n_smc = 64 chains, K_per_chain = 2_000, 8-D θ,
+T = 144 obs): **134 ms per HMC move (153× faster than serialised GPU
+HMC, 6× faster end-to-end than CPU AutoMALA).** Both gates pass; cost
+ratio 0.740× oracle (best across 8 sampler/AD combinations tried).
+
+For a **new model** the porting pattern is: copy
+`models/bistable_controlled/gpu_pf.jl`, replace the per-particle drift
+inside the kernel with the model's drift, keep the CRN noise layout
+unchanged. The `BistableGPUTargetBatched` + `gpu_grads_parallel_chains`
++ `parallel_hmc_one_move!` primitives reuse cleanly because they
+operate on flat `(M·K,)` log-weight arrays.
+
+The CPU samplers below (HMC, NUTS, MALA, AutoMALA via AdvancedHMC.jl)
+are the **fallback path** for when you don't want to write a GPU
+kernel — they're slower but model-agnostic.
+
 ## Status: all phases complete (incl. Phase 6 follow-ups)
 
 | Phase | Component                                                | Tests | Status |
