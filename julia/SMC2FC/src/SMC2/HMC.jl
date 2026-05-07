@@ -298,4 +298,60 @@ function automala_step_chain(u0::AbstractVector{Float64},
     return u
 end
 
+"""
+    chees_adapt_L(particles_subset, lp_fn, ε, inv_mass_diag,
+                   L_candidates, n_steps, rng;
+                   ad_backend = :ForwardDiff) -> best_L
+
+ChEES adaptation (Hoffman, Radul & Sountsov, 2021): pick the static
+HMC trajectory length L that maximises **expected squared jump distance
+per gradient eval**:
+
+    ESJD(L) = (1/N_subset) Σ_i ‖ θ_i^new − θ_i^old ‖²
+    score(L) = ESJD(L) / (L · ε)
+
+Sweep `L_candidates`, run an `n_steps`-length static-L HMC chain on each
+subset particle for each candidate, score, return argmax. The chosen
+L is then used as the **fixed** leapfrog count for the main rejuvenation
+moves on all `n_smc` particles. Fixed L → no branch divergence (the
+GPU/SIMD friendly property NUTS lacks).
+"""
+function chees_adapt_L(particles_subset::AbstractMatrix{Float64},
+                        lp_fn,
+                        ε::Float64,
+                        inv_mass_diag::AbstractVector{Float64},
+                        L_candidates::AbstractVector{<:Integer},
+                        n_steps::Integer,
+                        rng::AbstractRNG;
+                        ad_backend::Symbol = :ForwardDiff)
+    N_sub = size(particles_subset, 1)
+    d     = size(particles_subset, 2)
+    target_grad = build_target(lp_fn, d; ad_backend = ad_backend)
+
+    metric      = DiagEuclideanMetric(inv_mass_diag)
+    hamiltonian = Hamiltonian(metric, target_grad)
+    integrator  = Leapfrog(ε)
+
+    best_L     = first(L_candidates)
+    best_score = -Inf
+    for L in L_candidates
+        kernel = HMCKernel(Trajectory{EndPointTS}(integrator, FixedNSteps(Int(L))))
+        sqd_total = 0.0
+        for i in 1:N_sub
+            θ0 = collect(@view particles_subset[i, :])
+            samples, _ = sample(rng, hamiltonian, kernel, θ0, Int(n_steps),
+                                  NoAdaptation(); progress = false, verbose = false)
+            θ1 = samples[end]
+            sqd_total += sum(abs2, θ1 .- θ0)
+        end
+        esjd  = sqd_total / N_sub
+        score = esjd / (L * ε)
+        if score > best_score
+            best_score = score
+            best_L     = Int(L)
+        end
+    end
+    return best_L
+end
+
 end # module HMC

@@ -64,15 +64,21 @@ Base.@kwdef struct SMCConfig
     ad_backend::Symbol            = :ForwardDiff
 
     # ── MCMC sampler kind for the per-tempering-level rejuvenation ─────────
-    # :HMC  — fixed leapfrog count = `hmc_num_leapfrog` (the v1 default).
-    # :NUTS — No-U-Turn Sampler with adaptive trajectory length. Each
-    #         transition picks its own leapfrog count by detecting when
-    #         the trajectory makes a U-turn; per-call cost varies but
-    #         total mixing per gradient eval is typically much higher
-    #         than fixed-step HMC, especially on poorly-conditioned
-    #         posteriors. `hmc_num_leapfrog` is unused under :NUTS;
-    #         `hmc_step_size` becomes the integrator step size.
+    # :HMC      — fixed leapfrog count = `hmc_num_leapfrog`.
+    # :NUTS     — No-U-Turn Sampler with adaptive trajectory length.
+    # :MALA     — Langevin (1 grad/move + MH).
+    # :AutoMALA — MALA + Robbins-Monro step-size adapt toward target_accept = 0.574.
+    # :ChEES    — Adapts trajectory length L (NOT step size) per tempering
+    #             level, then runs static-L HMC for all particles. The L
+    #             sweep maximises ESJD / (L · ε) on a subset of resampled
+    #             particles. Fixed L = no branch divergence on GPU
+    #             (vs NUTS where threads diverge). Hoffman et al. 2021.
     sampler::Symbol               = :HMC
+
+    # ── ChEES adaptation knobs (unused unless `sampler == :ChEES`) ──────────
+    chees_L_candidates::Vector{Int}    = [2, 4, 8, 16, 32]
+    chees_calib_n_particles::Int       = 16    # subset for ESJD sweep
+    chees_calib_n_steps::Int           = 10    # chain length per candidate
 end
 
 

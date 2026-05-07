@@ -11,7 +11,7 @@ scenarios. The "inversion" the audit flagged was a deliberate dual
 API presentation, not a model-level drift. psim auto-tracks Repo A
 via lazy imports.
 
-See [`swat_consistency_check/README.md`](swat_consistency_check/README.md)
+See [`swat_consistency_check/README.md`](python-smc2-filtering-control/Ajays_project_upgrade_plans/swat_consistency_check/README.md)
 for the verification script and numerics.
 
 The simplified path forward is: `git pull` Repo A → Phase 1

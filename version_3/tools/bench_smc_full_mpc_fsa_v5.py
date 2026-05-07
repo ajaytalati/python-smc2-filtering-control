@@ -106,27 +106,10 @@ def _pop_named_arg(name: str, default, cast=str):
     return default
 
 
-def _next_run_number(experiments_dir: Path) -> int:
-    if not experiments_dir.exists():
-        return 1
-    nums = []
-    for p in experiments_dir.iterdir():
-        if p.is_dir() and p.name.startswith('run'):
-            stem = p.name[3:].split('_', 1)[0]
-            try:
-                nums.append(int(stem))
-            except ValueError:
-                pass
-    return max(nums, default=0) + 1
-
-
 def _allocate_run_dir(repo_root: Path, run_tag: str) -> tuple[Path, int]:
-    exp_dir = repo_root / "outputs" / "fsa_v5" / "experiments"
-    exp_dir.mkdir(parents=True, exist_ok=True)
-    n = _next_run_number(exp_dir)
-    out_dir = exp_dir / f"run{n:02d}_{run_tag}"
-    out_dir.mkdir(exist_ok=True)
-    return out_dir, n
+    """Delegates to the shared atomic allocator (race-safe)."""
+    from version_3.tools._run_dir import allocate_run_dir
+    return allocate_run_dir(repo_root, run_tag)
 
 
 def extract_window(obs_data, start: int, end: int):
@@ -611,6 +594,11 @@ def main():
             replan_records.append({
                 'stride':            int(s),
                 'plan_per_day':      sched_per_day.copy(),
+                # Smooth per-bin schedule the controller actually optimised
+                # against — needed by the Option-A post-hoc evaluator to
+                # avoid the burst-Phi-zero pathology that vacuously fires
+                # the chance-constraint indicator.
+                'mean_schedule':     np.asarray(mean_schedule, dtype=np.float64),
                 'mean_theta':        np.asarray(res_ctrl['mean_theta']),
                 'particle_costs':    np.asarray(res_ctrl['particle_costs']),
                 'n_temp_levels':     int(res_ctrl['n_temp_levels']),
@@ -631,12 +619,43 @@ def main():
     A_integral_observed = float(np.sum(A_traj) * DT)
     mean_A = float(A_traj.mean())
 
+    # Re-evaluate the chance-constraint on the **smooth schedule** the
+    # controller optimised against (Option A) — NOT on the burst-expanded
+    # plant input. See the long comment in
+    # ``bench_controller_only_fsa_v5.py`` for why.
     full_phi = np.asarray(np.concatenate(plant.history['Phi_value'], axis=0))
     full_phi = full_phi.reshape(-1, 2)
-    n_steps_full = min(full_phi.shape[0], full_traj.shape[0])
+
+    # Recompose the smooth schedule from per-replan ``mean_schedule``
+    # arrays. The Stage-3 driver applies ``baseline_phi`` until the first
+    # filter window completes (s == warmup_strides), then each replan's
+    # plan is applied for ``replan_K`` strides until the next replan.
+    # Each replan record stores ``mean_schedule`` of shape
+    # ``(plan_n_steps, 2)`` — the per-bin smooth schedule the HMC
+    # optimised against.
+    smooth_chunks = []
+    if replan_records:
+        first_replan_stride = int(replan_records[0]['stride'])
+        warmup_bins = first_replan_stride * STRIDE_BINS
+        if warmup_bins > 0:
+            smooth_chunks.append(np.tile(
+                np.asarray(baseline_phi, dtype=np.float64),
+                (warmup_bins, 1)))
+        bins_per_block = replan_K * STRIDE_BINS
+        for r in replan_records:
+            seg = np.asarray(r['mean_schedule'], dtype=np.float64)
+            smooth_chunks.append(seg[:bins_per_block])
+        smooth_full = np.concatenate(smooth_chunks, axis=0)
+    else:
+        # No replans fired (very short run / window never filled): the
+        # entire schedule was baseline_phi.
+        smooth_full = np.tile(np.asarray(baseline_phi, dtype=np.float64),
+                               (full_phi.shape[0], 1))
+
+    n_steps_smooth = min(smooth_full.shape[0], full_traj.shape[0])
     posthoc = posthoc_eval(
         [dict(truth)], np.array([1.0]),
-        full_phi[:n_steps_full],
+        smooth_full[:n_steps_smooth],
         dt=DT, alpha=alpha, A_target=A_target,
         truth_params_template=truth,
         initial_state=init_state,

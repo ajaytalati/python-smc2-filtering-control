@@ -253,23 +253,18 @@ class StepwisePlant:
 
         # ── Forward Euler-Maruyama on GPU via _plant_em_step ──
         # 6D diffusion vector (matches _dynamics.diffusion_state_dep ordering).
-        #
-        # IMPORTANT: We do NOT read these from ``self.truth_params`` because
-        # ``DEFAULT_PARAMS`` (and ``DEFAULT_PARAMS_V5``) suffer from a key
-        # collision: ``sigma_S`` is used for both the latent-S diffusion
-        # scale (~0.008) and the stress-channel observation noise (~4.0),
-        # and Python takes whichever was assigned last (the obs one). Reading
-        # ``self.truth_params['sigma_S']`` would therefore put 4.0 into the
-        # latent diffusion and blow S up by ~500x. The production
-        # ``estimation.py`` sidesteps this by hard-coding the same
-        # ``SIGMA_*_FROZEN`` constants — we mirror that policy here.
+        # Read state-noise sigmas directly from ``self.truth_params``. The
+        # historical ``sigma_S`` collision between the latent-S diffusion
+        # scale and the stress-channel obs noise has been resolved: the
+        # obs entry now lives under ``sigma_S_obs``, and ``sigma_S`` here
+        # unambiguously names the state-noise (default 0.008).
         sigma = np.array([
-            0.010,    # sigma_B   — Jacobi diffusion scale for aerobic fitness B
-            0.008,    # sigma_S   — Jacobi diffusion scale for strength S
-            0.012,    # sigma_F   — CIR diffusion scale for unified fatigue F
-            0.020,    # sigma_A   — CIR diffusion scale for autonomic A
-            0.005,    # sigma_K   — shared CIR scale for K_FB
-            0.005,    # sigma_K   — shared CIR scale for K_FS
+            float(self.truth_params['sigma_B']),
+            float(self.truth_params['sigma_S']),
+            float(self.truth_params['sigma_F']),
+            float(self.truth_params['sigma_A']),
+            float(self.truth_params['sigma_K']),
+            float(self.truth_params['sigma_K']),
         ])
         # JIT-friendly params dict — only the dynamics keys; the obs-coef
         # keys aren't used by the drift, but pass-through is harmless.

@@ -561,46 +561,52 @@ def _compute_cost_internals(theta_stacked, weights, Phi_schedule,
     """Shared body for hard + soft variants — fully JIT-friendly.
 
     Returns a tuple
-        ``(effort, A_traj_per_particle, A_sep_per_bin)``
+        ``(effort, A_traj_per_particle, A_sep_per_particle_per_bin)``
     where:
       * ``effort`` is a scalar (Φ-only, deterministic).
       * ``A_traj_per_particle`` is shape (n_particles, n_steps) — the
         autonomic-amplitude trajectory of each particle under the
         deterministic (drift-only) v5 dynamics.
-      * ``A_sep_per_bin`` is shape (n_steps,) — the analytical separatrix
-        evaluated at each bin's $\\Phi$ using the **first particle's**
-        parameters as a representative template (same simplification as
-        the legacy implementation; see Notes in the legacy docstring).
+      * ``A_sep_per_particle_per_bin`` is shape (n_particles, n_steps)
+        — the analytical separatrix evaluated at each bin's $\\Phi$
+        using **each particle's own parameters**. The separatrix
+        depends on the bifurcation parameters mu_0, mu_B, mu_S, mu_F,
+        mu_FF, eta, B_dec, S_dec, mu_dec_B, mu_dec_S, n_dec — all of
+        which differ across the SMC² particle population, so collapsing
+        to a single template (the historical particle-0 simplification,
+        Bug 2 in the 2026-05-06 audit) was incorrect for multi-particle
+        runs.
     """
-    # 1. Per-bin separatrix: vmap over the schedule using particle-0 params.
-    template = jax.tree_util.tree_map(lambda x: x[0], theta_stacked)
-
-    def find_sep_at(Phi_t):
-        return _jax_find_A_sep(Phi_t[0], Phi_t[1], template)
-
-    A_sep_per_bin = jax.vmap(find_sep_at)(Phi_schedule)
-
-    # 2. Per-particle forward rollout (drift-only, RK4 inside ``rollout_fn``).
+    # 1. Per-particle, per-bin separatrix.
+    #    Inner vmap: over the Phi schedule for one particle's params.
+    #    Outer vmap: over the SMC² particle axis.
     rollout_fn = _make_forward_rollout_fn(dt)
 
-    def single_particle_A_traj(params_single):
+    def per_particle_internals(params_single):
+        # A_sep at every bin under THIS particle's bifurcation params.
+        A_sep_seq = jax.vmap(
+            lambda Phi_t: _jax_find_A_sep(Phi_t[0], Phi_t[1], params_single)
+        )(Phi_schedule)
+        # Drift-only rollout under THIS particle's params.
         traj = rollout_fn(initial_state, params_single, Phi_schedule)
-        return traj[:, 3]    # autonomic amplitude column
+        A_seq = traj[:, 3]
+        return A_seq, A_sep_seq
 
-    A_traj_per_particle = jax.vmap(single_particle_A_traj)(theta_stacked)
+    A_traj_per_particle, A_sep_pp = jax.vmap(per_particle_internals)(theta_stacked)
 
-    # 3. Effort cost: deterministic in Φ, identical across particles.
+    # 2. Effort cost: deterministic in Φ, identical across particles.
     effort = jnp.sum(Phi_schedule ** 2) * dt
 
-    return effort, A_traj_per_particle, A_sep_per_bin
+    return effort, A_traj_per_particle, A_sep_pp
 
 
-def _aggregate(A_traj_pp, A_sep_per_bin, weights, dt, indicator,
+def _aggregate(A_traj_pp, A_sep_pp, weights, dt, indicator,
                 alpha, A_target, effort):
     """Common aggregation given a per-particle-per-bin indicator array.
 
     ``indicator`` shape: (n_particles, n_steps), values in [0, 1].
     For the hard variant: 0/1 indicator. For the soft variant: sigmoid.
+    ``A_sep_pp`` shape: (n_particles, n_steps) — per-particle separatrix.
     """
     # Per-particle violation rate
     vrpp = jnp.mean(indicator, axis=1)
@@ -611,13 +617,17 @@ def _aggregate(A_traj_pp, A_sep_per_bin, weights, dt, indicator,
     weighted_A_int = jnp.sum(weights * A_int_pp)
 
     return {
-        'mean_effort':                  effort,
-        'mean_A_integral':              weighted_A_int,
-        'violation_rate_per_particle':  vrpp,
-        'weighted_violation_rate':      weighted_vr,
-        'satisfies_chance_constraint':  weighted_vr <= alpha,
-        'satisfies_target':             weighted_A_int >= A_target,
-        'A_sep_per_bin':                A_sep_per_bin,
+        'mean_effort':                       effort,
+        'mean_A_integral':                   weighted_A_int,
+        'violation_rate_per_particle':       vrpp,
+        'weighted_violation_rate':           weighted_vr,
+        'satisfies_chance_constraint':       weighted_vr <= alpha,
+        'satisfies_target':                  weighted_A_int >= A_target,
+        # Backwards-compat key kept; shape changed from (n_steps,) to
+        # (n_particles, n_steps) post Bug-2 fix. Callers that only
+        # consume scalar gates aren't affected; callers that plot need
+        # to take a particle-axis aggregate (e.g. weighted mean).
+        'A_sep_per_bin':                     A_sep_pp,
     }
 
 
@@ -626,10 +636,11 @@ def _aggregate(A_traj_pp, A_sep_per_bin, weights, dt, indicator,
 @functools.partial(jax.jit, static_argnames=('dt', 'alpha', 'A_target'))
 def _cost_hard_jit(theta_stacked, weights, Phi_schedule, initial_state,
                     dt, alpha, A_target):
-    effort, A_traj_pp, A_sep = _compute_cost_internals(
+    effort, A_traj_pp, A_sep_pp = _compute_cost_internals(
         theta_stacked, weights, Phi_schedule, initial_state, dt)
-    indicator = (A_traj_pp < A_sep[None, :]).astype(jnp.float64)
-    return _aggregate(A_traj_pp, A_sep, weights, dt, indicator,
+    # No broadcast — A_sep_pp already has shape (n_particles, n_steps).
+    indicator = (A_traj_pp < A_sep_pp).astype(jnp.float64)
+    return _aggregate(A_traj_pp, A_sep_pp, weights, dt, indicator,
                        alpha, A_target, effort)
 
 
@@ -637,14 +648,15 @@ def _cost_hard_jit(theta_stacked, weights, Phi_schedule, initial_state,
                                               'beta', 'scale'))
 def _cost_soft_jit(theta_stacked, weights, Phi_schedule, initial_state,
                     dt, alpha, A_target, beta, scale):
-    effort, A_traj_pp, A_sep = _compute_cost_internals(
+    effort, A_traj_pp, A_sep_pp = _compute_cost_internals(
         theta_stacked, weights, Phi_schedule, initial_state, dt)
-    # Sigmoid surrogate: large beta → hard indicator. ``A_sep`` is
-    # broadcast to match ``A_traj_pp``'s (n_particles, n_steps) shape.
-    # NOTE: ``A_sep`` may be ±inf in mono-stable regimes — sigmoid
+    # Sigmoid surrogate: large beta → hard indicator. ``A_sep_pp`` and
+    # ``A_traj_pp`` both have shape (n_particles, n_steps) so the
+    # subtraction is element-wise — no broadcast.
+    # NOTE: ``A_sep_pp`` may be ±inf in mono-stable regimes — sigmoid
     # handles this gracefully (sigmoid(+inf) = 1, sigmoid(-inf) = 0).
-    indicator = jax.nn.sigmoid(beta * (A_sep[None, :] - A_traj_pp) / scale)
-    return _aggregate(A_traj_pp, A_sep, weights, dt, indicator,
+    indicator = jax.nn.sigmoid(beta * (A_sep_pp - A_traj_pp) / scale)
+    return _aggregate(A_traj_pp, A_sep_pp, weights, dt, indicator,
                        alpha, A_target, effort)
 
 

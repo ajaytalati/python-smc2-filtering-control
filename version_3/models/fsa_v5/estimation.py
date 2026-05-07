@@ -147,7 +147,7 @@ PARAM_PRIOR_CONFIG = OrderedDict([
     ('k_F',         ('lognormal', (math.log(20.0), 0.20))),
     ('k_A_S',       ('lognormal', (math.log(8.0),  0.25))),
     ('beta_C_S',    ('normal',    (-4.0, 0.8))),
-    ('sigma_S',     ('lognormal', (math.log(4.0), 0.20))),
+    ('sigma_S_obs', ('lognormal', (math.log(4.0), 0.20))),
     # ── Steps observation (6) ──
     ('mu_step0',    ('normal',    (5.5, 0.3))),
     ('beta_B_st',   ('lognormal', (math.log(0.8), 0.20))),
@@ -282,7 +282,7 @@ def _make_propagate_fn(frozen_dynamics):
             p['mu_step0']   + p['beta_C_st']  * C_k,
             0.0,
         ])
-        R_diag = jnp.array([p['sigma_HR']**2, p['sigma_S']**2,
+        R_diag = jnp.array([p['sigma_HR']**2, p['sigma_S_obs']**2,
                              p['sigma_st']**2, p['sigma_VL']**2])
 
         obs_vals = jnp.array([
@@ -383,7 +383,7 @@ def _gaussian_obs_ll(y, grid_obs, k, params):
         return obs_pres * (-0.5 * (resid / sigma)**2 - jnp.log(sigma) - HALF_LOG_2PI)
 
     lp =  _ll(pHR, grid_obs['hr_value'][k],        grid_obs['hr_present'][k],     p['sigma_HR'])
-    lp += _ll(pS,  grid_obs['stress_value'][k],    grid_obs['stress_present'][k], p['sigma_S'])
+    lp += _ll(pS,  grid_obs['stress_value'][k],    grid_obs['stress_present'][k], p['sigma_S_obs'])
     lp += _ll(pST, grid_obs['log_steps_value'][k], grid_obs['steps_present'][k],  p['sigma_st'])
     lp += _ll(pVL, grid_obs['vl_value'][k],        grid_obs['vl_present'][k],     p['sigma_VL'])
     return lp

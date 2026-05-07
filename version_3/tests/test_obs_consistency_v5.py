@@ -6,12 +6,12 @@ Mirrors the same-named test on the `claude/dev-sandbox-main` branch
   - 6D latent state `[B, S, F, A, K_FB, K_FS]` (vs v2's 3D `[B, F, A]`)
   - 5 observation channels — adds VolumeLoad on top of v2's 4
     (HR / Sleep / Stress / Steps)
-  - The `sigma_S` name collision the v5 technical guide §9.1 warns
-    about: `params['sigma_S']` returns the STRESS-OBS noise (~4.0),
-    NOT the latent-S diffusion scale (~0.008). The latent-S diffusion
-    is hard-coded in `_dynamics.py:SIGMA_S_FROZEN`. This test only
-    touches the obs side, so the collision doesn't bite — but a
-    comment is added so future readers see the trap.
+  - The historical `sigma_S` name collision (v5 guide §9.1) was
+    resolved on 2026-05-06 by renaming the stress-channel obs noise
+    to `sigma_S_obs`. So `params['sigma_S']` is now unambiguously the
+    latent-S Jacobi diffusion scale (~0.008), and `params['sigma_S_obs']`
+    is the stress-channel obs noise (~4.0). This test exercises the
+    obs side, so it reads `sigma_S_obs`.
 
 For each channel:
   1. Compute the LaTeX-prescribed channel mean (or Bernoulli prob for
@@ -78,8 +78,9 @@ T_DAYS    = 0.20   # mid-morning — circadian C ≈ cos(2π·0.20) ≈ 0.31
 def _build_params() -> dict:
     """Truth params dict (DEFAULT_PARAMS_V5 unchanged).
 
-    NB: `params['sigma_S']` here is the STRESS-OBS noise (~4.0), not
-    the latent-S Jacobi diffusion scale (~0.008) — see v5 guide §9.1.
+    Post-rename (2026-05-06): ``params['sigma_S']`` is the latent-S
+    Jacobi diffusion scale (~0.008); the stress-channel obs noise is
+    now under ``params['sigma_S_obs']`` (~4.0). No more collision.
     """
     return dict(DEFAULT_PARAMS_V5)
 
@@ -199,10 +200,9 @@ def test_stress_channel_consistency_v5():
                      - p['k_A_S']  * A_state
                      + p['beta_C_S'] * C_k)
 
-    # Sim side: sigma_S=0 (NB: sigma_S is the stress-obs noise per the
-    # v5 guide §9.1 sigma_S name-collision note — NOT the latent-S
-    # diffusion scale, which lives in SIGMA_S_FROZEN).
-    p_no_noise = dict(p, sigma_S=0.0)
+    # Sim side: zero out the stress obs noise (sigma_S_obs); the latent-S
+    # state-noise (sigma_S=0.008) is unrelated to this channel.
+    p_no_noise = dict(p, sigma_S_obs=0.0)
     prior = {'obs_sleep': {'sleep_label': np.array([0], dtype=np.int32)}}
     out = gen_obs_stress(_trajectory(), _t_grid(), p_no_noise,
                           aux=None, prior_channels=prior, seed=0)
@@ -211,7 +211,7 @@ def test_stress_channel_consistency_v5():
         f"sim stress mean disagrees with LaTeX (v5 guide §3 eq:obs-S)"
 
     est_lp = _est_log_lik('stress', expected_mean, state, p)
-    expected_peak = _max_gauss_log_density(p['sigma_S'])
+    expected_peak = _max_gauss_log_density(p['sigma_S_obs'])
     assert math.isclose(est_lp, expected_peak, abs_tol=1e-8), \
         f"estimator stress mean disagrees: log-lik {est_lp:.6f} != peak {expected_peak:.6f}"
 

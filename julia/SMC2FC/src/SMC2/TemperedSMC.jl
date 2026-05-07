@@ -19,7 +19,7 @@ using LogExpFunctions: logsumexp
 using Statistics: mean, std
 using ..Tempering: solve_delta_for_ess
 using ..MassMatrix: estimate_mass_matrix
-using ..HMC: hmc_step_chain
+using ..HMC: hmc_step_chain, chees_adapt_L
 using ..Bridge: bridge_init, bridge_kind
 using ..Sampling: sample_from_prior
 using ...SMC2FC: SMCConfig, PriorType

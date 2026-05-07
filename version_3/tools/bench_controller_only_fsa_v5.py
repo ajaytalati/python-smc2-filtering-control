@@ -117,27 +117,10 @@ def _pop_named_arg(name: str, default, cast=str):
     return default
 
 
-def _next_run_number(experiments_dir: Path) -> int:
-    if not experiments_dir.exists():
-        return 1
-    nums = []
-    for p in experiments_dir.iterdir():
-        if p.is_dir() and p.name.startswith('run'):
-            stem = p.name[3:].split('_', 1)[0]
-            try:
-                nums.append(int(stem))
-            except ValueError:
-                pass
-    return max(nums, default=0) + 1
-
-
 def _allocate_run_dir(repo_root: Path, run_tag: str) -> tuple[Path, int]:
-    exp_dir = repo_root / "outputs" / "fsa_v5" / "experiments"
-    exp_dir.mkdir(parents=True, exist_ok=True)
-    n = _next_run_number(exp_dir)
-    out_dir = exp_dir / f"run{n:02d}_{run_tag}"
-    out_dir.mkdir(exist_ok=True)
-    return out_dir, n
+    """Delegates to the shared atomic allocator (race-safe)."""
+    from version_3.tools._run_dir import allocate_run_dir
+    return allocate_run_dir(repo_root, run_tag)
 
 
 # ── Cost-fn factories ────────────────────────────────────────────────
@@ -527,21 +510,43 @@ def main():
     A_integral_observed = float(np.sum(A_traj) * DT)
     mean_A = float(A_traj.mean())
 
-    # Re-evaluate the chance-constraint on the actual plant trajectory
-    # (different from the controller's internal estimate, which uses the
-    # cost evaluator's deterministic SDE rollout from each replan's
-    # init state).
+    # Re-evaluate the chance-constraint on the **smooth schedule** the
+    # controller optimised against — NOT on the burst-expanded plant
+    # input. Reasoning: the chance-constraint spec
+    # ``P[A_t < A_sep(Phi_t)] ≤ alpha`` is faithful to a smooth schedule.
+    # During the morning Phi-burst expansion most bins have Phi=0
+    # (median per-bin Phi is 0 in both channels), and at Phi=(0,0) the
+    # v5 closed island is mono-stable collapsed (A_sep=+inf), so a
+    # per-bin indicator on the burst-expanded Phi vacuously fires for
+    # ~96% of bins (this is exactly the persistent
+    # weighted_violation_rate ≈ 0.96 that prior runs reported).
+    # The controller's own internal cost (during HMC) sees the smooth
+    # RBF schedule; the post-hoc must see the same smooth schedule for
+    # an honest verdict on what the controller chose.
     full_phi = np.concatenate(plant.history['Phi_value'], axis=0)
     full_phi = np.asarray(full_phi).reshape(-1, 2)
-    n_steps_full = min(full_phi.shape[0], full_traj.shape[0])
+
+    # Recompose the smooth RBF schedule from the per-replan
+    # ``mean_schedule`` arrays. Warm-up uses ``baseline_phi`` (held
+    # constant for ``replan_K * STRIDE_BINS`` bins). Each replan's plan
+    # then covers the next ``replan_K * STRIDE_BINS`` bins until the
+    # following replan kicks in. Final-replan plan extends to end of run.
+    warmup_bins = replan_K * STRIDE_BINS
+    smooth_chunks = [np.tile(np.asarray(baseline_phi, dtype=np.float64),
+                              (warmup_bins, 1))]
+    for r in replan_records:
+        seg = np.asarray(r['mean_schedule'], dtype=np.float64)
+        smooth_chunks.append(seg[:replan_K * STRIDE_BINS])
+    smooth_full = np.concatenate(smooth_chunks, axis=0)
+    n_steps_smooth = min(smooth_full.shape[0], full_traj.shape[0])
+
     if cost == 'gradient_ot':
-        # Use the post-hoc legacy hard cost as a witness
         from version_3.models.fsa_v5.control_v5 import evaluate_chance_constrained_cost_hard as posthoc_eval
     else:
         from version_3.models.fsa_v5.control_v5 import evaluate_chance_constrained_cost_hard as posthoc_eval
     posthoc = posthoc_eval(
         [dict(truth)], np.array([1.0]),
-        full_phi[:n_steps_full],
+        smooth_full[:n_steps_smooth],
         dt=DT, alpha=alpha, A_target=A_target,
         truth_params_template=truth,
         initial_state=init_state,

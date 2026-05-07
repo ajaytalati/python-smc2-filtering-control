@@ -79,28 +79,15 @@ def _pop_run_tag_from_argv(default: str) -> str:
     return default
 
 
-def _next_run_number(experiments_dir: Path) -> int:
-    if not experiments_dir.exists():
-        return 1
-    nums = []
-    for p in experiments_dir.iterdir():
-        if p.is_dir() and p.name.startswith('run'):
-            stem = p.name[3:].split('_', 1)[0]
-            try:
-                nums.append(int(stem))
-            except ValueError:
-                pass
-    return max(nums, default=0) + 1
-
-
 def _allocate_run_dir(repo_root: Path, run_tag: str) -> tuple[Path, int]:
-    """Make outputs/fsa_v5/experiments/runNN_<tag>/ and return (path, NN)."""
-    exp_dir = repo_root / "outputs" / "fsa_v5" / "experiments"
-    exp_dir.mkdir(parents=True, exist_ok=True)
-    n = _next_run_number(exp_dir)
-    out_dir = exp_dir / f"run{n:02d}_{run_tag}"
-    out_dir.mkdir(exist_ok=True)
-    return out_dir, n
+    """Make outputs/fsa_v5/experiments/runNN_<tag>/ and return (path, NN).
+
+    Delegates to the shared atomic allocator (handles concurrent-process
+    races; the previous in-bench helper had a TOCTOU bug where two
+    processes could both compute the same N).
+    """
+    from version_3.tools._run_dir import allocate_run_dir
+    return allocate_run_dir(repo_root, run_tag)
 
 
 # ── Window structure (matches v2's E3 reference; LaTeX §6 confirms 15-min grid)

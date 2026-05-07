@@ -276,7 +276,7 @@ def gen_obs_stress(trajectory, t_grid, params, aux, prior_channels, seed):
     A = trajectory[:, 3]
     C = circadian(t_grid, phi=params.get('phi', 0.0))
     s_mean = (params['S_base'] + params['k_F'] * F - params['k_A_S'] * A + params['beta_C_S'] * C)
-    s_obs = s_mean + rng.normal(0.0, params['sigma_S'], size=len(t_grid))
+    s_obs = s_mean + rng.normal(0.0, params['sigma_S_obs'], size=len(t_grid))
     sleep_label = prior_channels['obs_sleep']['sleep_label']
     idx_present = np.where(sleep_label == 0)[0]
     return {'t_idx': idx_present.astype(np.int32), 'obs_value': s_obs[idx_present].astype(np.float32)}
@@ -391,7 +391,7 @@ DEFAULT_PARAMS = {
     # ── Observation channels ──
     'HR_base':     62.0, 'kappa_B_HR': 12.0, 'alpha_A_HR': 3.0, 'beta_C_HR': -2.5, 'sigma_HR': 2.0,
     'k_C':         3.0, 'k_A': 2.0, 'c_tilde': 0.5,
-    'S_base':      30.0, 'k_F': 20.0, 'k_A_S': 8.0, 'beta_C_S': -4.0, 'sigma_S': 4.0,
+    'S_base':      30.0, 'k_F': 20.0, 'k_A_S': 8.0, 'beta_C_S': -4.0, 'sigma_S_obs': 4.0,
     'mu_step0':    5.5, 'beta_B_st': 0.8, 'beta_F_st': 0.5, 'beta_A_st': 0.3, 'beta_C_st': -0.8, 'sigma_st': 0.5,
     'beta_S_VL':   100.0, 'beta_F_VL': 20.0, 'sigma_VL': 10.0,
 }
