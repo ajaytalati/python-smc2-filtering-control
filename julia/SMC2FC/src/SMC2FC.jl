@@ -13,9 +13,11 @@ include("EstimationModel.jl")
 include("Filtering/Kernels.jl")
 include("Filtering/OT.jl")
 include("Filtering/Bootstrap.jl")
+include("Filtering/GPUSegmentedPF.jl")
 using .Kernels
 using .OT
 using .Bootstrap
+using .GPUSegmentedPF
 
 # Phase 3 — Outer SMC²
 include("SMC2/MassMatrix.jl")
@@ -36,10 +38,12 @@ include("Control/RBFSchedule.jl")
 include("Control/Spec.jl")
 include("Control/Calibration.jl")
 include("Control/TemperedSMC.jl")
+include("Control/GPUControlSMC.jl")
 using .RBFSchedule
 using .Spec
 using .Calibration
 using .ControlLoop
+using .GPUControlSMC
 
 # Phase 5 — Plant + Simulator
 include("Simulator/SDEModel.jl")
@@ -75,6 +79,9 @@ export compute_kernel_factor, factor_matvec, factor_matvec_batch
 export sinkhorn_scalings, barycentric_projection
 export ot_resample_lr, ot_blended_resample
 export bootstrap_log_likelihood, BootstrapBuffers
+export gpu_resample_liu_west_kernel!, gpu_per_chain_stats_kernel!,
+       gpu_normalize_and_cumsum_kernel!, gpu_ot_blend_chain!,
+       GPUSegmentedBuffers, run_segmented_smc_step!
 
 # SMC2 — Phase 3
 export estimate_mass_matrix
@@ -90,6 +97,8 @@ export RBFBasis, design_matrix, schedule_from_theta
 export ControlSpec
 export calibrate_beta_max, build_crn_noise_grids
 export run_tempered_smc_loop, ControlResult
+export run_tempered_smc_gpu, parallel_hmc_one_move_generic!,
+       gpu_grads_parallel_chains_fd, chees_pick_L_generic
 
 # Simulator — Phase 5
 export simulate_sde, build_sde_problem

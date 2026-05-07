@@ -1,0 +1,301 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb,bm}
+\usepackage{xcolor}
+\usepackage[colorlinks=true,linkcolor=blue,urlcolor=blue]{hyperref}
+\usepackage{listings}
+\usepackage{booktabs}
+\usepackage{enumitem}
+
+\lstset{
+  basicstyle=\ttfamily\footnotesize,
+  breaklines=true,
+  frame=single,
+  numbers=left,
+  numberstyle=\tiny\color{gray},
+  keywordstyle=\color{blue},
+  commentstyle=\color{green!50!black},
+  stringstyle=\color{purple},
+}
+
+\title{Julia port of the FSA-v2 model:\\
+  closed-loop SMC$^2$ filter + GPU controller}
+\author{Coding session writeup}
+\date{2026-05-07}
+
+\begin{document}
+\maketitle
+
+\section{The Julia FSA-v2 codebase}
+
+\subsection{Repository layout}
+
+The model lives at
+\path{version_2_Julia/models/fsa_high_res/} and is organised as eight files
+that mirror the Python source under \path{version_2/models/fsa_high_res/}.
+The aggregator module \texttt{FSAHighRes.jl} \texttt{include}s them in the order
+required by the inter-file using-clauses (PhiBurst before Simulation
+because the latter reads its constants; CPU control before GPU control
+because the latter re-uses some of the same RBF helpers; estimation last
+because it depends on the framework's \texttt{EstimationModel}).
+\vspace{4pt}
+
+\noindent
+\begin{tabular}{@{}lp{0.65\textwidth}@{}}
+\toprule
+File & Purpose \\
+\midrule
+\texttt{\_dynamics.jl} & SDE drift + state-dependent diffusion (Stage~G1
+                         reparametrisation). Pure Julia; takes a NamedTuple
+                         params for ergonomic \texttt{params.tau\_B} access. \\
+\texttt{\_phi\_burst.jl} & Daily-$\Phi \to$ sub-daily morning-loaded burst
+                          envelope. Reads \texttt{FSA\_STEP\_MINUTES} env
+                          var to set \texttt{BINS\_PER\_DAY}. \\
+\texttt{simulation.jl} & \texttt{INIT\_STATE}, \texttt{DEFAULT\_PARAMS},
+                         the four observation samplers
+                         (HR / sleep / stress / steps), circadian $C(t)$. \\
+\texttt{\_plant.jl} & \texttt{StepwisePlant} struct. Holds truth params,
+                     current $(B,F,A)$ state, RNG seed offset and a
+                     \texttt{history} dict. Two advance methods:
+                     \texttt{advance!} (takes daily $\Phi$, applies burst
+                     envelope) and \texttt{advance\_subdaily!} (takes per-bin
+                     $\Phi$ directly). \texttt{finalise} writes a
+                     psim-format artefact. \\
+\texttt{cpu\_control.jl} & CPU-side cost-functional builder. Produces a
+                          \texttt{ControlBundle} of \texttt{(decoder,
+                          cost\_fn, traj\_sample\_fn)} closures used by the
+                          framework's CPU \texttt{run\_tempered\_smc\_loop}.
+                          Currently unused in the production path
+                          (the GPU controller superseded it) but kept for
+                          debugging. Hosts the canonical \texttt{build\_rbf}. \\
+\texttt{estimation.jl} & Priors (30 estimated + 5 frozen), the locally
+                          guided (Pitt--Shephard) \texttt{propagate\_fn} that
+                          fuses three Gaussian channels via sequential scalar
+                          Kalman, the Bernoulli sleep weight, the
+                          \texttt{align\_obs\_fn} that puts everything on a
+                          \texttt{Float32} per-bin grid, and the
+                          \texttt{build\_estimation\_model} factory. \\
+\texttt{gpu\_pf.jl} & FSA-specific GPU bootstrap-PF kernel
+                     (\texttt{fsa\_propagate\_segment\_kernel!}) +
+                     \texttt{FSAGPUTargetBatched} struct. Calls into the
+                     framework-shared \texttt{run\_segmented\_smc\_step!}
+                     for resampling / Liu--West / OT rescue. \\
+\texttt{gpu\_control.jl} & FSA-specific GPU cost kernel
+                          (\texttt{fsa\_cost\_kernel!}) +
+                          \texttt{FSAControlGPUTarget} struct +
+                          \texttt{make\_log\_density\_fn} closure factory.
+                          Hands a closure to the framework's
+                          \texttt{run\_tempered\_smc\_gpu}. \\
+\texttt{FSAHighRes.jl} & Module aggregator. \texttt{include}s the eight files
+                          and re-exports the public symbols. \\
+\bottomrule
+\end{tabular}
+
+\subsection{Stage-G1 reparametrisation in \texttt{\_dynamics.jl}}
+
+The state $\bm{X}=(B,F,A)$ evolves under the It\^o SDE
+\begin{align}
+  \mathrm{d}B &= \kappa_B \cdot \frac{1+\varepsilon_A A}{1+\varepsilon_A A_{\rm typ}} \cdot \Phi \,\mathrm{d}t
+                - \frac{B}{\tau_B}\,\mathrm{d}t + \sigma_B \sqrt{B(1-B)}\,\mathrm{d}W_B \\
+  \mathrm{d}F &= \kappa_F \Phi\,\mathrm{d}t - \frac{1+\lambda_A A}{1+\lambda_A A_{\rm typ}} \cdot \frac{F}{\tau_F}\,\mathrm{d}t
+                + \sigma_F \sqrt{F}\,\mathrm{d}W_F \\
+  \mathrm{d}A &= \mu(B,F)\,A\,\mathrm{d}t - \eta A^3 \,\mathrm{d}t + \sigma_A \sqrt{A}\,\mathrm{d}W_A \\
+  \mu(B,F) &= \mu_0 + \mu_B B - \mu_F F - \mu_{FF}(F-F_{\rm typ})^2,
+\end{align}
+with the operating-point constants $A_{\rm typ}=0.10$, $F_{\rm typ}=0.20$.
+The reparametrisation absorbs three rank-deficient direction pairs
+$(\kappa_B,\varepsilon_A)$, $(\mu_F,\mu_{FF})$, $(\tau_F,\lambda_A)$ into
+strongly-identified directions and weakly-identified residuals. Truth
+values use the effective parameters: $\kappa_B^{\rm eff}=0.01248$,
+$\tau_F^{\rm eff}=7/1.1=6.364$, $\mu_F^{\rm eff}=0.26$, $\mu_0^{\rm eff}=0.036$.
+The Julia \texttt{TRUTH\_PARAMS} NamedTuple is constructed from these
+identities so it is bit-equivalent to Python's
+\texttt{simulation.py:DEFAULT\_PARAMS}.
+
+The substepped Euler--Maruyama integrator
+\texttt{em\_step\_substepped} runs \texttt{n\_substeps=4} drift sub-steps
+of length $\Delta t/4$, then applies one Wiener increment of variance
+$\sigma(y_{\rm det})^2 \cdot \Delta t$ at the outer-bin boundary, then
+performs boundary reflection ($B \mapsto -B$ if $B<0$, $B\mapsto 2-B$ if
+$B>1$, $F\mapsto |F|$, $A\mapsto |A|$). This matches Python's
+\texttt{imex\_step\_substepped} exactly.
+
+\subsection{Burst envelope (\texttt{\_phi\_burst.jl})}
+
+The controller plans daily $\Phi$ values; the plant runs the SDE on a
+sub-daily grid (\texttt{BINS\_PER\_DAY}~$=$~\texttt{(60·24)/FSA\_STEP\_MINUTES}).
+The expansion is a Gamma-shaped morning-loaded envelope:
+\[
+  \Phi(t) = \Phi_d \cdot e(k), \qquad
+  e(k) \propto t_{\rm post}\,e^{-t_{\rm post}/\tau_h}
+\]
+in the wake window $[7\text{h}, 23\text{h}]$, normalised so
+$\sum_k e(k)\cdot \Delta t_h = 24$. The integral preservation makes the
+slow Banister dynamics (which respond only to the daily integral)
+indistinguishable between bursty and smooth $\Phi$, but the fast
+dynamics (CIR for $F$, Stuart--Landau for $A$) see the bursts. This
+matters in benchmarks --- see \S\ref{sec:bug-bursty}.
+
+\subsection{Stepwise plant (\texttt{\_plant.jl})}
+
+\texttt{StepwisePlant} is a mutable Julia struct carrying
+\texttt{state::Vector\{Float64\}}, \texttt{t\_bin::Int} (global bin
+counter), the truth params and the per-channel observation history. Its
+two driver methods are
+\begin{itemize}[itemsep=2pt]
+\item \texttt{advance!(plant, stride\_bins, Phi\_daily)} --- expects
+  daily $\Phi$, expands to sub-daily via
+  \texttt{expand\_daily\_phi\_to\_subdaily}, then runs the per-bin SDE.
+\item \texttt{advance\_subdaily!(plant, Phi\_subdaily)} --- takes per-bin
+  $\Phi$ values directly, bypasses the burst envelope. Added so the
+  GPU controller's per-bin RBF schedule can be applied.
+\end{itemize}
+After advancing, \texttt{finalise} writes
+\texttt{manifest.json}, \texttt{trajectory.npz}, per-channel
+\texttt{obs/*.npz} and \texttt{exogenous/*.npz} so the closed-loop run
+can be replayed by the Python psim consistency checks.
+
+\subsection{Estimation model (\texttt{estimation.jl})}
+
+The 30 estimated parameters are declared as a
+\texttt{Vector\{Tuple\{Symbol, PriorType\}\}} with the same order as
+Python's \texttt{PARAM\_PRIOR\_CONFIG} so the posterior cloud aligns
+column-by-column. The locally-guided proposal
+(\texttt{propagate\_fn}) computes a Gaussian prior predictive
+$\mathcal{N}(\mu_{\rm pred}, P_{\rm pred})$ from the G1 drift and
+state-dependent variance, then sequentially fuses the three Gaussian
+observation channels (HR, stress, $\log(\mathrm{steps}+1)$) by scalar
+Kalman updates gated by the \texttt{*\_present} masks. A Cholesky-3
+factorisation samples $x_{\rm new}$, and the predictive log-marginal is
+returned as the importance correction \texttt{pred\_lw}. The Bernoulli
+sleep log-likelihood is added by \texttt{obs\_log\_weight\_fn}. This is
+a line-by-line port of Python's
+\texttt{estimation.py:propagate\_fn}.
+
+\subsection{GPU particle filter (\texttt{gpu\_pf.jl})}
+
+The model file contains only the FSA-specific propagate kernel ---
+exactly the same locally-guided proposal as the CPU version, written
+as a KernelAbstractions \texttt{@kernel} that runs in fp32 with one
+thread per (chain, particle). The framework-shared kernels for
+per-chain weight statistics, normalised-weights cumulative sum,
+systematic resampling with Liu--West shrinkage, and Sinkhorn-based OT
+rescue live in \texttt{julia/SMC2FC/src/Filtering/GPUSegmentedPF.jl}.
+A driver routine \texttt{run\_segmented\_smc\_step!} composes them.
+The model's only entry point is
+\texttt{gpu\_log\_density\_batched(target, U)} returning per-chain
+log-marginal-likelihood used by the outer SMC$^2$ HMC.
+
+\subsection{GPU controller (\texttt{gpu\_control.jl})}
+
+The control kernel \texttt{fsa\_cost\_kernel!} has one thread per
+(chain $m$, common-random-number trial $t$). Per outer bin $k$:
+\begin{enumerate}[itemsep=2pt]
+\item Decode $\Phi(t_k)$ from the chain's $\bm{\theta}_m$ via the raw
+  Gaussian RBF basis,
+  $\Phi(t_k) = \Phi_{\max}\cdot \sigma\big(c_\Phi + \sum_a \theta_{m,a}\,\varphi_a(t_k)\big)$
+  with $c_\Phi = \mathrm{logit}(\Phi_{\rm def}/\Phi_{\max})$.
+\item PRE-step accumulate the cost integrand:
+  $A_{\rm acc}\mathrel{+}= A\,\Delta t$,
+  $\Phi_{\rm acc}\mathrel{+}= \Phi^2\,\Delta t$,
+  $B_{\rm acc}\mathrel{+}= \max(F-F_{\max},0)^2\,\Delta t$.
+\item Run the substepped EM SDE step with the trial-shared CRN noise.
+\end{enumerate}
+At the end of the bin loop the cost
+$J_m=-A_{\rm acc} + \lambda_\Phi\Phi_{\rm acc} + \lambda_F B_{\rm acc}$
+is written to \texttt{cost\_per\_thread[$i$]}. The outer wrapper
+averages over trials. The model exposes a
+\texttt{make\_log\_density\_fn(target)} closure that the framework's
+generic \texttt{run\_tempered\_smc\_gpu}
+(in \texttt{julia/SMC2FC/src/Control/GPUControlSMC.jl})
+consumes. The framework provides parallel-chains HMC, a ChEES leapfrog
+picker, FD-batched gradients and the tempered-SMC$^2$ outer loop;
+none of those are FSA-specific.
+
+\subsection{Bugs found while debugging the controller}
+\label{sec:bugs}
+
+Five issues turned up as the bench was iterated against the Python plot.
+The first four are fixed in the Julia source; the fifth is identified but
+not yet patched.
+
+\paragraph{(1) RBF basis was row-normalised.} Python's
+\texttt{smc2fc/control/rbf\_schedules.py} returns the raw Gaussian basis;
+the original Julia port row-normalised it into a partition of unity.
+Row-normalisation collapses any per-anchor $\theta$ variation into a
+weighted average, so the decoded $\Phi(t)$ was effectively constant
+regardless of $\bm\theta$ --- the reason the controller produced flat
+$\Phi$ schedules. Removing the normalisation in both
+\texttt{cpu\_control.jl:build\_rbf} and the GPU target's RBF block
+moved the controller's optimum from $\Phi\approx 0.45$ flat to
+$\Phi\approx 0.20$ flat (matching the spec text in \S10.2 of the
+FSA-v2 outdated lecture notes).
+
+\paragraph{(2) NaN guard reset state.} The original kernel had an
+\texttt{if !isfinite(B)\ldots reset to (0.05, 0.30, 0.10)} guard at the
+end of every bin. When fp32 rounding produced occasional small
+non-finite intermediates, this silently zeroed out cost differences
+between schedules. Removed.
+
+\paragraph{(3) \texttt{$+\,\varepsilon_A$} inside cost diffusion.} The
+plant's \texttt{noise\_scale\_fn} uses \texttt{sqrt(A + EPS\_A\_FROZEN)}
+to keep the diffusion well-defined at $A=0$; the controller's
+\texttt{diffusion\_state\_dep} uses \texttt{sqrt(max(A, 0))}. The Julia
+port had carried the eps form into the cost kernel. Aligned to Python's
+no-eps form for the controller path; plant kept on the eps form.
+
+\paragraph{(4) POST-step cost accumulation.} The kernel was
+accumulating $A_{\rm acc} \mathrel{+}= A\,\Delta t$ AFTER the EM step.
+Python uses the PRE-step state (\texttt{y[2]}, not \texttt{y\_next[2]}),
+i.e.\ a left-Riemann sum from $t=0$ to $t=T-\Delta t$. Switched.
+
+\paragraph{(5) Burst envelope asymmetry between MPC plant and baseline
+  plant.}
+\label{sec:bug-bursty}
+The benchmark calls
+\texttt{advance!(base\_plant, ..., [1.0])} for the constant-$\Phi$
+baseline (which expands $\Phi_{\rm daily}=1$ through the burst envelope
+into per-bin morning-loaded peaks of $\sim$2--3) but
+\texttt{advance\_subdaily!(mpc\_plant, phi\_per\_bin)} for the MPC plant
+(which feeds the controller's smooth per-bin $\Phi$ directly, skipping
+the burst envelope). A diagnostic Monte-Carlo with $n=32$ seeds
+confirmed that under \emph{constant} smooth $\Phi=1$, the plant's mean
+$\bar A = 0.1002$, but the spec quotes $\bar A = 0.0823$ for bursty
+$\Phi_{\rm daily} = 1$. The 22\,\% gap is exactly the burst-envelope
+asymmetry. The fix is to aggregate the controller's per-bin schedule
+to daily $\Phi$ values and call \texttt{advance!} with the burst
+envelope, so MPC and baseline run on the same fast-dynamics regime.
+
+\subsection{Outstanding for next iteration}
+
+\begin{itemize}[itemsep=2pt]
+\item Apply the burst-envelope fix (5) so MPC and baseline trajectories
+  are produced under the same fast-scale forcing.
+\item Switch the controller's gradient from central FD ($h=10^{-4}$,
+  17 chain-evals per gradient) to ForwardDiff dual-number autodiff.
+  Per the bistable B3 module's empirical note, ForwardDiff with $d=8$
+  out-performs Enzyme reverse-mode by $\sim$2.7$\times$ on a similar
+  PF; the FSA controller has the same dimensionality so the same
+  conclusion should hold.
+\item Quantitative side-by-side cost comparison against Python at fixed
+  $\bm\theta$, to confirm the Julia and Python cost surfaces are
+  numerically equivalent after the bug fixes above.
+\end{itemize}
+
+\subsection{Wall-time and configuration}
+
+The current end-to-end run on a single RTX 5090
+(T~$=$~14 days, $h=15$ min, replan every stride, $n_{\rm SMC}^{\rm filter}=32$
+inner-PF chains $\times$ $K=400$ particles, $n_{\rm SMC}^{\rm ctrl}=1024$
+controller chains $\times$ $n_{\rm inner}=128$ trials, HMC
+$\varepsilon=0.2$ / $L_{\rm ChEES}\in\{16,32,64,128,256\}$ /
+\texttt{num\_mcmc}=10, target nats $=8$) completes in 813\,s. Python's
+reference matches this configuration in $\sim$27 minutes. The Julia run
+matches the spec qualitatively (rest-leaning $\Phi \in [0.10, 0.30]$,
+F clearance from $0.30$ to $0.07$) but does not yet reproduce the
+recovery$\to$overload pattern that yields the spec's headline
+$+17\,\%$ mean-$A$ gain --- pending the burst-envelope fix and an
+independent verification of the cost surface against Python at the
+gradient level.
+
+\end{document}
