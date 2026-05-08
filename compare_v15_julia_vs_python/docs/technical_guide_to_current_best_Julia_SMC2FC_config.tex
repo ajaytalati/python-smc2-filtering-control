@@ -1,0 +1,191 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=2cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{microtype}
+\usepackage{parskip}
+
+\hypersetup{colorlinks=true, linkcolor=blue!50!black, urlcolor=blue!50!black}
+
+\title{\textbf{Current best Julia v1.5 SMC$^2$-FC config (RTX 5090, T=28d)}\\
+       \large A 2-page technical guide for users and future agents}
+\author{Generated 2026-05-08}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section*{TL;DR — copy-paste this command}
+
+\begin{verbatim}
+cd /home/ajay/Repos/python-smc2-filtering-control/version_1_5_Julia
+
+julia --project=. tools/bench_smc_full_mpc_fsa_gpu.jl \
+    --T-days 28 --replan-K 2 --seed 42 \
+    --N-smc 512        --K-per-chain 1000 \
+    --num-mcmc 3       --max-temp-levels 30 \
+    --ctrl-n-smc 2048  --ctrl-num-mcmc 16 \
+    --ctrl-chees-max 512  --ctrl-n-anchors 12 \
+    --ctrl-max-levels 40 \
+    --output-dir /tmp/v15_T28d_run
+\end{verbatim}
+
+\noindent Wall time on RTX 5090: \textbf{19.5\,min}. Mean GPU
+utilisation \textbf{$\approx 50\%$}. VRAM peak \textbf{$\approx
+6.6$\,GiB} (20\% of 32\,GiB). Output: \texttt{data.jld2},
+\texttt{manifest.json}, \texttt{per\_stride.csv},
+\texttt{v15\_T28d\_traces.png}, \texttt{v15\_T28d\_param\_traces.png}.
+
+\section*{The framework: \texttt{SMC2FC\_functional}}
+
+\texttt{julia/SMC2FC\_functional/} is the \textbf{default} Julia
+framework. The previous \texttt{julia/SMC2FC/} has been renamed to
+\texttt{julia/SMC2FC\_DEPRECIATED\_USE\_FUNCTIONAL/} and is no longer
+used by the v1.5 bench. The v1.5 bench's \texttt{Project.toml}
+and the model code at
+\texttt{version\_1\_5\_Julia/models/fsa\_high\_res/gpu\_pf.jl} both
+import \texttt{SMC2FC\_functional} (commits \texttt{4a5c007},
+\texttt{9bab259}; numerics bit-identical to the deprecated framework
+on the GPU bench).
+
+\section*{Filter-side config (the inner PF)}
+
+\begin{tabular}{lll}
+\toprule
+flag & value & what it controls \\
+\midrule
+\texttt{--N-smc}            & 512        & outer SMC$^2$ posterior particles over $\theta$ (10-D filter parameters) \\
+\texttt{--K-per-chain}      & 1000       & inner-PF state particles per chain (latent state cloud size) \\
+\texttt{--num-mcmc}         & 3          & HMC moves per outer tempering level \\
+\texttt{--max-temp-levels}  & 30         & cap on outer tempering levels (typically uses 5--6 in practice) \\
+\texttt{--ot-max-weight}    & 0.0 (default) & OT rescue OFF — turning it on gives $\sim 12\times$ slowdown \\
+\texttt{--liu-west-a}       & 0.0 (default) & Liu--West $\theta$-cloud shrinkage OFF (the original bootstrap path) \\
+\bottomrule
+\end{tabular}
+
+The filter compute scales roughly as $\mathcal{O}(N_{\text{smc}}
+\cdot K_{\text{pf}} \cdot T_{\text{steps}})$ per
+\texttt{gpu\_log\_density} call. At this config, one filter call is
+sub-millisecond; the filter contributes only $\sim$5\% of the bench
+wall time. Filter VRAM at this config is $\sim$300\,MB (out of 32\,GB
+available).
+
+\section*{Controller-side config (the SMC$^2$-MPC plan finder)}
+
+\begin{tabular}{lll}
+\toprule
+flag & value & what it controls \\
+\midrule
+\texttt{--ctrl-n-smc}        & 2048 & outer SMC$^2$ particles over $\theta_{\text{ctrl}}$ (RBF coefficients) \\
+\texttt{--ctrl-num-mcmc}     & 16   & ChEES-HMC moves per controller tempering level \\
+\texttt{--ctrl-chees-max}    & 512  & ChEES picker upper bound; candidate list = $[16, 32, 64, \ldots, 512]$ \\
+\texttt{--ctrl-n-anchors}    & 12   & RBF basis cardinality (controller posterior dimension) \\
+\texttt{--ctrl-max-levels}   & 40   & cap on controller tempering levels (typically uses 5--6) \\
+\texttt{--ctrl-n-inner}      & 64 (default) & inner CRN-MC trajectories per cost evaluation \\
+\texttt{--ctrl-target-nats}  & 8.0 (default) & auto-calibration target entropy (nats) \\
+\texttt{--ctrl-sigma-prior}  & 1.5 (default) & prior std on the RBF coefficient vector \\
+\texttt{--ctrl-hmc-step}     & 0.2 (default) & base leapfrog step size $\varepsilon$ \\
+\texttt{--ctrl-hmc-leap}     & 16  (default) & base leapfrog count (overridden adaptively by ChEES) \\
+\bottomrule
+\end{tabular}
+
+The controller compute dominates wall time: per-replan cost is
+$\sim$40\,s, and the bench does $\sim$27 replans at T=28d, replan-K=2.
+That is $\sim$18\,min of the total 19.5\,min run.
+
+\section*{Why this config (not bigger, not smaller)}
+
+\textbf{Smaller (the historical default) was leaving the GPU empty.}
+The pre-saturation default was \texttt{N=32 K=200 ctrl-n-smc=256
+ctrl-num-mcmc=8 ctrl-n-anchors=8}: wall 100\,s, mean GPU util only
+38.5\%, the controller settled on a weakly-ramped schedule
+($\bar\Phi=0.38$ at stride 21).
+
+\textbf{Bigger ($N{=}1024, K{=}4000, \mathit{ctrl{\text{-}}n{\text{-}}smc}{=}4096,
+\mathit{n{\text{-}}anchors}{=}16$) is wall-time-infeasible.} That
+config did push VRAM to 30.8\,GiB (94\% saturation) but the JIT-compile
+plus first-kernel launch on those buffers did not produce log output
+in 33\,min wall time. Future framework engineering (batched OT GPU
+kernel; kernel-fusion pass) is needed before that tier is practical.
+
+\textbf{The picked config is the operating point where:} (a) the
+controller has enough compute per replan to converge to the strong
+``build $B$ then sprint'' Banister-overload ramp-up at long horizon,
+and (b) the whole run finishes in under 30\,min wall.
+
+\section*{Headline scientific result at this config}
+
+\begin{tabular}{lrr}
+\toprule
+metric (T=28d, seed=42, RTX 5090) & default config & this config \\
+\midrule
+total wall time                         & 100\,s        & 1169\,s (19.5\,min) \\
+mean GPU utilisation                    & 38.5\%        & 49.5\%   \\
+peak VRAM                               & 6090\,MiB     & 6662\,MiB \\
+per-replan controller wall              & $\sim$3\,s    & $\sim$40\,s ($\sim 14\times$) \\
+applied $\bar\Phi$ at stride 21         & 0.379         & \textbf{0.695} (\textbf{+83\%}) \\
+final-stride $\hat x_B$ (chronic fitness) & $\sim$0.105 & 0.169 \\
+\bottomrule
+\end{tabular}
+
+The controller now finds the long-horizon Banister-overload ramp-up
+that the writeup's §7 hypothesised should emerge at T=28d, with a much
+stronger commitment than the historical default.
+
+\section*{When to deviate from these defaults}
+
+\begin{itemize}[leftmargin=*, itemsep=2pt]
+\item \textbf{Want shorter wall time} (e.g.\ T=14d or T=7d, debug
+runs): keep \texttt{--N-smc 512 --K-per-chain 1000} but drop
+\texttt{--ctrl-n-smc} to 1024 and \texttt{--ctrl-num-mcmc} to 8. Wall
+time drops $\sim 4\times$ at the cost of a weaker schedule.
+
+\item \textbf{Want more VRAM headroom used (memory-bound experiments):}
+bump \texttt{--K-per-chain} to 2000. Should land VRAM around
+$\sim$10--12\,GiB without blowing the wall time. Compute scales linearly
+in $K$ so wall time $\sim$2$\times$. Not yet measured at T=28d --- run
+once and check.
+
+\item \textbf{Need OT rescue} (very low ESS / hard obs models): set
+\texttt{--ot-max-weight 0.01} and accept the $\sim$12$\times$ slowdown.
+The bench will emit a \texttt{@warn} reminding you. Out-of-the-box
+v1.5 does \emph{not} need this --- the 3-channel direct-Gaussian obs
+model is informative enough.
+
+\item \textbf{Reproducibility}: always set \texttt{--seed} explicitly.
+Default is 42. Keep \texttt{--replan-K 2} unless you specifically want
+more or less frequent re-planning.
+\end{itemize}
+
+\section*{Where artefacts live}
+
+\begin{itemize}[leftmargin=*, itemsep=2pt]
+\item \textbf{Bench script}:
+\texttt{version\_1\_5\_Julia/tools/bench\_smc\_full\_mpc\_fsa\_gpu.jl}
+(this is the live runnable file).
+\item \textbf{Plotting tools}:
+\texttt{compare\_v15\_julia\_vs\_python/src/} (the Julia plotting and
+diagnostic scripts have been consolidated here).
+\item \textbf{Microbench}:
+\texttt{version\_1\_5\_Julia/tools/profile\_gpu.jl --both} for filter +
+controller per-call timings.
+\item \textbf{GPU PF tests}:
+\texttt{version\_1\_5\_Julia/tools/test\_gpu\_pf.jl}.
+\item \textbf{Lean4 diff test}:
+\texttt{version\_1\_5\_Julia/diff\_test/test\_lean\_diff\_v15.jl}
+(model-math sanity check; should always be green).
+\item \textbf{Saturation findings}:
+\texttt{compare\_v15\_julia\_vs\_python/example\_run/}\\
+\texttt{julia\_saturation/FINDINGS\_T28d\_julia\_saturated.md}.
+\item \textbf{Framework}:
+\texttt{julia/SMC2FC\_functional/} (the default; \emph{do} import from
+this). Deprecated framework at
+\texttt{julia/SMC2FC\_DEPRECIATED\_USE\_FUNCTIONAL/} (do \emph{not}
+import from this).
+\end{itemize}
+
+\end{document}
