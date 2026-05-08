@@ -278,6 +278,24 @@ def main():
     print(f"  total: {total_elapsed/60:.1f} min "
           f"({total_elapsed:.0f}s) for {n_strides} strides")
 
+    full_traj_arr = (np.concatenate(full_traj, axis=0)
+                       if full_traj else np.zeros((0, 3)))
+
+    # ── Baseline reference: rerun the plant under constant Φ = 1.0
+    #    for the same number of bins, so the plot can compare MPC vs
+    #    canonical Banister baseline (matches Julia bench schema).
+    print("  building baseline (constant Φ = 1.0) reference …")
+    n_mpc_bins = full_traj_arr.shape[0]
+    if n_mpc_bins > 0:
+        baseline_state = init_plant_state()
+        Phi_base = np.full(n_mpc_bins, 1.0, dtype=np.float64)
+        key, base_key = jax.random.split(key)
+        base_rollout = plant_rollout(baseline_state, Phi_base,
+                                       DEFAULT_PARAMS, DT_BIN_DAYS, base_key)
+        traj_baseline = base_rollout['trajectory']
+    else:
+        traj_baseline = np.zeros_like(full_traj_arr)
+
     # ── Save artefacts ────────────────────────────────────────────────
     if args.out_dir:
         out_dir = Path(args.out_dir)
@@ -287,15 +305,17 @@ def main():
                    f'{"_smoke" if args.smoke else ""}_seed{args.seed}')
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    full_traj_arr = (np.concatenate(full_traj, axis=0)
-                       if full_traj else np.zeros((0, 3)))
     np.savez(out_dir / 'trajectory.npz',
-              trajectory=full_traj_arr,
+              trajectory_mpc=full_traj_arr,
+              trajectory_baseline=traj_baseline,
               applied_phi_per_stride=np.array(daily_phi_per_stride),
               accumulated_obs_B=np.array(accumulated_obs['obs_B']),
               accumulated_obs_F=np.array(accumulated_obs['obs_F']),
               accumulated_obs_A=np.array(accumulated_obs['obs_A']),
-              accumulated_Phi=np.array(accumulated_obs['Phi']))
+              accumulated_Phi=np.array(accumulated_obs['Phi']),
+              BINS_PER_DAY=BINS_PER_DAY,
+              STRIDE_BINS=STRIDE_BINS,
+              dt_days=DT_BIN_DAYS)
     manifest = dict(
         bench='bench_smc_full_mpc_fsa_v15',
         T_days=args.T_days,
@@ -310,8 +330,112 @@ def main():
         replan_history=replan_history,
     )
     (out_dir / 'manifest.json').write_text(json.dumps(manifest, indent=2))
+
+    # ── 4-panel state-trajectory plot (mirrors version_2_Julia/tools/
+    #    plot_state_traces.jl exactly: same panels, colours, labels) ──
+    if n_mpc_bins > 0:
+        plot_path = out_dir / f'v15_T{args.T_days}d_traces.png'
+        _plot_state_traces(
+            traj_mpc=full_traj_arr,
+            traj_baseline=traj_baseline,
+            daily_phi_per_stride=np.array(daily_phi_per_stride),
+            BINS_PER_DAY=BINS_PER_DAY,
+            STRIDE_BINS=STRIDE_BINS,
+            dt_days=DT_BIN_DAYS,
+            F_max=0.40,
+            T_days=args.T_days,
+            out_path=plot_path,
+        )
+        print(f"  wrote {plot_path}")
+
     print(f"  artefacts written to {out_dir}/")
     print('=' * 76)
+
+
+def _plot_state_traces(*, traj_mpc, traj_baseline, daily_phi_per_stride,
+                         BINS_PER_DAY, STRIDE_BINS, dt_days, F_max,
+                         T_days, out_path):
+    """4-panel state-trajectory plot. Direct port of
+    `version_2_Julia/tools/plot_state_traces.jl:plot_state_traces` —
+    same layout (top: B + F, bottom: A + applied Φ), same colours
+    (blue MPC-B, dark-red MPC-F, green MPC-A, orange Φ, grey baseline),
+    same labels. Matplotlib backend `Agg` so no X display needed.
+    """
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    n_bins = traj_mpc.shape[0]
+    t_days = np.arange(n_bins) * dt_days
+    n_strides = len(daily_phi_per_stride)
+    stride_start_days = np.arange(n_strides) * STRIDE_BINS * dt_days
+
+    mean_A_mpc  = float(np.mean(traj_mpc[:, 2]))
+    mean_A_base = float(np.mean(traj_baseline[:, 2]))
+
+    blue, darkred, green, orange = '#1f77b4', '#8b0000', '#2ca02c', '#ff7f0e'
+    grey, redline = '#7f7f7f', '#d62728'
+
+    fig, axes = plt.subplots(2, 2, figsize=(13, 7), dpi=120)
+    fig.suptitle(
+        f"FSA v1.5 closed-loop MPC, T={t_days[-1]:.1f}d. "
+        f"mean A {mean_A_mpc:.3f} vs baseline {mean_A_base:.3f}",
+        fontsize=10,
+    )
+
+    # Top-left: B
+    ax = axes[0, 0]
+    ax.plot(t_days, traj_baseline[:, 0], color=grey, ls='--', alpha=0.7,
+            lw=1.0, label='B (baseline)')
+    ax.plot(t_days, traj_mpc[:, 0], color=blue, lw=1.6, label='B (MPC)')
+    ax.set_title('B trajectory', fontsize=11)
+    ax.set_xlabel('time (days)', fontsize=8)
+    ax.set_ylabel('B', fontsize=8)
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=8)
+
+    # Top-right: F + F_max
+    ax = axes[0, 1]
+    ax.plot(t_days, traj_baseline[:, 1], color=grey, ls='--', alpha=0.7,
+            lw=1.0, label='F (baseline)')
+    ax.plot(t_days, traj_mpc[:, 1], color=darkred, lw=1.6, label='F (MPC)')
+    ax.axhline(F_max, color=redline, ls='--', lw=1.0, label='F_max')
+    ax.set_title('F trajectory', fontsize=11)
+    ax.set_xlabel('time (days)', fontsize=8)
+    ax.set_ylabel('F', fontsize=8)
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=8)
+
+    # Bottom-left: A
+    ax = axes[1, 0]
+    ax.plot(t_days, traj_baseline[:, 2], color=grey, ls='--', alpha=0.7,
+            lw=1.0, label='A (baseline)')
+    ax.plot(t_days, traj_mpc[:, 2], color=green, lw=1.6, label='A (MPC)')
+    ax.set_title(
+        f'A trajectory  (mean MPC: {mean_A_mpc:.3f}, '
+        f'baseline: {mean_A_base:.3f})', fontsize=10,
+    )
+    ax.set_xlabel('time (days)', fontsize=8)
+    ax.set_ylabel('A', fontsize=8)
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=8)
+
+    # Bottom-right: applied daily Φ per stride
+    ax = axes[1, 1]
+    ax.plot(stride_start_days, daily_phi_per_stride, color=orange, lw=2.0,
+            marker='o', markersize=3, label='applied daily Φ')
+    ax.axhline(1.0, color=grey, ls='--', lw=1.0, label='baseline Φ=1.0')
+    ax.set_title(f'MPC-applied Φ schedule across {n_strides} strides',
+                 fontsize=11)
+    ax.set_xlabel('time (days)', fontsize=8)
+    ax.set_ylabel('daily Φ', fontsize=8)
+    ax.set_ylim(0.0, max(1.5, float(np.max(daily_phi_per_stride)) * 1.1))
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=8)
+
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    fig.savefig(out_path)
+    plt.close(fig)
 
 
 if __name__ == '__main__':
