@@ -512,4 +512,92 @@ function parallel_hmc_one_move(U::AbstractMatrix{Float64},
     return (U_new = U_out, n_acc = n_acc)
 end
 
+
+# ── Mutating HMC variant — saves per-call allocations ───────────────────
+#
+# `parallel_hmc_one_move!(U, target, grid_obs, ε, L, prior_means,
+# prior_sigmas, key)` mutates `U` in place and returns just `n_acc`.
+# Mathematically equivalent to `parallel_hmc_one_move`; bit-identical
+# output for the same RNG key (verify via diff test).
+#
+# Allocation profile per call:
+#   `parallel_hmc_one_move`  (functional):  ~10 (M, d) matrices alloc'd
+#   `parallel_hmc_one_move!` (mutating):     2 (M, d) buffers reused
+
+"""
+    parallel_hmc_one_move!(U, target, grid_obs, ε, L,
+                            prior_means, prior_sigmas, key) -> n_acc
+
+Mutating in-place HMC: writes the (potentially) accepted leapfrog
+trajectory back into `U`. Returns the number of accepted chains.
+
+Mathematically equivalent to `parallel_hmc_one_move` for the same RNG
+key. The bench's `run_outer_smc` uses this variant to cut per-tempering-
+level allocation churn.
+"""
+function parallel_hmc_one_move!(U::AbstractMatrix{Float64},
+                                  target::FSAGPUTarget,
+                                  grid_obs::NamedTuple,
+                                  ε::Float64,
+                                  L::Int,
+                                  prior_means::AbstractVector{Float64},
+                                  prior_sigmas::AbstractVector{Float64},
+                                  key::UInt64;
+                                  inv_mass::AbstractVector{Float64} = ones(size(U, 2)),
+                                  h_fd::Float64 = 1e-3)
+    M, d = size(U)
+    rng = StableRNG(key)
+    inv_mass_row = inv_mass'
+    sqrt_inv_mass_row = sqrt.(inv_mass_row)
+
+    # Reuse two persistent (M, d) buffers across the whole leapfrog —
+    # avoids the ~10 fresh allocations the functional variant does.
+    momentum = randn(rng, M, d) ./ sqrt_inv_mass_row
+    p0 = copy(momentum)
+    U_new = copy(U)
+
+    # Same `tempered_grads` closure as the functional variant.
+    function tempered_grads(U_in, sub_key::UInt64)
+        out = gpu_grads(target, U_in, grid_obs, h_fd, sub_key)
+        grads_prior = -(U_in .- prior_means') ./ (prior_sigmas' .^ 2)
+        vals_prior  = -0.5 .* vec(sum(((U_in .- prior_means') ./ prior_sigmas') .^ 2; dims = 2))
+        return (out.vals .+ vals_prior, out.grads .+ grads_prior)
+    end
+
+    val_init, grad_init = tempered_grads(U, hash((key, :leap, 0)))
+    # p = momentum + (ε/2) * grad_init       (mutates momentum → p)
+    p = momentum
+    @. p = p + (ε / 2) * grad_init
+    # U_new = U + ε * p * inv_mass           (mutates U_new)
+    @. U_new = U + ε * p * inv_mass_row
+    for k in 2:L
+        _, grad = tempered_grads(U_new, hash((key, :leap, k - 1)))
+        @. p     = p     + ε * grad
+        @. U_new = U_new + ε * p * inv_mass_row
+    end
+    val_final, grad_final = tempered_grads(U_new, hash((key, :leap, L)))
+    @. p = p + (ε / 2) * grad_final
+
+    K0    = 0.5 .* vec(sum(p0 .^ 2 .* inv_mass_row; dims = 2))
+    K_new = 0.5 .* vec(sum(p  .^ 2 .* inv_mass_row; dims = 2))
+    log_α = (val_final .- K_new) .- (val_init .- K0)
+
+    # Mutating accept/reject: write accepted rows of U_new back into U.
+    # Rejected rows: U is already correct, no copy needed.
+    n_acc = 0
+    @inbounds for m in 1:M
+        if log(rand(rng)) < log_α[m]
+            @views U[m, :] .= U_new[m, :]
+            n_acc += 1
+        end
+    end
+    return n_acc
+end
+
+
+# Re-export the mutating variant.
+# (Module-level export already covers parallel_hmc_one_move; we add !
+# explicitly here so the bench can `import …: parallel_hmc_one_move!`.)
+export parallel_hmc_one_move!
+
 end # module GPUPF

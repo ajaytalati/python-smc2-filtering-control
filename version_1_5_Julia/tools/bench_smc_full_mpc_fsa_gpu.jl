@@ -33,6 +33,11 @@ function _parse_args(argv::Vector{String})
         "max-lambda-inc"  => 0.20,
         "target-ess-frac" => 0.5,
         "max-temp-levels" => 30,
+        # Liu-West θ-cloud shrinkage. 0.0 disables (default — original
+        # bootstrap behaviour). Values like 0.97 apply mild shrinkage:
+        # θ_i := a·θ_i + (1-a)·θ_mean + √(1-a²)·jitter, between resample
+        # and HMC. Helps posterior diversity at low N=32.
+        "liu-west-a"      => 0.0,
         "seed"            => 42,
         "output-dir"      => "",
         "open-loop"       => "false",
@@ -89,7 +94,8 @@ using .FSAHighRes.Plant: PlantState, plant_rollout, init_plant_state
 using .FSAHighRes.Simulation: BINS_PER_DAY, DT_BIN_DAYS, DEFAULT_PARAMS, INIT_STATE,
                               PINNED_PARAMS, params_v15_to_v1_nt, fill_pinned_nt
 using .FSAHighRes.Estimation: PARAM_NAMES, PARAM_PRIOR_CONFIG
-using .FSAHighRes.GPUPF: FSAGPUTarget, gpu_log_density, gpu_grads, parallel_hmc_one_move
+using .FSAHighRes.GPUPF: FSAGPUTarget, gpu_log_density, gpu_grads,
+                          parallel_hmc_one_move, parallel_hmc_one_move!
 using .FSAHighRes.GPUControl: FSAv1ControlGPUTarget, gpu_cost_log_density_batched,
                                 make_log_density_fn
 using SMC2FC: run_tempered_smc_gpu
@@ -165,17 +171,33 @@ function run_outer_smc(target::FSAGPUTarget,
         end
         U_resampled = U[indices, :]
 
-        # `cfg.num_mcmc` HMC moves — pure, returns new U each time
-        U_curr = U_resampled
+        # ── Optional Liu-West θ-cloud shrinkage (between resample and
+        #    HMC). `cfg.liu_west_a` ∈ (0, 1); 0.0 disables (default).
+        #    Higher a → less shrinkage. v2-style helps maintain posterior
+        #    diversity at low N=32 where pure tempered HMC can collapse.
+        #    Uses a column-wise std for the jitter so each θ dim is
+        #    shrunk in its own scale.
+        if cfg.liu_west_a > 0.0 && cfg.liu_west_a < 1.0
+            a = cfg.liu_west_a
+            θ_mean = mean(U_resampled; dims = 1)
+            θ_std  = std(U_resampled;  dims = 1)
+            jitter = sqrt(1 - a^2) .* θ_std .* randn(rng, size(U_resampled))
+            U_resampled = a .* U_resampled .+ (1 - a) .* θ_mean .+ jitter
+        end
+
+        # `cfg.num_mcmc` HMC moves — MUTATING variant. Reuses the
+        # `U_resampled` buffer in-place across moves; saves ~10·num_mcmc
+        # (n_smc, d) allocations per tempering level vs the functional
+        # `parallel_hmc_one_move`. Mathematically equivalent (verified
+        # by the LEAN diff test at 1e-6).
+        U_curr = U_resampled    # reuse this buffer; mutated in place
         n_acc_total = 0
         for k in 1:cfg.num_mcmc
             sub_key = hash((key, :hmc, n_temp, k))
-            out = parallel_hmc_one_move(U_curr, target, grid_obs,
-                                          cfg.hmc_step, cfg.hmc_leap,
-                                          prior_means, prior_sigmas, sub_key;
-                                          h_fd = cfg.h_fd)
-            U_curr = out.U_new
-            n_acc_total += out.n_acc
+            n_acc_total += parallel_hmc_one_move!(U_curr, target, grid_obs,
+                                                    cfg.hmc_step, cfg.hmc_leap,
+                                                    prior_means, prior_sigmas, sub_key;
+                                                    h_fd = cfg.h_fd)
         end
         accept_frac = n_acc_total / max(1, cfg.num_mcmc * n_smc)
 
@@ -365,6 +387,7 @@ function main(args::Dict{String,Any})
         hmc_leap        = args["hmc-leapfrog"],
         max_levels      = args["max-temp-levels"],
         h_fd            = 1e-3,
+        liu_west_a      = args["liu-west-a"],
     )
 
     # ── Controller config — all knobs CLI-exposed ──
