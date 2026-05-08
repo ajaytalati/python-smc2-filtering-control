@@ -284,12 +284,18 @@ def main():
 
             # Build a fresh ControlSpec around the posterior-mean params,
             # taking the current plant state as the new initial condition.
-            t_remaining_days = (n_strides - s) * STRIDE_BINS / BINS_PER_DAY
+            # CRITICAL: plan the FULL `args.T_days` horizon at every replan
+            # — matches v2's `bench_smc_full_mpc_fsa.py:386-388` pattern
+            # ("plan T_total days ahead at every replan"). The earlier
+            # bug used a shrinking horizon `(n_strides - s) * STRIDE_BINS /
+            # BINS_PER_DAY` which gave the controller no time-to-horizon
+            # to justify a "build B then sprint" Banister strategy and
+            # made it pick rest-heavy schedules.
             init_state_dict = dict(B=float(plant_state.bfa[0]),
                                     F=float(plant_state.bfa[1]),
                                     A=float(plant_state.bfa[2]))
             ctrl_spec = build_control_spec(
-                T_total=t_remaining_days, dt_days=DT_BIN_DAYS,
+                T_total=float(args.T_days), dt_days=DT_BIN_DAYS,
                 params_v15=params_v15, init_state=init_state_dict,
                 n_inner=args.ctrl_n_inner,
             )
@@ -314,11 +320,22 @@ def main():
             n_plan_days = n_plan_bins // BINS_PER_DAY
             new_daily = Phi_plan_arr[:n_plan_days * BINS_PER_DAY].reshape(
                 n_plan_days, BINS_PER_DAY).mean(axis=1)
-            # Splice into daily_phi_plan starting from the next day
-            day_now = (s * STRIDE_BINS) // BINS_PER_DAY
-            for di in range(min(n_plan_days, args.T_days - day_now)):
-                daily_phi_plan[day_now + di] = new_daily[di]
-            last_replan_stride = s
+            # CRITICAL: overwrite the WHOLE daily_phi_plan with the
+            # new full-horizon plan and reset `last_replan_stride = s + 1`
+            # so day_in_plan starts at 0 on the next stride. Mirrors v2
+            # `bench_smc_full_mpc_fsa.py:405-406`. The earlier bug spliced
+            # the new plan into the middle of the existing array using an
+            # absolute-current-day offset, which combined with the shrinking
+            # horizon produced the sawtooth Φ pattern.
+            daily_phi_plan = new_daily[:args.T_days].astype(np.float64)
+            # If the controller's planned horizon was shorter than T_days
+            # (shouldn't happen now that we plan full T_days, but guard),
+            # pad the tail with the last planned value.
+            if daily_phi_plan.shape[0] < args.T_days:
+                pad = np.full(args.T_days - daily_phi_plan.shape[0],
+                              float(daily_phi_plan[-1]) if daily_phi_plan.size > 0 else 1.0)
+                daily_phi_plan = np.concatenate([daily_phi_plan, pad])
+            last_replan_stride = s + 1
             # The native-path return dict uses `n_temp_levels`; fall
             # back to `n_temp` for the legacy BlackJAX-path contract.
             n_temp_ctrl_s = int(res.get('n_temp_levels',
