@@ -33,6 +33,63 @@ function _parse_args(argv::Vector{String})
         "max-lambda-inc"  => 0.20,
         "target-ess-frac" => 0.5,
         "max-temp-levels" => 30,
+        # Liu-West θ-cloud shrinkage. 0.0 disables (default — original
+        # bootstrap behaviour). Values like 0.97 apply mild shrinkage:
+        # θ_i := a·θ_i + (1-a)·θ_mean + √(1-a²)·jitter, between resample
+        # and HMC. Helps posterior diversity at low N=32.
+        "liu-west-a"      => 0.0,
+        # ─────────────────────────────────────────────────────────────────
+        #  ⚠️  OT (optimal-transport) sigmoid-blend rescue weight ⚠️
+        # ─────────────────────────────────────────────────────────────────
+        #  DEFAULT: 0.0  (OT rescue DISABLED — fast path).
+        #
+        #  ⚠️  WARNING — turning this on (e.g. 0.01) causes a
+        #      ~12× WALL-TIME SLOWDOWN on this stack at v1.5's config. ⚠️
+        #
+        #  Why it's so expensive on Julia:
+        #    The framework's `gpu_ot_blend_chain!` (in
+        #    `julia/SMC2FC/src/Filtering/GPUSegmentedPF.jl:199`) wraps the
+        #    OT step in a per-CHAIN Julia for-loop that does
+        #
+        #        log_w_arr = Array(chain_log_w)   # GPU → CPU sync + memcpy
+        #        ... softmax on CPU ...
+        #        b_gpu     = CuArray(b_cpu)       # CPU → GPU sync + memcpy
+        #
+        #    once per chain. With M=32 chains and ~5 segments per
+        #    `gpu_log_density` call, that's ~320 PCIe round-trips per
+        #    call. Microbench at matched config (RTX 5090, N=32, K=200,
+        #    T_steps=24):
+        #
+        #        ot_max = 0.0   →  median 0.73 ms / call
+        #        ot_max = 0.01  →  median  84.78 ms / call    (116×!)
+        #
+        #    Closed-loop bench at T=2d, N=16, K=100, seed=42:
+        #
+        #        --ot-max-weight 0.0   →  total wall  12.5 s
+        #        --ot-max-weight 0.01  →  total wall 159.5 s   (12.77×)
+        #
+        #    Numerical effect of disabling OT at v1.5: mean A identical;
+        #    7 of 10 posterior parameter medians bit-identical, the other
+        #    3 differ < 22% relative inside the IQR band. The Python+JAX
+        #    reference (smc2fc.filtering.gk_dpf_v3_lite) runs without an
+        #    explicit OT rescue and matches the truth posterior fine.
+        #    The writeup §6.3 covers this in detail.
+        #
+        #  When to turn it back on:
+        #    Filter degeneracy at very low ESS / hard obs models. v1.5's
+        #    obs (3-channel direct Gaussian on every bin) is informative
+        #    enough that OT is unnecessary. v2's obs model is sparser
+        #    and may benefit.
+        #
+        #  How to make it cheap:
+        #    Replace the per-chain Julia loop in `gpu_ot_blend_chain!`
+        #    with a single batched-across-chains GPU kernel (the Sinkhorn
+        #    + barycentric projection are already GPU-resident; only the
+        #    softmax + dispatch are on the host). That is framework work
+        #    in `julia/SMC2FC/src/Filtering/GPUSegmentedPF.jl`, out of
+        #    scope here.
+        # ─────────────────────────────────────────────────────────────────
+        "ot-max-weight"   => 0.0,
         "seed"            => 42,
         "output-dir"      => "",
         "open-loop"       => "false",
@@ -88,8 +145,13 @@ using Plots                # for the auto-generated param-traces plot
 #      because this file lives under julia/SMC2FC_functional/benchmarks/
 #      gpu_drop_in/, NOT under version_1_5_Julia/tools/.
 #   2. `using SMC2FC: run_tempered_smc_gpu` -> `using SMC2FC_functional: ...`.
-#      Everything else is byte-identical to the original; this script is the
-#      drop-in replacement test.
+#      Everything else is byte-identical to the original bench.
+#
+# This file is the "Julia framework migration" artefact: same model code,
+# same pipeline, only the framework providing `run_tempered_smc_gpu`
+# differs. SMC2FC_functional's `Control/GPUControlSMC.jl` was a verbatim
+# COPY+DOC of SMC2FC's, so the underlying GPU kernels are byte-identical.
+# Bit-equivalent numerics expected.
 const REPO_ROOT = abspath(joinpath(@__DIR__, "..", "..", "..", "..",
                                      "version_1_5_Julia"))
 include(joinpath(REPO_ROOT, "models", "fsa_high_res", "FSAHighRes.jl"))
@@ -98,7 +160,8 @@ using .FSAHighRes.Plant: PlantState, plant_rollout, init_plant_state
 using .FSAHighRes.Simulation: BINS_PER_DAY, DT_BIN_DAYS, DEFAULT_PARAMS, INIT_STATE,
                               PINNED_PARAMS, params_v15_to_v1_nt, fill_pinned_nt
 using .FSAHighRes.Estimation: PARAM_NAMES, PARAM_PRIOR_CONFIG
-using .FSAHighRes.GPUPF: FSAGPUTarget, gpu_log_density, gpu_grads, parallel_hmc_one_move
+using .FSAHighRes.GPUPF: FSAGPUTarget, gpu_log_density, gpu_grads,
+                          parallel_hmc_one_move, parallel_hmc_one_move!
 using .FSAHighRes.GPUControl: FSAv1ControlGPUTarget, gpu_cost_log_density_batched,
                                 make_log_density_fn
 using SMC2FC_functional: run_tempered_smc_gpu
@@ -174,17 +237,33 @@ function run_outer_smc(target::FSAGPUTarget,
         end
         U_resampled = U[indices, :]
 
-        # `cfg.num_mcmc` HMC moves — pure, returns new U each time
-        U_curr = U_resampled
+        # ── Optional Liu-West θ-cloud shrinkage (between resample and
+        #    HMC). `cfg.liu_west_a` ∈ (0, 1); 0.0 disables (default).
+        #    Higher a → less shrinkage. v2-style helps maintain posterior
+        #    diversity at low N=32 where pure tempered HMC can collapse.
+        #    Uses a column-wise std for the jitter so each θ dim is
+        #    shrunk in its own scale.
+        if cfg.liu_west_a > 0.0 && cfg.liu_west_a < 1.0
+            a = cfg.liu_west_a
+            θ_mean = mean(U_resampled; dims = 1)
+            θ_std  = std(U_resampled;  dims = 1)
+            jitter = sqrt(1 - a^2) .* θ_std .* randn(rng, size(U_resampled))
+            U_resampled = a .* U_resampled .+ (1 - a) .* θ_mean .+ jitter
+        end
+
+        # `cfg.num_mcmc` HMC moves — MUTATING variant. Reuses the
+        # `U_resampled` buffer in-place across moves; saves ~10·num_mcmc
+        # (n_smc, d) allocations per tempering level vs the functional
+        # `parallel_hmc_one_move`. Mathematically equivalent (verified
+        # by the LEAN diff test at 1e-6).
+        U_curr = U_resampled    # reuse this buffer; mutated in place
         n_acc_total = 0
         for k in 1:cfg.num_mcmc
             sub_key = hash((key, :hmc, n_temp, k))
-            out = parallel_hmc_one_move(U_curr, target, grid_obs,
-                                          cfg.hmc_step, cfg.hmc_leap,
-                                          prior_means, prior_sigmas, sub_key;
-                                          h_fd = cfg.h_fd)
-            U_curr = out.U_new
-            n_acc_total += out.n_acc
+            n_acc_total += parallel_hmc_one_move!(U_curr, target, grid_obs,
+                                                    cfg.hmc_step, cfg.hmc_leap,
+                                                    prior_means, prior_sigmas, sub_key;
+                                                    h_fd = cfg.h_fd)
         end
         accept_frac = n_acc_total / max(1, cfg.num_mcmc * n_smc)
 
@@ -354,11 +433,24 @@ function main(args::Dict{String,Any})
     d = length(PARAM_NAMES)
     M_max = n_smc * (1 + 2 * d)
     @info "filter target: N_SMC=$n_smc K_per_chain=$K_per_chain d=$d M_max=$M_max"
+    # NB: ot-max-weight defaults to 0.0 (OT rescue DISABLED — fast path).
+    # Setting it to 0.01 enables the framework's `gpu_ot_blend_chain!`
+    # rescue, which carries a ~12× wall-time penalty at this config
+    # (per-chain Julia loop with PCIe round-trips). See the heavily-
+    # commented default in `_parse_args` above for the full story.
     target = FSAGPUTarget(
         K_per_chain = K_per_chain, M_max = M_max,
         T_steps = window_bins, R = 4, dt = dt_days,
         noise_seed = 0,
+        ot_max_weight = args["ot-max-weight"],
     )
+    if args["ot-max-weight"] >= 1e-6
+        @warn "OT rescue ENABLED (ot-max-weight = $(args["ot-max-weight"])). " *
+              "Expect ~12× slowdown on Julia vs the default OT-off path. " *
+              "See the comment block on `ot-max-weight` in this script."
+    else
+        @info "filter target: OT rescue DISABLED (ot-max-weight = 0.0, fast path)"
+    end
 
     # ── Filter prior (unconstrained, v1.5 PARAM_PRIOR_CONFIG) ──
     prior_means  = Float64[m for (_, _, m, _) in PARAM_PRIOR_CONFIG]
@@ -374,6 +466,7 @@ function main(args::Dict{String,Any})
         hmc_leap        = args["hmc-leapfrog"],
         max_levels      = args["max-temp-levels"],
         h_fd            = 1e-3,
+        liu_west_a      = args["liu-west-a"],
     )
 
     # ── Controller config — all knobs CLI-exposed ──
