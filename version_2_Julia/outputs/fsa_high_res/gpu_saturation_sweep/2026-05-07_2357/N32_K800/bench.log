@@ -1,0 +1,67 @@
+Script started on 2026-05-08 00:08:21+01:00 [COMMAND="JULIA_NUM_THREADS=4 nice -n 5 julia --project=. tools/bench_smc_full_mpc_fsa_gpu.jl --step-minutes 60 --replan-K 2 --T-days 14 --N-smc 32 --K-per-chain 800 --seed 42 --output-dir /home/ajay/Repos/python-smc2-filtering-control/version_2_Julia/outputs/fsa_high_res/gpu_saturation_sweep/2026-05-07_2357/N32_K800/bench_output" <not executed on terminal>]
+]0;Julia]0;Julia[ Info: loading model + framework (FSA_STEP_MINUTES=60)...
+[ Info: config: T=14d, step=60min, BINS_PER_DAY=24, WINDOW=24, STRIDE=12, n_strides=27
+[ Info: GPU device: NVIDIA GeForce RTX 5090
+[ Info: building MPC and baseline plants...
+[ Info:   mpc plant init state: B=0.05, F=0.3, A=0.1
+[ Info: building GPU target: N_SMC=32, K_per_chain=800, M_max=1952
+[ Info: prior means (first 5): [3.738, 1.851, -4.384, -3.507, -0.916]
+[ Info: running closed-loop MPC SMC² (27 windows, replan every K=2)...
+[ Info:   [ 1] λ 0.000 → 0.096  (Δλ=0.096)  L=8  accept=95%
+[ Info:   [ 2] λ 0.096 → 0.196  (Δλ=0.100)  L=8  accept=96%
+[ Info:   [ 3] λ 0.196 → 0.296  (Δλ=0.100)  L=8  accept=94%
+[ Info:   [ 4] λ 0.296 → 0.396  (Δλ=0.100)  L=8  accept=96%
+[ Info:   [ 5] λ 0.396 → 0.496  (Δλ=0.100)  L=8  accept=96%
+[ Info:   [ 6] λ 0.496 → 0.596  (Δλ=0.100)  L=8  accept=95%
+[ Info:   [ 7] λ 0.596 → 0.696  (Δλ=0.100)  L=8  accept=94%
+[ Info:   [ 8] λ 0.696 → 0.796  (Δλ=0.100)  L=8  accept=96%
+[ Info:   [ 9] λ 0.796 → 0.896  (Δλ=0.100)  L=8  accept=94%
+[ Info:   [10] λ 0.896 → 0.996  (Δλ=0.100)  L=8  accept=97%
+[ Info:   [11] λ 0.996 → 1.000  (Δλ=0.004)  L=8  accept=95%
+[ Info: [stride  1/27] 17.6s  11 filter levels  Φ=1.000  x̂=(0.061, 0.285, 0.097)
+[ Info:   [ 1] λ 0.000 → 0.100  (Δλ=0.100)  L=8  accept=96%
+[ Info:   [ 2] λ 0.100 → 0.200  (Δλ=0.100)  L=8  accept=92%
+[ Info:   [ 3] λ 0.200 → 0.300  (Δλ=0.100)  L=8  accept=90%
+[ Info:   [ 4] λ 0.300 → 0.400  (Δλ=0.100)  L=8  accept=95%
+[ Info:   [ 5] λ 0.400 → 0.500  (Δλ=0.100)  L=8  accept=96%
+[ Info:   [ 6] λ 0.500 → 0.600  (Δλ=0.100)  L=8  accept=94%
+[ Info:   [ 7] λ 0.600 → 0.700  (Δλ=0.100)  L=8  accept=91%
+[ Info:   [ 8] λ 0.700 → 0.800  (Δλ=0.100)  L=8  accept=96%
+[ Info:   [ 9] λ 0.800 → 0.900  (Δλ=0.100)  L=8  accept=95%
+[ Info:   [10] λ 0.900 → 1.000  (Δλ=0.100)  L=8  accept=92%
+[ Info:   [end-of-stride  2 replan] GPU 6 levels, 16.7s, Phi mean=0.312  shape=[0.24→0.12→0.20→0.45→0.83]
+[ Info: [stride  2/27] 21.5s  10 filter levels  Φ=1.000  x̂=(0.065, 0.266, 0.102)
+[ Info:   [ 1] λ 0.000 → 0.100  (Δλ=0.100)  L=8  accept=98%
+[ Info:   [ 2] λ 0.100 → 0.200  (Δλ=0.100)  L=8  accept=93%
+[ Info:   [ 3] λ 0.200 → 0.300  (Δλ=0.100)  L=8  accept=95%
+[ Info:   [ 4] λ 0.300 → 0.400  (Δλ=0.100)  L=8  accept=94%
+[ Info:   [ 5] λ 0.400 → 0.500  (Δλ=0.100)  L=8  accept=94%
+[ Info:   [ 6] λ 0.500 → 0.600  (Δλ=0.100)  L=8  accept=94%
+[ Info:   [ 7] λ 0.600 → 0.700  (Δλ=0.100)  L=8  accept=96%
+[ Info:   [ 8] λ 0.700 → 0.800  (Δλ=0.100)  L=8  accept=97%
+[ Info:   [ 9] λ 0.800 → 0.900  (Δλ=0.100)  L=8  accept=96%
+[ Info:   [10] λ 0.900 → 1.000  (Δλ=0.100)  L=8  accept=95%
+[ Info: [stride  3/27] 3.8s  10 filter levels  Φ=0.212  x̂=(0.071, 0.266, 0.099)
+[ Info:   [ 1] λ 0.000 → 0.100  (Δλ=0.100)  L=8  accept=98%
+[ Info:   [ 2] λ 0.100 → 0.200  (Δλ=0.100)  L=8  accept=96%
+[ Info:   [ 3] λ 0.200 → 0.300  (Δλ=0.100)  L=8  accept=94%
+[ Info:   [ 4] λ 0.300 → 0.400  (Δλ=0.100)  L=8  accept=99%
+[ Info:   [ 5] λ 0.400 → 0.500  (Δλ=0.100)  L=8  accept=96%
+[ Info:   [ 6] λ 0.500 → 0.600  (Δλ=0.100)  L=8  accept=94%
+[ Info:   [ 7] λ 0.600 → 0.700  (Δλ=0.100)  L=8  accept=95%
+[ Info:   [ 8] λ 0.700 → 0.800  (Δλ=0.100)  L=8  accept=98%
+[ Info:   [ 9] λ 0.800 → 0.900  (Δλ=0.100)  L=8  accept=94%
+[ Info:   [10] λ 0.900 → 1.000  (Δλ=0.100)  L=8  accept=93%
+[ Info:   [end-of-stride  4 replan] GPU 5 levels, 14.4s, Phi mean=0.309  shape=[0.25→0.12→0.21→0.43→0.81]
+[ Info: [stride  4/27] 18.3s  10 filter levels  Φ=0.170  x̂=(0.076, 0.248, 0.099)
+[ Info:   [ 1] λ 0.000 → 0.100  (Δλ=0.100)  L=8  accept=97%
+[ Info:   [ 2] λ 0.100 → 0.200  (Δλ=0.100)  L=8  accept=95%
+[ Info:   [ 3] λ 0.200 → 0.300  (Δλ=0.100)  L=8  accept=95%
+[ Info:   [ 4] λ 0.300 → 0.400  (Δλ=0.100)  L=8  accept=95%
+[ Info:   [ 5] λ 0.400 → 0.500  (Δλ=0.100)  L=8  accept=96%
+[ Info:   [ 6] λ 0.500 → 0.600  (Δλ=0.100)  L=8  accept=96%
+[ Info:   [ 7] λ 0.600 → 0.700  (Δλ=0.100)  L=8  accept=96%
+[ Info:   [ 8] λ 0.700 → 0.800  (Δλ=0.100)  L=8  accept=96%
+[ Info:   [ 9] λ 0.800 → 0.900  (Δλ=0.100)  L=8  accept=98%
+[ Info:   [10] λ 0.900 → 1.000  (Δλ=0.100)  L=8  accept=97%
+[ Info: [stride  5/27] 3.8s  10 filter levels  Φ=0.222  x̂=(0.077, 0.229, 0.094)

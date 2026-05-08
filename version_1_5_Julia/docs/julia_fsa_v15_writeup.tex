@@ -1,0 +1,946 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb,bm}
+\usepackage{xcolor}
+\usepackage[colorlinks=true,linkcolor=blue,urlcolor=blue]{hyperref}
+\usepackage{listings}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{longtable}
+
+\lstset{
+  basicstyle=\ttfamily\footnotesize,
+  breaklines=true,
+  frame=single,
+  numbers=left,
+  numberstyle=\tiny\color{gray},
+  keywordstyle=\color{blue},
+  commentstyle=\color{green!50!black},
+  stringstyle=\color{purple},
+  language=Java,
+}
+
+\title{FSA v1.5 — purely functional Julia bridge:\\
+  open-loop v1 dynamics + closed-loop SMC$^2$-MPC,\\
+  written for human and agent comprehension and Lean4 portability}
+\author{Coding session writeup}
+\date{2026-05-08}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+This document is the design specification for FSA v1.5, a third Julia
+codebase sitting between v1 (open-loop only, imperative) and v2
+(closed-loop with multi-channel observations, imperative). v1.5
+re-implements the closed-loop SMC$^2$-MPC pipeline in a purely
+functional, immutable-data style on top of v1's dynamics and GPU
+controller cost kernel. The goals are: (i) clarity --- humans and
+agents should be able to read each public function and understand its
+semantics in isolation; (ii) Lean4 portability --- pattern-matching
+sites are written in a style that maps near-mechanically to Lean4's
+\texttt{match \dots\ with} for future formal verification; (iii)
+end-to-end validation --- v1.5 reproduces v1's reference 28-day
+qualitative behaviour with a small, transparent pipeline.
+\end{abstract}
+
+\tableofcontents
+
+\bigskip
+
+\section{Introduction}
+
+Three FSA Julia codebases now coexist:
+
+\begin{itemize}[itemsep=2pt,leftmargin=*]
+\item \textbf{v1} (\path{version_1_Julia/models/fsa_high_res/}) ---
+  G0 dynamics (no reparametrisation), GPU cost kernel, open-loop
+  SMC$^2$ control. No plant. No filter. No closed loop.
+\item \textbf{v2} (\path{version_2_Julia/models/fsa_high_res/}) ---
+  G1 reparametrised dynamics, four-channel observation model
+  (HR/sleep/stress/steps), \texttt{StepwisePlant}, GPU particle
+  filter, full closed-loop SMC$^2$-MPC bench. Imperative, with
+  \texttt{mutable struct} and \texttt{!}-suffix mutators throughout.
+  Documented in \texttt{version\_2\_Julia/docs/julia\_fsa\_writeup.pdf}.
+\item \textbf{v1.5} (\path{version_1_5_Julia/}, \emph{this writeup})
+  --- a clean, purely functional bridge. Reuses v1's
+  \texttt{\_dynamics.jl} and \texttt{gpu\_control.jl} verbatim. Adds
+  the simplest possible plant, filter, and closed-loop bench.
+  Written in Julia idioms with \texttt{Match.jl} pattern matching at
+  every site that will need pattern matching in a future Lean4 port.
+\end{itemize}
+
+\paragraph{Status (validated).}
+The v1.5 build cleared the FIM gate at rank $7/7$, $\kappa = 2.95
+\times 10^7$ on the realistic 14-day window after pinning the four
+weakly-identified parameters $\{\tau_B, \eta, \varepsilon_A,
+\mu_{FF}\}$ at truth. The 28-day open-loop bench reproduces v1's
+reference qualitative behaviour: $A$ dips from 0.10 to 0.06 around
+day 7--10 and climbs to 0.16 by day 28. The 28-day closed-loop bench
+under a strengthened controller (\texttt{ctrl-n-smc=256,
+ctrl-n-inner=64, ctrl-num-mcmc=8, ctrl-hmc-leap=16}) produces the
+same A-dip-then-climb pattern with $A$ finishing at 0.154.
+
+\paragraph{Why purely functional.}
+v1 and v2 are imperative Python ports: \texttt{mutable struct
+StepwisePlant}, \texttt{!}-suffix in-place mutators, history dicts
+\texttt{push!}-ed onto, RNG state threaded as a stateful
+\texttt{MersenneTwister}. These are tangled and hard for new readers
+(human or agent) to follow. v1.5 is a clean redesign in functional,
+stateless Julia. Performance is explicitly not a goal --- clarity
+and composability are. Where the GPU kernel itself must mutate (as
+KernelAbstractions kernels do), v1.5 wraps the mutation behind a
+pure facade so callers never see it.
+
+\paragraph{Why Match.jl.}
+The criterion for using \texttt{@match} in v1.5 is \emph{not} ``does
+this improve readability today?''. It is ``will the Lean4 version of
+this site use \texttt{match \dots\ with}?''. Lean4's native pattern
+matching is structurally near-identical to \texttt{Match.jl}'s, so
+writing the Julia in \texttt{@match} idioms now makes the future
+Julia $\to$ Lean4 port nearly mechanical.
+
+\section{Repository layout}
+\label{sec:layout}
+
+\begin{verbatim}
+version_1_5_Julia/
+  Project.toml                       # +Match.jl
+  docs/
+    julia_fsa_v15_writeup.tex        # this document
+    julia_fsa_v15_writeup.pdf
+  models/fsa_high_res/
+    _dynamics.jl                     # v1 verbatim --- G0 SDE
+    simulation.jl                    # NEW --- pure, owns BINS_PER_DAY,
+                                     #         params, obs sampler, adapters
+    _plant.jl                        # NEW --- pure PlantState + plant_step
+                                     #         + plant_rollout (no `!`)
+    gpu_control.jl                   # v1 verbatim --- GPU cost kernel
+    estimation.jl                    # NEW --- pure propagate + obs_log_weight
+    gpu_pf.jl                        # NEW --- pure facade over the
+                                     #         segmented-PF kernel
+    FSAHighRes.jl                    # NEW --- module aggregator
+  tools/
+    fim_check.jl                     # FIM gate (HARD GATE per plan)
+    psim_sanity.jl                   # plant rollout sanity test
+    test_gpu_pf.jl                   # 6-test smoke suite for gpu_pf.jl
+    bench_smc_full_mpc_fsa_gpu.jl    # closed-loop bench (foldl-based)
+  outputs/fsa_high_res/              # auto-created at run time
+\end{verbatim}
+
+\section{Functional design principles}
+\label{sec:functional}
+
+v1.5 commits to five rules. Each rule is enforced by audit; no
+public API in v1.5 violates them.
+
+\begin{enumerate}[itemsep=4pt,leftmargin=*]
+\item \textbf{No mutable structs in the public API.}
+  v1.5 has exactly one struct, \texttt{PlantState}, with two fields:
+  an \texttt{SVector\{3, Float64\}} (immutable, stack-allocated) and
+  an \texttt{Int}. State updates produce a NEW \texttt{PlantState}
+  value, not a mutation of the old one. Compare to v2's
+  \texttt{mutable struct StepwisePlant} with mutable
+  \texttt{state::Vector\{Float64\}}, \texttt{t\_bin::Int}, and
+  \texttt{history::Dict\{Symbol, Vector\{Any\}\}}.
+
+\item \textbf{No \texttt{!}-suffix mutating methods.}
+  Every public function returns new values. \texttt{plant\_step(state,
+  $\Phi_t$, params, dt, key)} returns \texttt{(state=new\_state,
+  obs=\dots)}; the caller can build up history by collecting returned
+  values, or by \texttt{accumulate}/\texttt{foldl} over time bins.
+  Compare to v2's \texttt{advance\_subdaily!(plant, $\Phi$)} which
+  pushes onto \texttt{plant.history[:trajectory]}.
+
+\item \textbf{Explicit RNG keys, JAX-style.}
+  Pass an explicit \texttt{key::UInt64} to every randomised function;
+  the function takes the key and returns a deterministic result.
+  Internal split-keys are derived deterministically from the input
+  key via \texttt{hash((key, :sub\_purpose))}. Two callers with the
+  same \texttt{(state, key)} get the same answer, period. Compare to
+  v2's threaded \texttt{rng::MersenneTwister} which mutates as
+  \texttt{randn} is called.
+
+\item \textbf{Pure facade over the inherently imperative GPU kernel.}
+  KernelAbstractions kernels write into preallocated CuArrays. v1.5
+  wraps every kernel-touching public function in a pure facade:
+  \texttt{gpu\_log\_density(target, U, grid\_obs, key)\,$\to$\,Vector\{Float64\}}
+  allocates a fresh output, dispatches the kernel, returns. Mutation
+  is fully encapsulated; callers never see the CuArray.
+
+\item \textbf{I/O isolated to the bench's top-level \texttt{main()}.}
+  JLD2 and PNG writes happen exactly once at the end of the bench.
+  Logging happens at the bench level, not inside \texttt{plant\_step}
+  / \texttt{propagate} / \texttt{obs\_log\_weight}.
+\end{enumerate}
+
+\paragraph{Imperative $\to$ functional name table.}
+
+\noindent
+\begin{tabular}{@{}p{0.42\textwidth}p{0.55\textwidth}@{}}
+\toprule
+v1 / v2 (imperative) & v1.5 (functional) \\
+\midrule
+\texttt{mutable struct StepwisePlant} & \texttt{struct PlantState} (immutable record) \\
+\texttt{advance\_subdaily!(plant, $\Phi$)} & \texttt{plant\_rollout(state, $\Phi$, params, dt, key)} returning \texttt{(final\_state, traj, obs)} \\
+\texttt{plant.history[:traj] |> vcat} & \texttt{traj} returned, accumulated by the bench loop \\
+\texttt{update\_window\_obs!(target, obs)} & dropped --- \texttt{grid\_obs} is a function argument \\
+\texttt{parallel\_hmc\_one\_move!(U, target, \dots)} & \texttt{parallel\_hmc\_one\_move(U, target, \dots, key)\,$\to$\,(new\_U, n\_acc)} \\
+\texttt{MersenneTwister(seed) ;\ randn(rng, \dots)} & \texttt{key::UInt64} threaded explicitly \\
+\texttt{for s in 1:n; advance!(plant, \dots) ; \dots end} & \texttt{foldl((acc, s)\,$\to$\,step(acc, s), 1:n; init=acc0)} \\
+\bottomrule
+\end{tabular}
+
+\section{Per-file semantic specification}
+\label{sec:files}
+
+This section is the contract for each public function in
+\path{models/fsa_high_res/}. Each entry gives: purpose, inputs,
+outputs, invariants, failure modes.
+
+\subsection{\texttt{\_dynamics.jl} (v1 verbatim)}
+
+G0 SDE drift, state-dependent diffusion, and a multi-substep
+Euler--Maruyama helper. Verbatim copy of
+\path{version_1_Julia/models/fsa_high_res/_dynamics.jl} --- the
+only file in v1.5 reused unchanged from v1.
+
+\paragraph{Public exports.}
+
+\begin{itemize}[itemsep=2pt,leftmargin=*]
+\item \texttt{TRUTH\_PARAMS :: NamedTuple} --- 14 truth dynamics
+  parameters in \emph{v1 form}: \texttt{tau\_B, tau\_F, kappa\_B,
+  kappa\_F, epsilon\_A, lambda\_A, mu\_0, mu\_B, mu\_F, mu\_FF, eta,
+  sigma\_B, sigma\_F, sigma\_A}.
+
+\item \texttt{drift(y, params, $\Phi_t$) :: Vector\{Float64\}} ---
+  pure. The G0 drift:
+  \begin{align*}
+  \mu(B, F) &= \mu_0 + \mu_B\,B - \mu_F\,F - \mu_{FF}\,F^2, \\
+  dB/dt &= \kappa_B\,(1 + \varepsilon_A\,A)\,\Phi - B/\tau_B, \\
+  dF/dt &= \kappa_F\,\Phi - (1 + \lambda_A\,A) / \tau_F \cdot F, \\
+  dA/dt &= \mu \cdot A - \eta\,A^3.
+  \end{align*}
+  No near-equal subtraction, no fp32 cancellation hot-spots.
+
+\item \texttt{diffusion\_state\_dep(y, params)} --- pure. Diagonal
+  state-dependent diffusion: $\sigma_B\,\sqrt{B(1-B)}$,
+  $\sigma_F\,\sqrt{F}$, $\sigma_A\,\sqrt{A}$.
+
+\item \texttt{em\_step\_substepped(y, params, noise, $\Phi_t$, dt;
+  n\_substeps=4)} --- pure substepped Euler--Maruyama: $n$
+  drift-only substeps then one diffusion increment at the outer-bin
+  boundary. Boundary reflection: $B \to -B$ if $B<0$, $B \to 2-B$
+  if $B>1$, $F, A \to |\cdot|$. Used by the plant, not by the inner
+  PF (which embeds an analogous step inside the kernel).
+\end{itemize}
+
+\paragraph{Invariants.} Pure. Same inputs $\to$ same output. Does
+not allocate persistent state. Generic on the value type so
+ForwardDiff can dual-number through.
+
+\subsection{\texttt{simulation.jl} (NEW)}
+
+Owns all bench-wide constants and parameter adapters. The most
+important file in v1.5 to understand because every other file
+imports its constants.
+
+\paragraph{Resolved at module load.}
+
+\begin{itemize}[itemsep=2pt,leftmargin=*]
+\item \texttt{BINS\_PER\_DAY = (60 $\cdot$ 24) $\div$
+  \_STEP\_MIN}, where \texttt{\_STEP\_MIN = parse(Int,
+  get(ENV, "FSA\_STEP\_MINUTES", "60"))}. The env-var hook
+  must be set BEFORE the module imports, or the constant
+  defaults to 60 min ($\Rightarrow$ 24 bins/day).
+\item \texttt{DT\_BIN\_DAYS = 1.0 / BINS\_PER\_DAY}.
+\end{itemize}
+
+\paragraph{Constants.}
+
+\begin{itemize}[itemsep=2pt,leftmargin=*]
+\item \texttt{DEFAULT\_PARAMS :: Dict\{Symbol, Float64\}} --- 14
+  dynamics parameters in \textbf{v1.5 basis} ($\kappa_B$ replaced by
+  $B_\infty = \kappa_B \cdot \tau_B$, $\kappa_F$ replaced by $F_\infty$),
+  plus three pinned obs-noise parameters
+  $\sigma_{B,\text{obs}} = \sigma_{F,\text{obs}} = \sigma_{A,\text{obs}}
+  = 0.005$.
+
+\item \texttt{INIT\_STATE = (B = 0.05, F = 0.30, A = 0.10)} ---
+  canonical initial state. Same as v1 and v2.
+
+\item \texttt{PINNED\_PARAMS :: Dict\{Symbol, Float64\}} --- four
+  parameters NOT estimated by the filter, pinned at truth per the
+  FIM-gate decision: $\tau_B$, $\eta$, $\varepsilon_A$, $\mu_{FF}$.
+\end{itemize}
+
+\paragraph{Public functions.}
+
+\begin{itemize}[itemsep=2pt,leftmargin=*]
+\item \texttt{sample\_obs\_bfa(state::SVector\{3, Float64\},
+  params::Dict\{Symbol, Float64\}, key::UInt64) ->\\ NamedTuple\{(:obs\_B,
+  :obs\_F, :obs\_A), Tuple\{Float64, Float64, Float64\}\}}.
+  Pure. Sample one Gaussian obs per latent. Same \texttt{(state,
+  key)} always returns the same triple.
+
+\item \texttt{params\_v15\_to\_v1\_nt(p) -> NamedTuple} --- basis
+  rotation adapter. Takes a v1.5-form container ($B_\infty, F_\infty$
+  + 9 other dynamics params) and returns a v1-form NamedTuple
+  (\texttt{kappa\_B = B\_inf / tau\_B}, \texttt{kappa\_F = F\_inf
+  / tau\_F}, others unchanged). Generic on the value type ---
+  ForwardDiff dual-numbers through unchanged. Two methods (Dict and
+  NamedTuple) collapsed into a single \texttt{@match} block (see §\ref{sec:lean4}).
+
+\item \texttt{fill\_pinned\_nt(estimated::NamedTuple) -> NamedTuple}
+  --- merges a 10-field estimated NamedTuple with the 4 pinned
+  values from \texttt{PINNED\_PARAMS}, returning a 14-field v1.5
+  NamedTuple ready to be passed to \texttt{params\_v15\_to\_v1\_nt}.
+  Generic on element type.
+\end{itemize}
+
+\paragraph{Why two adapters.}
+v1's \texttt{drift} expects a 14-field NamedTuple in v1 form
+(\texttt{kappa\_B}, \texttt{kappa\_F}, \dots). The filter
+estimates 10 fields in v1.5 form (\texttt{tau\_F},
+\texttt{B\_inf}, \texttt{F\_inf}, $\dots$) plus 3 diffusions. The
+pipeline at every drift call site is: estimated NamedTuple
+$\to$ \texttt{fill\_pinned\_nt} $\to$ 14-field v1.5 $\to$
+\texttt{params\_v15\_to\_v1\_nt} $\to$ v1 form $\to$
+\texttt{drift}. Both adapters are pure.
+
+\subsection{\texttt{\_plant.jl} (NEW, written from first principles)}
+
+The plant is a pair of pure functions plus an immutable state
+record. No \texttt{mutable struct}, no history dict, no
+\texttt{!}-suffix.
+
+\paragraph{Immutable state.}
+
+\begin{lstlisting}[language=Java]
+struct PlantState
+    bfa::SVector{3, Float64}     # (B, F, A) -- stack-allocated
+    t_bin::Int                   # global bin counter
+end
+\end{lstlisting}
+
+\paragraph{Public functions.}
+
+\begin{itemize}[itemsep=2pt,leftmargin=*]
+\item \texttt{init\_plant\_state(; init\_state = INIT\_STATE)} ---
+  build a fresh \texttt{PlantState} at the canonical initial values.
+
+\item \texttt{plant\_step(s, $\Phi_t$, params, dt, key) -> (state,
+  obs)} --- one Euler--Maruyama step under control $\Phi_t$ from state
+  $s$. The body: drift + state-dep diffusion + boundary reflection
+  + obs sample. Pure: same inputs always return the same outputs.
+  Internal RNG split: \texttt{StableRNG(key)} for the SDE noise,
+  \texttt{hash((key, :obs))} sub-key for the obs sample.
+
+\item \texttt{plant\_rollout(s0, $\Phi$\_subdaily, params, dt, key0)
+  -> NamedTuple} --- apply \texttt{length($\Phi$\_subdaily)}
+  consecutive \texttt{plant\_step}s from $s_0$. Returns
+  \texttt{(final\_state, trajectory::Matrix\{Float64\}(n, 3),
+  obs\_B, obs\_F, obs\_A, Phi)}. Pure. The internal loop builds
+  two preallocated Vectors and writes into them, but the function
+  as a whole is referentially transparent --- the local mutation
+  does not leak past the function boundary.
+\end{itemize}
+
+\paragraph{Internal helper.}
+\texttt{\_reflect\_unit(x)} --- pure: $x < 0 \Rightarrow -x$; $x > 1
+\Rightarrow 2 - x$; otherwise $x$. Implemented via \texttt{@match}
+with guards (see §\ref{sec:lean4}) so each boundary case is
+explicit and maps 1:1 to Lean4's \texttt{match \dots\ with}.
+
+\subsection{\texttt{gpu\_control.jl} (v1 verbatim)}
+
+GPU cost kernel for the controller's RBF-decoded $\Phi$ schedule.
+Verbatim copy of v1's \path{gpu_control.jl}. Eq.~37 cost: $J(\Phi)
+= -\int A\,dt + \lambda_F \int \max(F - F_{\max}, 0)^2\,dt$. No
+$\lambda_\Phi \int \Phi^2$ penalty (that lived in v1's CPU
+\texttt{control.jl}, which v1.5 deliberately does not copy).
+
+\paragraph{Public exports.}
+
+\begin{itemize}[itemsep=2pt,leftmargin=*]
+\item \texttt{FSAv1ControlGPUTarget} --- mutable struct (this is one
+  exception to v1.5's purity convention; the struct is constructed
+  by the bench at each replan, not mutated by callers).
+\item \texttt{gpu\_cost\_log\_density\_batched(target, theta\_unc)
+  -> Vector\{Float64\}} --- per-chain $-J$. The bench wraps this in
+  \texttt{make\_log\_density\_fn(target)} for the framework's
+  \texttt{run\_tempered\_smc\_gpu}.
+\item \texttt{make\_log\_density\_fn(target) -> Function} --- closure
+  factory for the framework.
+\end{itemize}
+
+\paragraph{Why kept verbatim.} v1's
+\texttt{fsa\_v1\_cost\_kernel!} is a fp32 hot-path KernelAbstractions
+kernel. Rewriting it in functional style would lose the per-thread
+register allocation and add overhead. The kernel is wrapped behind
+the bench's \texttt{controller\_plan} pure facade, which constructs
+a fresh target per replan and discards it after the call.
+
+\subsection{\texttt{estimation.jl} (NEW)}
+
+The filter side. Three pure pieces, two read-only constants.
+
+\paragraph{Constants.}
+
+\begin{itemize}[itemsep=2pt,leftmargin=*]
+\item \texttt{PARAM\_NAMES :: Vector\{Symbol\}} --- the 10 estimated
+  parameters in filter-vector order: \texttt{tau\_F, B\_inf, F\_inf,
+  lambda\_A, mu\_0, mu\_B, mu\_F, sigma\_B, sigma\_F, sigma\_A}.
+  The 4 pinned dynamics (\texttt{tau\_B, eta, epsilon\_A, mu\_FF})
+  are NOT here. Neither are the 3 obs-noise (those are constants).
+\item \texttt{PARAM\_PRIOR\_CONFIG :: Vector\{(Symbol, Symbol,
+  Float64, Float64)\}} --- one tuple per estimated param:
+  \texttt{(name, kind, $\mu$, $\sigma$)} where \texttt{kind $\in$
+  \{:LogNormal, :Normal\}} and $(\mu, \sigma)$ are in unconstrained
+  space. All 10 are LogNormal in v1.5.
+\end{itemize}
+
+\paragraph{Public functions.}
+
+\begin{itemize}[itemsep=2pt,leftmargin=*]
+\item \texttt{propagate(particles::Matrix\{Float64\}, $\Phi_t$,
+  params, dt, key) -> Matrix\{Float64\}} --- pure prior-predictive.
+  From each particle's $(B, F, A)$, run the v1 G0 SDE forward by
+  one bin under control $\Phi_t$. Returns a NEW particles matrix;
+  does not mutate the input. No locally-guided proposal --- v1.5's
+  obs is so informative (direct Gaussian on each latent every bin)
+  that prior-predictive does not degenerate.
+
+\item \texttt{obs\_log\_weight(particles, obs::NamedTuple, params)
+  -> Vector\{Float64\}} --- pure. Sum of three diagonal Gaussian
+  log-pdfs:
+  \[
+  w_m = \log \mathcal N(y_B; B_m, \sigma_{B,\text{obs}}^2)
+  + \log \mathcal N(y_F; F_m, \sigma_{F,\text{obs}}^2)
+  + \log \mathcal N(y_A; A_m, \sigma_{A,\text{obs}}^2)
+  \]
+  Allocates one fresh result vector per call.
+\end{itemize}
+
+\subsection{\texttt{gpu\_pf.jl} (NEW)}
+
+The pure facade over the inherently imperative segmented-PF GPU
+kernel. The KernelAbstractions \texttt{@kernel function
+propagate\_segment\_kernel!} is private (mutating); the public API
+allocates fresh outputs every call.
+
+\paragraph{Immutable target.}
+
+\begin{lstlisting}[language=Java]
+struct FSAGPUTarget
+    K_per_chain::Int; M_max::Int; T_steps::Int; R::Int
+    n_params_v1::Int  # = 14
+    n_states::Int     # = 3
+    dt::Float32; sqrt_dt::Float32
+    a_shrink::Float32; ot_max_weight::Float32; ...
+    inv_2sigma_B^2::Float32; ...; log_norm_obs::Float32
+    params_per_chain::CuArray{Float32, 2}  # (M_max, 14)
+    Phi_seq::CuArray{Float32, 1}; ...obs buffers
+    noise_grid::CuArray{Float32, 3}        # CRN
+    bufs::GPUSegmentedBuffers              # framework
+    propagate_kernel::Any                  # KA handle
+end
+\end{lstlisting}
+
+The CuArrays are GPU-resident buffers preallocated at construction.
+They are mutable from the GPU's perspective (kernels write to them)
+but no public API mutates the struct fields. The same \texttt{target}
+is returned for the same constructor inputs.
+
+\paragraph{Public functions.}
+
+\begin{itemize}[itemsep=2pt,leftmargin=*]
+\item \texttt{FSAGPUTarget(; K\_per\_chain, M\_max, T\_steps, R=4,
+  dt, ...)} --- constructor. Allocates GPU buffers, computes
+  $1/(2\sigma_X^2)$ constants from \texttt{DEFAULT\_PARAMS}, draws
+  the CRN noise grid from \texttt{noise\_seed}.
+
+\item \texttt{gpu\_log\_density(target, U\_unc::Matrix\{Float64\}(M,
+  10), grid\_obs::NamedTuple, key::UInt64) -> Vector\{Float64\}}
+  --- pure facade. M chains in unconstrained space; for each, the
+  pipeline is \texttt{u $\to$ \_to\_v15\_constrained\_nt $\to$
+  fill\_pinned\_nt $\to$ params\_v15\_to\_v1\_nt $\to$
+  \_pack\_v1\_row! $\to$} GPU kernel. Output is a fresh
+  \texttt{Vector\{Float64\}} of length M.
+
+\item \texttt{gpu\_grads(target, U\_unc, grid\_obs, h, key) ->
+  (vals, grads)} --- central-difference FD gradient. Builds the
+  $M \cdot (1 + 2d)$ perturbation matrix functionally, calls
+  \texttt{gpu\_log\_density} once on the full block, central-diffs.
+
+\item \texttt{parallel\_hmc\_one\_move(U, target, grid\_obs, $\varepsilon$,
+  L, prior\_means, prior\_sigmas, key) -> (U\_new, n\_acc)} --- one
+  parallel-chains HMC move with FD-gradient leapfrog. Returns a NEW
+  \texttt{U\_new} matrix; does not mutate \texttt{U}. Acceptance is
+  per-chain Metropolis with key-derived uniform draws.
+\end{itemize}
+
+\paragraph{Internal helpers.}
+
+\begin{itemize}[itemsep=2pt,leftmargin=*]
+\item \texttt{\_to\_v15\_constrained\_nt(u)} --- 10-element
+  \texttt{u\_unc} $\to$ NamedTuple of 10 LogNormal-constrained
+  values via \texttt{exp(clamp(u\_i, -20, 20))}.
+
+\item \texttt{\_pack\_v1\_row!(row, p\_v1)} --- write 14 fields of a
+  v1-form NamedTuple into a Float32 row. The only \texttt{!}-suffix
+  helper in v1.5; private and called only within the pure facade.
+
+\item \texttt{propagate\_segment\_kernel!} --- the GPU kernel.
+  Mutating by design (KernelAbstractions semantics). Inputs:
+  \texttt{log\_w\_inout (M*K,), particles\_in (M*K, 3),
+  params\_per\_chain (M, 14), Phi\_seq (T,), obs\_\{B,F,A\}\_value
+  (T,), noise\_grid (K, T, 3)}. Body: for each thread (one (chain,
+  particle)) and each of $R$ bins in the segment: drift + diffusion
+  + boundary reflection + 3-channel Gaussian log-weight.
+\end{itemize}
+
+\subsection{\texttt{FSAHighRes.jl} (NEW)}
+
+Module aggregator. Includes the six other files in load order
+(\texttt{\_dynamics.jl}, \texttt{simulation.jl}, \texttt{\_plant.jl},
+\texttt{gpu\_control.jl}, \texttt{estimation.jl}, \texttt{gpu\_pf.jl})
+and re-exports their public names.
+
+\section{Data flow and computational graph}
+\label{sec:dataflow}
+
+\subsection{One closed-loop stride iteration}
+
+The bench's \texttt{stride\_step} is a pure function from
+\texttt{(acc, stride\_idx)} to a new \texttt{acc'}. The full
+14-day or 28-day bench is \texttt{foldl(stride\_step, 1:n\_strides;
+init=acc0)}, with the only I/O being a JLD2 dump and PNG generation
+at the end.
+
+The per-stride flow:
+
+\begin{verbatim}
+acc.plan_phi[offset+1 : offset+stride_bins]    # slice next stride's Phi
+        |
+        v
+plant_rollout(acc.plant_state, phi, DEFAULT_PARAMS, dt, key)
+        |   PURE — returns (final_state, trajectory, obs_B, obs_F, obs_A, Phi)
+        v
+new_obs ← (vcat acc.obs_history p.obs_*)        # immutable concat
+new_traj ← (vcat acc.traj_history p.trajectory)
+        |
+        v
+hist_end < window_bins ?
+        |  YES                              | NO
+        v                                   v
+   skip filter                       window_grid_obs(...)  PURE
+   xhat = p.final_state                     |
+                                            v
+                              run_outer_smc(target, grid_obs, n_smc, ...,
+                                            init_particles=acc.filter_post,
+                                            key)                  PURE FACADE
+                                            |
+                                            v
+                                  filter_out.U_post (M, 10)
+                                            |
+                                            v
+                                  extract_xhat(target, n_smc)     reads bufs
+                                            |
+                                            v
+                                  new_xhat ← SVector{3, Float64}
+        |
+        v
+!is_open_loop && stride_idx % replan_K == 0 ?
+        |  YES                                                | NO
+        v                                                     v
+posterior_mean_v15(new_filter_post)                     keep acc.plan_phi
+        |                                                     |
+        v                                                     |
+fill_pinned_nt(...)  -> params_v15_to_v1_nt(...)               |
+        |                                                     |
+        v                                                     |
+controller_plan(params_v1, new_xhat, H_plan_bins,             |
+                ctrl_cfg, hash((seed, :ctrl, stride_idx)))    |
+        |   FRAMEWORK CALL — run_tempered_smc_gpu             |
+        v                                                     |
+new_plan, offset=0                                            |
+        |                                                     |
+        v                                                     v
+return new acc' = (plant_state=p.final_state, plan_phi=...,
+                   filter_post=new_filter_post,
+                   traj_history=new_traj, obs_history=new_obs,
+                   per_stride_log=...)
+\end{verbatim}
+
+\subsection{Filter dataflow (single \texttt{gpu\_log\_density} call)}
+
+\begin{verbatim}
+U_unc :: Matrix{Float64}(M, 10)        # 10 estimated, unconstrained
+   |
+   |  for each row m:
+   |
+   v
+_to_v15_constrained_nt(u) :: NamedTuple{(tau_F, B_inf, F_inf, lambda_A,
+                                          mu_0, mu_B, mu_F,
+                                          sigma_B, sigma_F, sigma_A), ...}
+   |   exp(clamp(u, -20, 20))
+   v
+fill_pinned_nt(estimated)              # add tau_B, eta, epsilon_A, mu_FF
+   |    -> NamedTuple of 14 v1.5 fields
+   v
+params_v15_to_v1_nt(p)                 # rotate B_inf -> kappa_B, etc.
+   |    -> NamedTuple of 14 v1 fields
+   v
+_pack_v1_row!(row, p_v1)               # write into params_per_chain[m, 1:14]
+   |
+   v
+copyto!(target.params_per_chain[1:M, :], CPU rows)
+   |
+   v
+copyto!(target.Phi_seq, target.obs_*)  # stage obs onto GPU
+   |
+   v
+fill!(bufs.particles_a, B_init/F_init/A_init); fill!(bufs.log_w, 0)
+   |
+   v
+for seg in 1:n_segments:
+   |
+   |   propagate_segment_kernel!(..., Ntot=M*K, R=4, seg_step_offset)
+   |       per-thread: drift + diff + boundary + 3-channel Gaussian log-weight
+   |
+   |   (if not last) run_segmented_smc_step!(bufs, M, ...)   FRAMEWORK
+   |       per-chain resample + Liu-West + OT
+   |
+   |   stats kernel populates log_max, log_z, mu_per_chain
+   |
+   v
+log_lik_acc[m] += log_max[m] + log_z[m] - log(K)    # CPU side
+   |
+   v
+return log_lik_acc :: Vector{Float64}(M)            # PURE OUTPUT
+\end{verbatim}
+
+\subsection{Controller dataflow (one \texttt{controller\_plan} call)}
+
+\begin{verbatim}
+posterior theta_dyn (filter posterior mean, v1.5 NamedTuple)
+   |
+   v
+fill_pinned_nt(params_post_v15)         # add tau_B, eta, epsilon_A, mu_FF
+   |
+   v
+params_v15_to_v1_nt(p_v15)              # to v1 form
+   |
+   v
+FSAv1ControlGPUTarget(; n_inner, M_max, n_steps=H_plan_bins,
+                       n_anchors=8, dt, F_max=0.40, Phi_max=3.0,
+                       Phi_default=1.0, lam_F=1.0, sigma_prior,
+                       params=p_v1, init_state=plant_xhat,
+                       noise_seed)                 # constructor
+   |
+   v
+make_log_density_fn(ctrl_target)        # closure for the framework
+   |
+   v
+run_tempered_smc_gpu(log_density_fn, M_max, n_smc, n_anchors,
+                     0.0, sigma_prior, rng;
+                     target_nats, ..., chees_L_candidates,
+                     hmc_step_size, hmc_num_leapfrog,
+                     num_mcmc_steps, max_temp_levels)    FRAMEWORK
+   |    returns U_ctrl (n_smc, n_anchors), n_temp, beta_max
+   v
+theta_ctrl = mean(U_ctrl; dims=1)           # posterior-mean RBF coefficients
+   |
+   v
+RBF decode: for k in 1:T_total_bins:
+              raw = c_Phi + Sum_a theta_a * exp(-0.5 * ((t_k - anchor_a)/sigma_rbf)^2)
+              Phi_plan[k] = 3.0 / (1 + exp(-raw))
+   |
+   v
+return (Phi_plan, n_temp_ctrl, theta) :: NamedTuple
+\end{verbatim}
+
+\section{CLI flags reference for \texttt{bench\_smc\_full\_mpc\_fsa\_gpu.jl}}
+\label{sec:flags}
+
+The bench has 23 CLI flags total: 14 for the bench / filter, 9 for
+the controller (all newly CLI-exposed in this version of v1.5).
+
+\subsection{Bench / filter flags}
+
+\noindent
+\begin{longtable}{@{}lp{0.10\textwidth}lp{0.55\textwidth}@{}}
+\toprule
+Flag & Default & Type & Meaning \\
+\midrule
+\texttt{--T-days} & 14 & Int &
+  Total bench horizon in days. The plant rolls forward this many
+  days under the controller's schedule. \\
+\texttt{--step-minutes} & 60 & Int &
+  Per-bin time step in minutes; sets \texttt{BINS\_PER\_DAY = 1440 /
+  step-minutes}. Must be set BEFORE the model imports (the bench
+  exports \texttt{ENV["FSA\_STEP\_MINUTES"]}). \\
+\texttt{--replan-K} & 2 & Int &
+  Replan every $K$ strides at end-of-stride. Ignored when
+  \texttt{--open-loop true}. \\
+\texttt{--N-smc} & 32 & Int &
+  Filter outer-SMC$^2$ particles (number of $\theta$-cloud chains). \\
+\texttt{--K-per-chain} & 200 & Int &
+  Inner-PF state particles per filter chain. Total filter particles
+  = N-smc $\cdot$ K-per-chain. \\
+\texttt{--num-mcmc} & 3 & Int &
+  HMC moves per filter tempering level. \\
+\texttt{--hmc-step-size} & 0.05 & Float &
+  Filter HMC leapfrog step size. \\
+\texttt{--hmc-leapfrog} & 4 & Int &
+  Filter HMC leapfrog trajectory length (number of leapfrog steps). \\
+\texttt{--max-lambda-inc} & 0.20 & Float &
+  Max tempering increment $\delta\lambda$ per filter tempering level. \\
+\texttt{--target-ess-frac} & 0.5 & Float &
+  Target effective-sample-size fraction for tempering bisection. \\
+\texttt{--max-temp-levels} & 30 & Int &
+  Hard cap on filter tempering levels per stride. \\
+\texttt{--seed} & 42 & Int &
+  Master RNG seed. All sub-keys are derived from this via
+  \texttt{hash((seed, :purpose, idx))}. \\
+\texttt{--output-dir} & "" & String &
+  Output directory. Empty $\Rightarrow$ auto-named under
+  \texttt{outputs/fsa\_high\_res/g4\_runs/}. \\
+\texttt{--open-loop} & "false" & String &
+  "true" $\Rightarrow$ one initial controller plan from
+  \texttt{INIT\_STATE+TRUTH\_PARAMS}, applied for the whole bench;
+  no replanning. "false" $\Rightarrow$ closed-loop with replanning
+  every \texttt{replan-K} strides. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Controller flags (CLI-exposed, formerly hardcoded)}
+
+\noindent
+\begin{longtable}{@{}lp{0.10\textwidth}lp{0.55\textwidth}@{}}
+\toprule
+Flag & Default & Type & Meaning \\
+\midrule
+\texttt{--ctrl-n-smc} & 256 & Int &
+  Controller outer-SMC$^2$ particles ($\theta_{\text{ctrl}}$ prior
+  samples). \\
+\texttt{--ctrl-n-inner} & 64 & Int &
+  Common-random-numbers MC trials averaged per cost evaluation. \\
+\texttt{--ctrl-num-mcmc} & 8 & Int &
+  ChEES-HMC moves per controller tempering level. \\
+\texttt{--ctrl-hmc-step} & 0.2 & Float &
+  Base HMC leapfrog step size for the controller. \\
+\texttt{--ctrl-hmc-leap} & 16 & Int &
+  Base leapfrog trajectory length for the controller. \\
+\texttt{--ctrl-chees-max} & 256 & Int &
+  ChEES picker upper bound. The candidate list is built as
+  $[16, 32, 64, \dots, \text{max}]$ (powers of 2 up to the cap). \\
+\texttt{--ctrl-max-levels} & 25 & Int &
+  Hard cap on controller tempering levels per replan. \\
+\texttt{--ctrl-target-nats} & 8.0 & Float &
+  Target nat budget for controller $\beta_{\max}$ auto-calibration. \\
+\texttt{--ctrl-sigma-prior} & 1.5 & Float &
+  Prior std on $\theta_{\text{ctrl}}$ RBF coefficients. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Example invocations}
+
+\paragraph{Open-loop diagnostic (3--4 min wall, T=14d):}
+
+\begin{verbatim}
+julia --project=. tools/bench_smc_full_mpc_fsa_gpu.jl \
+    --T-days 14 --step-minutes 60 --open-loop true \
+    --N-smc 8 --K-per-chain 100 \
+    --num-mcmc 1 --hmc-leapfrog 2 --max-lambda-inc 0.30
+\end{verbatim}
+
+\paragraph{Closed-loop strong-controller (10--15 min wall, T=28d):}
+
+\begin{verbatim}
+julia --project=. tools/bench_smc_full_mpc_fsa_gpu.jl \
+    --T-days 28 --step-minutes 60 --replan-K 2 \
+    --N-smc 8 --K-per-chain 100 \
+    --num-mcmc 1 --hmc-leapfrog 2 --max-lambda-inc 0.30 \
+    --ctrl-n-smc 256 --ctrl-n-inner 64 \
+    --ctrl-num-mcmc 8 --ctrl-hmc-leap 16 \
+    --ctrl-chees-max 256
+\end{verbatim}
+
+\section{Lean4-port mapping appendix}
+\label{sec:lean4}
+
+This appendix exists because v1.5's use of \texttt{Match.jl} is
+motivated by a future port to Lean4 for formal verification. Lean4's
+\texttt{match \dots\ with} syntax is structurally near-identical
+to \texttt{Match.jl}'s \texttt{@match \dots\ begin \dots\ end}, so
+writing the Julia in pattern-matching idioms now makes the future
+port nearly mechanical at every pattern site.
+
+\subsection{Side-by-side mappings}
+
+\paragraph{\texttt{params\_v15\_to\_v1\_nt} — Dict | NamedTuple dispatch.}
+
+\begin{lstlisting}
+# Julia (Match.jl)
+params_v15_to_v1_nt(p) = @match p begin
+    ::Dict       => (kappa_B = p[:B_inf] / p[:tau_B], ...)
+    ::NamedTuple => (kappa_B = p.B_inf / p.tau_B,    ...)
+end
+
+-- Lean4 (planned; sketch)
+inductive ParamsForm where
+  | dictForm : (key -> Float) -> ParamsForm
+  | nt       : V15Params -> ParamsForm
+
+def params_v15_to_v1 (p : ParamsForm) : V1Params :=
+  match p with
+  | .dictForm d => { kappa_B := d[:B_inf] / d[:tau_B], ... }
+  | .nt nt      => { kappa_B := nt.B_inf / nt.tau_B,   ... }
+\end{lstlisting}
+
+\paragraph{\texttt{\_reflect\_unit} — boundary reflection.}
+
+\begin{lstlisting}
+# Julia (Match.jl)
+_reflect_unit(x) = @match x begin
+    x, if x < 0 end => -x
+    x, if x > 1 end => 2 - x
+    _              => x
+end
+
+-- Lean4 (planned)
+def reflect_unit (x : Float) : Float :=
+  match x with
+  | x => if x < 0 then -x
+         else if x > 1 then 2 - x
+         else x
+\end{lstlisting}
+
+\paragraph{\texttt{\_to\_v15\_constrained\_nt} — vector destructure.}
+
+\begin{lstlisting}
+# Julia (Match.jl)
+_to_v15_constrained_nt(u) = @match u begin
+    [u1, u2, u3, u4, u5, u6, u7, u8, u9, u10] =>
+        (tau_F = exp(clamp(u1, -20, 20)),
+         B_inf = exp(clamp(u2, -20, 20)),
+         ..., sigma_A = exp(clamp(u10, -20, 20)))
+end
+
+-- Lean4 (planned)
+def to_v15_constrained (u : Vector Float 10) : V15Params :=
+  match u with
+  | #[u1, u2, u3, u4, u5, u6, u7, u8, u9, u10] =>
+      { tau_F  := Float.exp (Float.min 20 (Float.max (-20) u1)),
+        B_inf  := ...
+        sigma_A := ... }
+\end{lstlisting}
+
+\paragraph{\texttt{gpu\_log\_density} — last-segment branch.}
+
+\begin{lstlisting}
+# Julia (Match.jl)
+@match (seg, n_segments) begin
+    (s, n) where s == n => begin
+        # last segment: stats kernel only (no resample)
+        ...
+    end
+    _ => begin
+        run_segmented_smc_step!(bufs, M, ...)
+        ...
+    end
+end
+
+-- Lean4 (planned)
+match (seg, n_segments) with
+  | (s, n) => if s == n then
+                -- last segment: stats only
+                ...
+              else
+                -- run segmented SMC step + accumulate
+                ...
+\end{lstlisting}
+
+\paragraph{\texttt{parallel\_hmc\_one\_move} — accept/reject.}
+
+\begin{lstlisting}
+# Julia (Match.jl)
+@inbounds for m in 1:M
+    outcome = log(rand(rng)) < log_alpha[m] ? :accept : :reject
+    @match outcome begin
+        :accept => begin U_out[m, :] = U_new[m, :]; n_acc += 1 end
+        :reject => U_out[m, :] = U[m, :]
+    end
+end
+
+-- Lean4 (planned)
+inductive HMCOutcome where | accept | reject
+
+def hmc_step (m : Nat) (log_alpha u : Float) :=
+  let outcome := if Float.log u < log_alpha
+                 then .accept else .reject
+  match outcome with
+  | .accept => ...   -- write U_new[m] into U_out[m], increment counter
+  | .reject => ...   -- write U[m] into U_out[m]
+\end{lstlisting}
+
+\paragraph{\texttt{apply\_prior} — \texttt{:LogNormal} | \texttt{:Normal} dispatch.}
+
+\begin{lstlisting}
+# Julia (Match.jl)
+function apply_prior(kind, mu, sigma, u)
+    @match kind begin
+        :LogNormal => exp(clamp(u, -20, 20))
+        :Normal    => mu + sigma * u
+    end
+end
+
+-- Lean4 (planned)
+inductive PriorKind where | logNormal | normal
+
+def apply_prior (kind : PriorKind) (mu sigma u : Float) : Float :=
+  match kind with
+  | .logNormal => Float.exp (Float.min 20 (Float.max (-20) u))
+  | .normal    => mu + sigma * u
+\end{lstlisting}
+
+\subsection{Type-system gotchas for the future Lean4 port}
+
+\begin{itemize}[itemsep=2pt,leftmargin=*]
+\item \textbf{Float precision.} Julia's \texttt{Float64} maps to
+  Lean4's \texttt{Float}. Lean4 has no \texttt{Float32}; the GPU
+  kernel's fp32 paths cannot be ported directly --- they would
+  need a separate verified-arithmetic library or kept as Julia.
+
+\item \textbf{Mutable arrays.} v1.5's pure facade returns new
+  Vectors; Lean4's idiomatic equivalent is to return a fresh
+  \texttt{Array Float n}. The functional-only design of v1.5 is
+  what makes the port cleanly possible without re-architecting.
+
+\item \textbf{Records vs inductives.} Julia's NamedTuple maps to
+  Lean4's structure. The two-method \texttt{params\_v15\_to\_v1\_nt}
+  becomes a single function over an inductive sum type
+  \texttt{ParamsForm}. The \texttt{@match} version of the Julia
+  function makes this transition transparent.
+
+\item \textbf{Out of scope for this round.} The GPU kernels
+  (\texttt{propagate\_segment\_kernel!},
+  \texttt{fsa\_v1\_cost\_kernel!}) are NOT on the Lean4 port path.
+  Formal verification of fp32 GPU kernels is a separate, much
+  harder problem (would need a verified-fp32 axiomatisation,
+  KernelAbstractions $\to$ Lean4 lowering, etc.).
+\end{itemize}
+
+\subsection{Verification of the port (when it happens)}
+
+The port is mechanical at every \texttt{@match} site. Validation will
+run the same FIM gate, the same psim sanity test, and the same
+6-test smoke suite (\texttt{tools/test\_gpu\_pf.jl}) but in the
+Lean4-compiled native code. The \texttt{Match.jl} idioms make this
+process a series of local rewrites rather than a global
+re-architecture.
+
+\end{document}

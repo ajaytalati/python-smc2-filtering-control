@@ -51,17 +51,6 @@ Specifically:
 
 **Why this rule exists:** I (Claude) once told Ajay confidently that an `identifiable_subset` list in the SWAT export manifest was "hand-written and wrong" because two parameters showed zero on the FIM diagonal. I then "fixed" it by dropping those parameters. The truth was: those parameters were genuinely identifiable from the sleep data channel — but the FIM tool didn't include the sleep channel in its observation function, so its diagonal was zero by construction. The original author had knowingly worked around the tool's incompleteness; I removed the workaround and made the manifest under-report what's identifiable. This wasted the user's trust and time. **Do not let it happen again.**
 
-## Repo shape
-
-Two versioned subtrees share a common framework package `smc2fc/`:
-
-- `smc2fc/` — framework: outer tempered-SMC engine, SF-bridge, inner PF, control loop, simulator, transforms.
-- `version_1/` — Stages A–D: filter validated on OU + bistable; control shipped on FSA-v2 (Banister) at T=42/56/84 d.
-- `version_2/` — closed-loop MPC with rolling-window SMC². Two models: `fsa_high_res` (3-state physiological SDE, shipped) and `swat` (4-state W/Z/a/T, in-development).
-- `swat_model_factory/` — **isolated dev sandbox** for SWAT. Files are developed and validated here (identifiability / stiffness / plant-vs-estimator reconciliation / likelihood / controller checks) BEFORE being copied into `smc2fc` or `version_2/models/swat/` for real runs. Catches model bugs in isolation, not buried inside the full pipeline. `tools/export_to_framework.py` is the gate: it runs every check and only then bundles into `exports/`.
-
-Per-stage models live under each subtree's `models/`, drivers under `tools/`, tests under `tests/`, results under `outputs/`.
-
 > **The `README.md` files (root, `version_1/`, `version_2/`, `swat_model_factory/`) are outdated.** Do not trust their stage status, headline numbers, file listings, or run instructions — read the code, `outputs/<model>/experiments/*/CHANGELOG.md`, and recent git log instead.
 
 ## Setup and execution
@@ -117,7 +106,7 @@ The convention:
 - Plant integration: `version_2/models/fsa_high_res/_plant.py:_plant_em_step` runs in fp32. Mirror this.
 - Controller cost rollout: FSA-v2 control's L8 path (commit `aa114e8 Stage L8: FP32 controller cost-MC SDE rollout`).
 
-**Anti-pattern to avoid:** explicit `dtype=jnp.float64` annotations inside SDE inner loops or per-particle propagation. They request fp64 for code that should be fp32. The SWAT model files (`version_2/models/swat/*`) currently have this pattern and pay a 2–5× wall-clock penalty for it.
+**Anti-pattern to avoid:** explicit `dtype=jnp.float64` annotations inside SDE inner loops or per-particle propagation. They request fp64 for code that should be fp32. 
 
 Full hardware-specific tuning rationale (memory caps, preallocation, parallel-horizon multi-process, etc.) is in [`version_2/outputs/fsa_high_res/GPU_TUNING_RTX5090.md`](version_2/outputs/fsa_high_res/GPU_TUNING_RTX5090.md). That doc is FSA-named for historical reasons but its content is model-independent — read it once when porting any new model.
 

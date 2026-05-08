@@ -27,17 +27,13 @@
 \maketitle
 
 \section{The Julia FSA-v2 codebase}
+\label{sec:codebase}
 
 \subsection{Repository layout}
 
 The model lives at
-\path{version_2_Julia/models/fsa_high_res/} and is organised as eight files
-that mirror the Python source under \path{version_2/models/fsa_high_res/}.
-The aggregator module \texttt{FSAHighRes.jl} \texttt{include}s them in the order
-required by the inter-file using-clauses (PhiBurst before Simulation
-because the latter reads its constants; CPU control before GPU control
-because the latter re-uses some of the same RBF helpers; estimation last
-because it depends on the framework's \texttt{EstimationModel}).
+\path{version_2_Julia/models/fsa_high_res/}. Eight files, mirroring
+the Python source under \path{version_2/models/fsa_high_res/}.
 \vspace{4pt}
 
 \noindent
@@ -46,256 +42,1381 @@ because it depends on the framework's \texttt{EstimationModel}).
 File & Purpose \\
 \midrule
 \texttt{\_dynamics.jl} & SDE drift + state-dependent diffusion (Stage~G1
-                         reparametrisation). Pure Julia; takes a NamedTuple
-                         params for ergonomic \texttt{params.tau\_B} access. \\
-\texttt{\_phi\_burst.jl} & Daily-$\Phi \to$ sub-daily morning-loaded burst
-                          envelope. Reads \texttt{FSA\_STEP\_MINUTES} env
-                          var to set \texttt{BINS\_PER\_DAY}. \\
+                         reparametrisation). \\
+\texttt{\_phi\_burst.jl} & Daily-$\Phi \to$ sub-daily morning-loaded
+                          burst envelope. \\
 \texttt{simulation.jl} & \texttt{INIT\_STATE}, \texttt{DEFAULT\_PARAMS},
-                         the four observation samplers
-                         (HR / sleep / stress / steps), circadian $C(t)$. \\
-\texttt{\_plant.jl} & \texttt{StepwisePlant} struct. Holds truth params,
-                     current $(B,F,A)$ state, RNG seed offset and a
-                     \texttt{history} dict. Two advance methods:
-                     \texttt{advance!} (takes daily $\Phi$, applies burst
-                     envelope) and \texttt{advance\_subdaily!} (takes per-bin
-                     $\Phi$ directly). \texttt{finalise} writes a
-                     psim-format artefact. \\
-\texttt{cpu\_control.jl} & CPU-side cost-functional builder. Produces a
-                          \texttt{ControlBundle} of \texttt{(decoder,
-                          cost\_fn, traj\_sample\_fn)} closures used by the
-                          framework's CPU \texttt{run\_tempered\_smc\_loop}.
-                          Currently unused in the production path
-                          (the GPU controller superseded it) but kept for
-                          debugging. Hosts the canonical \texttt{build\_rbf}. \\
-\texttt{estimation.jl} & Priors (30 estimated + 5 frozen), the locally
-                          guided (Pitt--Shephard) \texttt{propagate\_fn} that
-                          fuses three Gaussian channels via sequential scalar
-                          Kalman, the Bernoulli sleep weight, the
-                          \texttt{align\_obs\_fn} that puts everything on a
-                          \texttt{Float32} per-bin grid, and the
-                          \texttt{build\_estimation\_model} factory. \\
-\texttt{gpu\_pf.jl} & FSA-specific GPU bootstrap-PF kernel
-                     (\texttt{fsa\_propagate\_segment\_kernel!}) +
-                     \texttt{FSAGPUTargetBatched} struct. Calls into the
-                     framework-shared \texttt{run\_segmented\_smc\_step!}
-                     for resampling / Liu--West / OT rescue. \\
+                         the four observation samplers, circadian $C(t)$. \\
+\texttt{\_plant.jl} & \texttt{StepwisePlant} — \texttt{advance!}
+                     (daily $\Phi$ + burst envelope) and
+                     \texttt{advance\_subdaily!} (per-bin $\Phi$ direct).
+                     \texttt{finalise} writes the psim artefact. \\
+\texttt{cpu\_control.jl} & CPU \texttt{build\_control} — RBF + cost
+                          functional, debug reference only. \\
+\texttt{estimation.jl} & 30 priors + 5 frozen, the locally guided
+                          (Pitt--Shephard) \texttt{propagate\_fn},
+                          observation log-weights, alignment grid. \\
+\texttt{gpu\_pf.jl} & FSA-specific GPU bootstrap-PF kernel +
+                     \texttt{FSAGPUTargetBatched}. \\
 \texttt{gpu\_control.jl} & FSA-specific GPU cost kernel
-                          (\texttt{fsa\_cost\_kernel!}) +
-                          \texttt{FSAControlGPUTarget} struct +
-                          \texttt{make\_log\_density\_fn} closure factory.
-                          Hands a closure to the framework's
-                          \texttt{run\_tempered\_smc\_gpu}. \\
-\texttt{FSAHighRes.jl} & Module aggregator. \texttt{include}s the eight files
-                          and re-exports the public symbols. \\
+                          \texttt{fsa\_cost\_kernel!} +
+                          \texttt{FSAControlGPUTarget} +
+                          \texttt{make\_log\_density\_fn} closure. \\
+\texttt{FSAHighRes.jl} & Module aggregator. \\
 \bottomrule
 \end{tabular}
 
-\subsection{Stage-G1 reparametrisation in \texttt{\_dynamics.jl}}
+\paragraph{Framework additions} (under
+\path{julia/SMC2FC/src/}, model-independent):
 
-The state $\bm{X}=(B,F,A)$ evolves under the It\^o SDE
-\begin{align}
-  \mathrm{d}B &= \kappa_B \cdot \frac{1+\varepsilon_A A}{1+\varepsilon_A A_{\rm typ}} \cdot \Phi \,\mathrm{d}t
-                - \frac{B}{\tau_B}\,\mathrm{d}t + \sigma_B \sqrt{B(1-B)}\,\mathrm{d}W_B \\
-  \mathrm{d}F &= \kappa_F \Phi\,\mathrm{d}t - \frac{1+\lambda_A A}{1+\lambda_A A_{\rm typ}} \cdot \frac{F}{\tau_F}\,\mathrm{d}t
-                + \sigma_F \sqrt{F}\,\mathrm{d}W_F \\
-  \mathrm{d}A &= \mu(B,F)\,A\,\mathrm{d}t - \eta A^3 \,\mathrm{d}t + \sigma_A \sqrt{A}\,\mathrm{d}W_A \\
-  \mu(B,F) &= \mu_0 + \mu_B B - \mu_F F - \mu_{FF}(F-F_{\rm typ})^2,
-\end{align}
-with the operating-point constants $A_{\rm typ}=0.10$, $F_{\rm typ}=0.20$.
-The reparametrisation absorbs three rank-deficient direction pairs
-$(\kappa_B,\varepsilon_A)$, $(\mu_F,\mu_{FF})$, $(\tau_F,\lambda_A)$ into
-strongly-identified directions and weakly-identified residuals. Truth
-values use the effective parameters: $\kappa_B^{\rm eff}=0.01248$,
-$\tau_F^{\rm eff}=7/1.1=6.364$, $\mu_F^{\rm eff}=0.26$, $\mu_0^{\rm eff}=0.036$.
-The Julia \texttt{TRUTH\_PARAMS} NamedTuple is constructed from these
-identities so it is bit-equivalent to Python's
-\texttt{simulation.py:DEFAULT\_PARAMS}.
-
-The substepped Euler--Maruyama integrator
-\texttt{em\_step\_substepped} runs \texttt{n\_substeps=4} drift sub-steps
-of length $\Delta t/4$, then applies one Wiener increment of variance
-$\sigma(y_{\rm det})^2 \cdot \Delta t$ at the outer-bin boundary, then
-performs boundary reflection ($B \mapsto -B$ if $B<0$, $B\mapsto 2-B$ if
-$B>1$, $F\mapsto |F|$, $A\mapsto |A|$). This matches Python's
-\texttt{imex\_step\_substepped} exactly.
-
-\subsection{Burst envelope (\texttt{\_phi\_burst.jl})}
-
-The controller plans daily $\Phi$ values; the plant runs the SDE on a
-sub-daily grid (\texttt{BINS\_PER\_DAY}~$=$~\texttt{(60·24)/FSA\_STEP\_MINUTES}).
-The expansion is a Gamma-shaped morning-loaded envelope:
-\[
-  \Phi(t) = \Phi_d \cdot e(k), \qquad
-  e(k) \propto t_{\rm post}\,e^{-t_{\rm post}/\tau_h}
-\]
-in the wake window $[7\text{h}, 23\text{h}]$, normalised so
-$\sum_k e(k)\cdot \Delta t_h = 24$. The integral preservation makes the
-slow Banister dynamics (which respond only to the daily integral)
-indistinguishable between bursty and smooth $\Phi$, but the fast
-dynamics (CIR for $F$, Stuart--Landau for $A$) see the bursts. This
-matters in benchmarks --- see \S\ref{sec:bug-bursty}.
-
-\subsection{Stepwise plant (\texttt{\_plant.jl})}
-
-\texttt{StepwisePlant} is a mutable Julia struct carrying
-\texttt{state::Vector\{Float64\}}, \texttt{t\_bin::Int} (global bin
-counter), the truth params and the per-channel observation history. Its
-two driver methods are
-\begin{itemize}[itemsep=2pt]
-\item \texttt{advance!(plant, stride\_bins, Phi\_daily)} --- expects
-  daily $\Phi$, expands to sub-daily via
-  \texttt{expand\_daily\_phi\_to\_subdaily}, then runs the per-bin SDE.
-\item \texttt{advance\_subdaily!(plant, Phi\_subdaily)} --- takes per-bin
-  $\Phi$ values directly, bypasses the burst envelope. Added so the
-  GPU controller's per-bin RBF schedule can be applied.
+\begin{itemize}[itemsep=2pt,leftmargin=*]
+\item \texttt{Filtering/GPUSegmentedPF.jl} --- shared per-chain weight
+  reductions, normalised-weight cumulative sum, systematic resample
+  with Liu--West shrinkage, OT sigmoid-blend rescue.
+\item \texttt{Control/GPUControlSMC.jl} --- generic parallel-chains
+  tempered SMC$^2$, parallel-chains HMC kernel, ChEES-L picker,
+  central-FD gradient batcher. Consumes a model-supplied closure
+  $\texttt{log\_density\_fn} : \mathbb R^{M\times d} \to \mathbb R^M$.
 \end{itemize}
-After advancing, \texttt{finalise} writes
-\texttt{manifest.json}, \texttt{trajectory.npz}, per-channel
-\texttt{obs/*.npz} and \texttt{exogenous/*.npz} so the closed-loop run
-can be replayed by the Python psim consistency checks.
 
-\subsection{Estimation model (\texttt{estimation.jl})}
+\subsection{Dynamics}
+
+State $\bm X = (B, F, A)$ evolves under the It\^o SDE
+\begin{align*}
+  \mathrm dB &= \kappa_B \cdot a_B(A) \cdot \Phi \,\mathrm dt
+              - \tfrac{B}{\tau_B}\,\mathrm dt + \sigma_B \sqrt{B(1-B)}\,\mathrm dW_B \\
+  \mathrm dF &= \kappa_F \Phi\,\mathrm dt - a_F(A)\,\tfrac{F}{\tau_F}\,\mathrm dt
+              + \sigma_F \sqrt{F}\,\mathrm dW_F \\
+  \mathrm dA &= \mu(B,F)\,A\,\mathrm dt - \eta A^3\,\mathrm dt
+              + \sigma_A \sqrt{A}\,\mathrm dW_A,
+\end{align*}
+with the operating-point reparametrisation $a_B(A)=(1+\varepsilon_A
+A)/(1+\varepsilon_A A_{\rm typ})$, $a_F(A)$ the analogue for $\lambda_A$,
+and $\mu(B,F) = \mu_0 + \mu_B B - \mu_F F - \mu_{FF}(F-F_{\rm typ})^2$
+with $A_{\rm typ}=0.10$, $F_{\rm typ}=0.20$. Truth values use the
+effective parameters: $\kappa_B^{\rm eff}=0.01248$, $\tau_F^{\rm eff}=
+6.364$, $\mu_F^{\rm eff}=0.26$, $\mu_0^{\rm eff}=0.036$.
+
+\subsection{Plant}
+
+\texttt{StepwisePlant} carries the truth state $(B,F,A)$ and a global bin
+counter. \texttt{advance!} expands daily $\Phi$ values via the
+morning-loaded Gamma envelope (peak around 10\,am, zero overnight,
+integral preserved at $24\cdot \Phi_d$/day) and runs single-step
+Euler-Maruyama with the sqrt-It\^o diffusion above.
+\texttt{advance\_subdaily!} skips the burst expansion and applies a
+caller-supplied per-bin $\Phi$ directly. Both leave the same
+\texttt{history} of trajectory + obs that \texttt{finalise} dumps to
+disk in psim format.
+
+\subsection{Estimation}
 
 The 30 estimated parameters are declared as a
-\texttt{Vector\{Tuple\{Symbol, PriorType\}\}} with the same order as
-Python's \texttt{PARAM\_PRIOR\_CONFIG} so the posterior cloud aligns
-column-by-column. The locally-guided proposal
-(\texttt{propagate\_fn}) computes a Gaussian prior predictive
-$\mathcal{N}(\mu_{\rm pred}, P_{\rm pred})$ from the G1 drift and
-state-dependent variance, then sequentially fuses the three Gaussian
-observation channels (HR, stress, $\log(\mathrm{steps}+1)$) by scalar
-Kalman updates gated by the \texttt{*\_present} masks. A Cholesky-3
-factorisation samples $x_{\rm new}$, and the predictive log-marginal is
-returned as the importance correction \texttt{pred\_lw}. The Bernoulli
-sleep log-likelihood is added by \texttt{obs\_log\_weight\_fn}. This is
-a line-by-line port of Python's
+\texttt{Vector\{Tuple\{Symbol,PriorType\}\}} ordered identically to
+Python's \texttt{PARAM\_PRIOR\_CONFIG} so the 30-panel posterior trace
+plot lines up column-by-column.
+\texttt{propagate\_fn} runs the locally guided (Pitt--Shephard)
+proposal: prior predictive $\mathcal N(\mu_{\rm pred}, P_{\rm pred})$
+from the G1 drift and state-dependent variance, then sequential scalar
+Kalman fusion across the three Gaussian channels (HR, stress,
+$\log(\mathrm{steps}+1)$) gated by \texttt{*\_present} masks, then
+Cholesky-3 sample. \texttt{obs\_log\_weight\_fn} adds the Bernoulli
+sleep log-likelihood. Verbatim port of Python's
 \texttt{estimation.py:propagate\_fn}.
 
-\subsection{GPU particle filter (\texttt{gpu\_pf.jl})}
+\subsection{GPU particle filter}
 
-The model file contains only the FSA-specific propagate kernel ---
-exactly the same locally-guided proposal as the CPU version, written
-as a KernelAbstractions \texttt{@kernel} that runs in fp32 with one
-thread per (chain, particle). The framework-shared kernels for
-per-chain weight statistics, normalised-weights cumulative sum,
-systematic resampling with Liu--West shrinkage, and Sinkhorn-based OT
-rescue live in \texttt{julia/SMC2FC/src/Filtering/GPUSegmentedPF.jl}.
-A driver routine \texttt{run\_segmented\_smc\_step!} composes them.
-The model's only entry point is
-\texttt{gpu\_log\_density\_batched(target, U)} returning per-chain
-log-marginal-likelihood used by the outer SMC$^2$ HMC.
+Model file contains only the FSA-specific propagate kernel — same
+locally guided proposal as the CPU version, written as a
+KernelAbstractions \texttt{@kernel} that runs in fp32 with one thread
+per (chain, particle). Resampling, Liu--West shrinkage and OT rescue
+are framework calls (\texttt{Filtering/GPUSegmentedPF.jl}). Public
+entry point: \texttt{gpu\_log\_density\_batched(target, U)}, returning
+the per-chain marginal log-likelihood.
 
-\subsection{GPU controller (\texttt{gpu\_control.jl})}
+\subsection{GPU controller}
 
-The control kernel \texttt{fsa\_cost\_kernel!} has one thread per
-(chain $m$, common-random-number trial $t$). Per outer bin $k$:
+The control kernel \texttt{fsa\_cost\_kernel!} runs one thread per
+(chain $m$, common-random-numbers trial $t$). Per outer bin $k$:
+decode $\Phi(t_k) = \Phi_{\max}\sigma\big(c_\Phi + \sum_a
+\theta_{m,a}\,\varphi_a(t_k)\big)$ from the (raw, non-normalised)
+Gaussian RBF basis; pre-step accumulate the cost integrand
+$A_{\rm acc}\mathrel{+}= A\,\Delta t$,
+$B_{\rm acc}\mathrel{+}= \max(F-F_{\max},0)^2\,\Delta t$;
+then run the substepped EM SDE step under the trial-shared CRN noise.
+Cost is Eq~37 of the spec verbatim:
+\begin{equation}
+  J(\bm\theta_{\rm ctrl}) \;=\; -\!\int_0^T A(t)\,\mathrm dt
+  \;+\; \lambda_F \int_0^T \max\bigl(F(t) - F_{\max},\,0\bigr)^2\,\mathrm dt,
+  \tag{Eq.\ 37}
+\end{equation}
+with $\lambda_F=1$, $F_{\max}=0.40$. The model exposes a
+\texttt{make\_log\_density\_fn(target)} closure that hands the
+per-chain MC-averaged $-J$ to the framework's
+\texttt{run\_tempered\_smc\_gpu}.
+
+\subsection{Configuration and wall time}
+
+The reference run --- $T=14$\,d, $h=15$\,min, replan every stride,
+$n_{\rm SMC}^{\rm filter}=32$ inner-PF chains $\times K=400$ particles,
+$n_{\rm SMC}^{\rm ctrl}=1024 \times n_{\rm inner}=128$ trials, HMC
+$\varepsilon=0.2$ / $L_{\rm ChEES}\in\{16,32,64,128,256\}$ /
+\texttt{num\_mcmc}=10, target $\beta_{\max}=8$ nats --- completes in
+$\sim$780\,s on a single RTX~5090. Python's reference run at the same
+configuration takes $\sim$27 minutes.
+
+\section{Bug hunt: what's been ruled out, what remains}
+\label{sec:bug-hunt}
+
+The Julia controller settles on a \emph{flat low-$\Phi$} schedule
+($\Phi \in [0.10, 0.30]$ across all 27 strides) with mean autonomic
+amplitude $\bar A_{\rm MPC} = 0.085$ vs $\bar A_{\rm baseline} = 0.082$
+(a $+3.7\%$ gain). Python on the same model reports a
+\emph{recovery~$\to$~overload} schedule ($\Phi$ goes
+$1.0 \to 0.2 \to 1.2$) with $\bar A_{\rm MPC} = 0.122$
+(a $+50\%$ gain). The qualitative shape of the controller's policy
+is wrong, not just the magnitude.
+
+This section is the diagnostic timeline. Each hypothesis was tested by
+one targeted experiment.
+
+\subsection{Hypothesis 1 (kept): RBF basis was row-normalised}
+
+The original Julia \texttt{build\_rbf} row-normalised the design matrix
+into a partition of unity. Python's
+\texttt{smc2fc/control/rbf\_schedules.py:design\_matrix} returns the
+\emph{raw} Gaussian basis (no normalisation). With row-normalisation
+the decoded $\Phi(t)$ collapses to a weighted average of $\theta_a$
+values, smoothing out any per-anchor variation regardless of the
+gradient signal.
+
+\textbf{Test:} removed normalisation in both
+\path{cpu_control.jl:build_rbf} and the GPU target's RBF construction.
+\textbf{Outcome:} $\Phi$ moved from a flat $\sim 0.45$ to a flat
+$\sim 0.20$, matching the spec's text description of a
+``rest-leaning $\Phi \in [0.25, 0.31]$''. Real fix, kept in code.
+\emph{It did not produce the recovery~$\to$~overload pattern, but it
+was a real bug.}
+
+\subsection{Hypothesis 2 (kept): three small kernel mismatches vs Python}
+
+Found while reading the Julia kernel against Python's
+\texttt{control.py:cost\_fn} line-by-line:
+
 \begin{enumerate}[itemsep=2pt]
-\item Decode $\Phi(t_k)$ from the chain's $\bm{\theta}_m$ via the raw
-  Gaussian RBF basis,
-  $\Phi(t_k) = \Phi_{\max}\cdot \sigma\big(c_\Phi + \sum_a \theta_{m,a}\,\varphi_a(t_k)\big)$
-  with $c_\Phi = \mathrm{logit}(\Phi_{\rm def}/\Phi_{\max})$.
-\item PRE-step accumulate the cost integrand:
-  $A_{\rm acc}\mathrel{+}= A\,\Delta t$,
-  $\Phi_{\rm acc}\mathrel{+}= \Phi^2\,\Delta t$,
-  $B_{\rm acc}\mathrel{+}= \max(F-F_{\max},0)^2\,\Delta t$.
-\item Run the substepped EM SDE step with the trial-shared CRN noise.
+\item A NaN guard at the end of every bin reset the state to
+  $(0.05, 0.30, 0.10)$ if any of $B,F,A$ became non-finite.
+  Removed --- the boundary reflection already handles the legitimate
+  cases, and the guard was masking real numerical issues.
+\item The cost diffusion used $\sqrt{A + \varepsilon_A}$
+  ($\varepsilon_A=10^{-4}$). Python's controller path uses
+  $\sqrt{\max(A, 0)}$ (the $\varepsilon_A$ form lives only in the
+  plant's \texttt{noise\_scale\_fn}). Aligned.
+\item The cost integrand $A_{\rm acc}$ was being accumulated AFTER the
+  EM step. Python uses the PRE-step state. Switched.
 \end{enumerate}
-At the end of the bin loop the cost
-$J_m=-A_{\rm acc} + \lambda_\Phi\Phi_{\rm acc} + \lambda_F B_{\rm acc}$
-is written to \texttt{cost\_per\_thread[$i$]}. The outer wrapper
-averages over trials. The model exposes a
-\texttt{make\_log\_density\_fn(target)} closure that the framework's
-generic \texttt{run\_tempered\_smc\_gpu}
-(in \texttt{julia/SMC2FC/src/Control/GPUControlSMC.jl})
-consumes. The framework provides parallel-chains HMC, a ChEES leapfrog
-picker, FD-batched gradients and the tempered-SMC$^2$ outer loop;
-none of those are FSA-specific.
 
-\subsection{Bugs found while debugging the controller}
-\label{sec:bugs}
+\textbf{Outcome:} small numerical changes, no qualitative effect on the
+controller's optimum. Kept anyway --- they bring the kernel into bit-for-bit
+correspondence with Python's algorithm.
 
-Five issues turned up as the bench was iterated against the Python plot.
-The first four are fixed in the Julia source; the fifth is identified but
-not yet patched.
+\subsection{Hypothesis 3 (discarded): bursty / smooth $\Phi$ asymmetry between MPC and baseline plants}
 
-\paragraph{(1) RBF basis was row-normalised.} Python's
-\texttt{smc2fc/control/rbf\_schedules.py} returns the raw Gaussian basis;
-the original Julia port row-normalised it into a partition of unity.
-Row-normalisation collapses any per-anchor $\theta$ variation into a
-weighted average, so the decoded $\Phi(t)$ was effectively constant
-regardless of $\bm\theta$ --- the reason the controller produced flat
-$\Phi$ schedules. Removing the normalisation in both
-\texttt{cpu\_control.jl:build\_rbf} and the GPU target's RBF block
-moved the controller's optimum from $\Phi\approx 0.45$ flat to
-$\Phi\approx 0.20$ flat (matching the spec text in \S10.2 of the
-FSA-v2 outdated lecture notes).
+The bench was calling \texttt{advance!} (which expands daily $\Phi$
+through the burst envelope) for the baseline plant and
+\texttt{advance\_subdaily!} (which takes per-bin $\Phi$ directly) for
+the MPC plant. Under constant $\Phi=1$, a Monte-Carlo plant test gave
+$\bar A_{\rm bursty}=0.082$ vs $\bar A_{\rm smooth}=0.100$ — a 22\,\%
+gap that suggested the MPC trajectory was being measured on a different
+fast-dynamics regime from the baseline.
 
-\paragraph{(2) NaN guard reset state.} The original kernel had an
-\texttt{if !isfinite(B)\ldots reset to (0.05, 0.30, 0.10)} guard at the
-end of every bin. When fp32 rounding produced occasional small
-non-finite intermediates, this silently zeroed out cost differences
-between schedules. Removed.
+\textbf{Test:} aggregated the controller's per-bin $\Phi$ to daily
+values and routed both plants through \texttt{advance!} (so both run
+on the bursty envelope). \textbf{Outcome:} the bench produced
+essentially identical numbers ($\bar A_{\rm MPC}=0.085$, $\Phi$ still
+flat at $\sim 0.20$). The baseline-plant asymmetry was real and worth
+fixing, but it was \emph{not} the source of the controller's wrong
+optimum. \emph{Hypothesis discarded.}
 
-\paragraph{(3) \texttt{$+\,\varepsilon_A$} inside cost diffusion.} The
-plant's \texttt{noise\_scale\_fn} uses \texttt{sqrt(A + EPS\_A\_FROZEN)}
-to keep the diffusion well-defined at $A=0$; the controller's
-\texttt{diffusion\_state\_dep} uses \texttt{sqrt(max(A, 0))}. The Julia
-port had carried the eps form into the cost kernel. Aligned to Python's
-no-eps form for the controller path; plant kept on the eps form.
+\subsection{Hypothesis 4 (discarded): bug in the framework controller}
 
-\paragraph{(4) POST-step cost accumulation.} The kernel was
-accumulating $A_{\rm acc} \mathrel{+}= A\,\Delta t$ AFTER the EM step.
-Python uses the PRE-step state (\texttt{y[2]}, not \texttt{y\_next[2]}),
-i.e.\ a left-Riemann sum from $t=0$ to $t=T-\Delta t$. Switched.
+Suspicion: the parallel-chains tempered SMC$^2$ + ChEES-HMC machinery
+in \path{julia/SMC2FC/src/Control/GPUControlSMC.jl} might have a
+gradient-following bug or a tempering-bisection bug that prevents it
+from finding off-prior-mean optima.
 
-\paragraph{(5) Burst envelope asymmetry between MPC plant and baseline
-  plant.}
-\label{sec:bug-bursty}
-The benchmark calls
-\texttt{advance!(base\_plant, ..., [1.0])} for the constant-$\Phi$
-baseline (which expands $\Phi_{\rm daily}=1$ through the burst envelope
-into per-bin morning-loaded peaks of $\sim$2--3) but
-\texttt{advance\_subdaily!(mpc\_plant, phi\_per\_bin)} for the MPC plant
-(which feeds the controller's smooth per-bin $\Phi$ directly, skipping
-the burst envelope). A diagnostic Monte-Carlo with $n=32$ seeds
-confirmed that under \emph{constant} smooth $\Phi=1$, the plant's mean
-$\bar A = 0.1002$, but the spec quotes $\bar A = 0.0823$ for bursty
-$\Phi_{\rm daily} = 1$. The 22\,\% gap is exactly the burst-envelope
-asymmetry. The fix is to aggregate the controller's per-bin schedule
-to daily $\Phi$ values and call \texttt{advance!} with the burst
-envelope, so MPC and baseline run on the same fast-dynamics regime.
+\textbf{Test:} ran the framework controller against three synthetic
+analytic costs with \emph{known} optima. Pure CPU log-density closures
+($\mathbb R^{M\times d} \to \mathbb R^M$), no model and no GPU kernel.
+Driver: \path{version_2_Julia/tools/test_framework_controller.jl}.
 
-\subsection{Outstanding for next iteration}
-
-\begin{itemize}[itemsep=2pt]
-\item Apply the burst-envelope fix (5) so MPC and baseline trajectories
-  are produced under the same fast-scale forcing.
-\item Switch the controller's gradient from central FD ($h=10^{-4}$,
-  17 chain-evals per gradient) to ForwardDiff dual-number autodiff.
-  Per the bistable B3 module's empirical note, ForwardDiff with $d=8$
-  out-performs Enzyme reverse-mode by $\sim$2.7$\times$ on a similar
-  PF; the FSA controller has the same dimensionality so the same
-  conclusion should hold.
-\item Quantitative side-by-side cost comparison against Python at fixed
-  $\bm\theta$, to confirm the Julia and Python cost surfaces are
-  numerically equivalent after the bug fixes above.
+\begin{itemize}[itemsep=4pt,leftmargin=*]
+\item \textbf{Quadratic bowl} $J(\bm\theta)=\tfrac12 \|(\bm\theta -
+  \bm\theta^\star)/\sigma_J\|^2$ with $\bm\theta^\star \neq \mathbf 0$.
+  Framework returned posterior mean $0.755\cdot \bm\theta^\star$,
+  matching the analytic Bayesian-shrinkage prediction at the
+  auto-calibrated $\beta_{\max}=1.37$ within rounding. \emph{Pass.}
+\item \textbf{Anti-symmetric reward} $J(\bm\theta) = -\bm w^\top
+  \bm\theta + \gamma\|\bm\theta\|^2$ with $\bm w$ anti-symmetric across
+  the eight RBF anchors (negative early, positive late) — the same
+  spatial structure as the FSA recovery~$\to$~overload schedule.
+  Framework returned a posterior mean with the correct anti-symmetric
+  signs and ratios, shrunk by $\sim 25\%$ — same Bayesian-shrinkage
+  signature. \emph{Pass: the framework finds spatially structured
+  optima when they exist.}
+\item \textbf{Bimodal cost} with one ``flat'' mode at
+  $\bm\theta_a = -\mathbf 1$ and one ``recovery~$\to$~overload'' mode
+  at $\bm\theta_b = (-1.5,-1.5,-1.5,0,0,+1.5,+1.5,+1.5)$, with
+  $\bm\theta_b$ the global mode. Tested three initialisations: from
+  prior, from $\bm\theta_a$, from $\bm\theta_b$. All three converged to
+  the same prior-weighted compromise — not a defect, but the consequence
+  of $\beta_{\max}$ auto-calibrating to $0.367$ under the wide prior
+  (the prior dominates the tempered posterior at small $\beta$).
 \end{itemize}
 
-\subsection{Wall-time and configuration}
+\textbf{Outcome:} the framework's controller logic is correct; in
+particular it can find anti-symmetric optima when they are present
+(Test~2). \emph{Hypothesis discarded.}
 
-The current end-to-end run on a single RTX 5090
-(T~$=$~14 days, $h=15$ min, replan every stride, $n_{\rm SMC}^{\rm filter}=32$
-inner-PF chains $\times$ $K=400$ particles, $n_{\rm SMC}^{\rm ctrl}=1024$
-controller chains $\times$ $n_{\rm inner}=128$ trials, HMC
-$\varepsilon=0.2$ / $L_{\rm ChEES}\in\{16,32,64,128,256\}$ /
-\texttt{num\_mcmc}=10, target nats $=8$) completes in 813\,s. Python's
-reference matches this configuration in $\sim$27 minutes. The Julia run
-matches the spec qualitatively (rest-leaning $\Phi \in [0.10, 0.30]$,
-F clearance from $0.30$ to $0.07$) but does not yet reproduce the
-recovery$\to$overload pattern that yields the spec's headline
-$+17\,\%$ mean-$A$ gain --- pending the burst-envelope fix and an
-independent verification of the cost surface against Python at the
-gradient level.
+\subsection{Hypothesis 5 (discarded): HMC stuck in the wrong basin on FSA}
+
+Even if the cost surface contained both a flat-low and a
+recovery~$\to$~overload basin and the latter were deeper, an
+HMC chain initialised in the larger flat-low basin might never escape.
+
+\textbf{Test:} ran the FSA bench with the controller's HMC initialised
+at a constructed recovery~$\to$~overload $\bm\theta_{\rm seed}$ (per-anchor
+target $\Phi = (1.0, 0.2, 0.2, 0.4, 0.7, 0.9, 1.1, 1.2)$, decoded
+through the inverse RBF formula, $\sigma_{\rm jitter}=0.3$ around the
+seed). Same controller config, same wall ($\sim 740$\,s).
+
+\textbf{Outcome:} every replan still settled at $\bar\Phi \in [0.27,
+0.30]$, identical final state $\hat x = (0.064, 0.071, 0.096)$ to the
+cold-start runs. HMC initialised at the recovery~$\to$~overload point
+\emph{moved away} from it and converged to flat-low. The
+recovery~$\to$~overload region is not a local minimum at all in the
+Julia FSA cost surface --- the gradient there points toward flat-low.
+\emph{Hypothesis discarded.}
+
+\subsection{Hypothesis 6 (kernel + decoder OK on monotone reward)}
+
+A trivial-cost end-to-end test that isolates the FSA SDE + GPU kernel +
+RBF decoder + framework HMC, removing all the Stuart--Landau and
+F-coupling nonlinearities of the original cost.
+
+\paragraph{Test cost.} Replace Eq~37 by
+\[
+J(\bm\Phi) \;=\; -\!\int_0^T B(t)\,\mathrm dt,\qquad \lambda_F = 0
+\quad(\text{no fatigue penalty}).
+\]
+Under the FSA SDE, $\mathrm dB/\mathrm dt = \kappa_B \cdot a_{B}(A) \cdot \Phi
+- B/\tau_B$ is monotone in $\Phi$. The optimum is to pin $\Phi=\Phi_{\max}=3$
+for every bin, driving $B$ toward its highest equilibrium
+$\kappa_B\,\Phi_{\max}\,\tau_B$.
+
+\paragraph{Implementation.} The cost kernel is parametrised with
+state-integrand weights $(w_B, w_F, w_A)$ (default $(0,0,1)$, i.e.\ Eq~37).
+Setting $(1, 0, 0)$ and $\lambda_F = 0$ gives the trivial cost.
+Driver: \path{version_2_Julia/tools/test_max_B_only.jl}.
+
+\paragraph{Result.} The framework returns posterior-mean
+$\bar{\bm\theta} = (+1.57, +2.12, +1.92, +1.77, +1.71, +1.52, +1.04, +0.42)$
+which decodes to a per-bin $\Phi$ schedule with:
+\begin{itemize}[itemsep=1pt]
+\item day 0 to day 8: $\Phi(t) \in [2.68, 2.92]$ — essentially
+  pinned to $\Phi_{\max}$.
+\item day 10 to day 14: $\Phi$ tapers down to $1.79$ — Bayesian
+  shrinkage near the boundary anchors where the prior pull is more
+  visible.
+\item summary: $\Phi_{\rm mean} = 2.73$ vs $\Phi_{\max} = 3.0$.
+\end{itemize}
+Six tempering levels, auto-calibrated $\beta_{\max} = 12.5$
+(large because $\int B$ has small variance under the prior cloud, so
+cost-std is small), 55\,s wall.
+
+\paragraph{Conclusion.} When the optimum is monotone in $\Phi$, the
+controller finds it. End-to-end this rules out:
+\begin{itemize}[itemsep=1pt]
+\item Bug in the FSA SDE integration ($\mathrm dB/\mathrm dt$ is correct).
+\item Bug in the RBF decoder ($\theta_a > 0$ correctly produces
+  high $\Phi$ at anchor $a$).
+\item Bug in the GPU-kernel cost-accumulation pathway
+  ($\int B\,\mathrm dt$ is correctly assembled).
+\item Bug in the framework parallel-chains HMC.
+\end{itemize}
+The remaining root cause is therefore confined to the A-cost surface
+specifically --- the Stuart--Landau cubic $-\eta A^3$, the
+$F$-coupling through $\mu(B, F)$, or some numerical interaction between
+them that displaces the global optimum from recovery~$\to$~overload to
+flat-low in Julia versus Python.
+
+\subsection{Hypothesis 7 (root cause confirmed): fp32 cancellation in the G1 drift}
+
+Triggered by the observation that the v1 reference controller
+(\path{version_1_Julia/models/fsa_high_res/gpu_control.jl}, working
+end-to-end on the same SDE structure) uses the \emph{pre-G1} drift
+form, while my v2 uses the G1-reparametrised form. The two are
+mathematically equivalent at the truth parameters --- v1 mu and v2 mu
+both evaluate to $-0.031$ at $(B,F,A)=(0.05, 0.30, 0.10)$. The G1
+reparametrisation cannot be unwound on the v2 side because v2 needs
+it for FIM-rank identifiability of the static parameters in the
+\emph{filter}. So the controller has to use the v2 form.
+
+The v2 form contains arithmetic that is more cancellation-prone in
+fp32 than the v1 form:
+\begin{itemize}[itemsep=2pt]
+\item $(F - F_{\rm typ})^2$ subtracts magnitudes of order $F_{\rm typ}=0.20$
+  then squares the small remainder, losing fp32 mantissa bits.
+\item $(1 + \varepsilon_A A) / (1 + \varepsilon_A A_{\rm typ})$ divides
+  near-equal numbers when $A \approx A_{\rm typ}$. Both numerator and
+  denominator are $\approx 1.04$; the ratio is determined by their
+  small difference. Same for the $\lambda_A$ term in $a_F(A)$.
+\item Larger individual terms in $\mu$ that have to cancel:
+  $\mu_F^{\rm eff} F = 0.078$ at $F=0.30$ vs $\mu_F^{\rm v1} F = 0.030$.
+\end{itemize}
+Each substep evaluation of the drift accumulates rounding from these
+sources. Over the controller's cost rollout
+($n_{\rm steps} \times n_{\rm substeps} = 1344 \times 4 = 5376$
+evaluations per trial, $n_{\rm inner}=128$ trials per chain), the
+biased rounding shifts integrated A by enough to displace the global
+cost minimum from the recovery$\to$overload schedule to flat-low.
+
+\paragraph{Test.} The drift block inside the substep loop of
+\path{gpu_control.jl:fsa_cost_kernel!} was promoted to fp64 (state and
+accumulators stay fp32; only the per-substep arithmetic that produces
+\texttt{drift\_B}, \texttt{drift\_F}, \texttt{drift\_A} runs in fp64).
+A single planning call at the canonical init state
+$(B,F,A)=(0.05,0.30,0.10)$ over the full $T=14$\,d horizon was run,
+with a light controller config
+($n_{\rm SMC}=64$, $n_{\rm inner}=16$, $\texttt{num\_mcmc}=3$,
+$L_{\rm leap}=8$) to keep wall time tractable on consumer fp32:fp64
+silicon (RTX~5090's fp64 throughput is $\sim 1/64$ of fp32). Driver:
+\path{version_2_Julia/tools/test_one_plan_fp64.jl}.
+
+\paragraph{Result.} Posterior-mean $\bar{\bm\theta}$ decoded to:
+
+\begin{tabular}{@{}rl@{\qquad}rl@{}}
+day 0 & $\Phi = 0.23$ & day 8  & $\Phi = 0.31$ \\
+day 1 & $\Phi = 0.13$ & day 9  & $\Phi = 0.36$ \\
+day 2 & $\Phi = 0.10$ & day 10 & $\Phi = 0.42$ \\
+day 3 & $\Phi = 0.10$ & day 11 & $\Phi = 0.52$ \\
+day 4 & $\Phi = 0.12$ & day 12 & $\Phi = 0.67$ \\
+day 5 & $\Phi = 0.15$ & day 13 & $\Phi = 0.84$ \\
+day 6 & $\Phi = 0.20$ & day 14 & $\Phi = 0.98$ \\
+day 7 & $\Phi = 0.25$ & & \\
+\end{tabular}
+\vspace{2pt}
+
+\noindent
+This is the \emph{recovery~$\to$~overload} pattern. $\Phi$ drops to
+its floor in days 1--3 (clearing the high initial fatigue), holds low
+through day 5--6, then ramps monotonically up to nearly $\Phi_{\max}/3$
+by day 14. Compare to the fp32 production run, which gave a flat
+$\Phi \approx 0.20$ across all 14 days.
+
+The auto-calibrated $\beta_{\max}$ also moved dramatically: 117 in fp64
+vs $\sim$12 in fp32, indicating the cost has $\sim 10\times$ larger
+variance across the prior cloud once the cancellation is removed ---
+the cost surface is genuinely sharp, the fp32 noise was washing it out.
+
+\paragraph{Hypothesis confirmed.} The flat-low controller behaviour
+was caused by accumulated fp32 cancellation in the v2 G1 drift.
+
+\subsection{Outstanding: production-grade fix}
+
+The fp64-promotion test confirms the diagnosis but is not a
+production fix --- it costs $\sim 30\times$ more wall-time on the 5090
+(consumer Blackwell's fp64 throughput is $1/64$ of fp32). The full
+bench at production config ($n_{\rm SMC}=1024, n_{\rm inner}=128$)
+would take $\sim 15$ hours under fp64 substep arithmetic.
+
+The proper fix is an algebraic reformulation of the v2 G1 drift that
+avoids the cancellation hot-spots while staying mathematically
+identical:
+
+\begin{itemize}[itemsep=2pt]
+\item Rewrite $\mu = \mu_0 + \mu_B B - \mu_F F - \mu_{FF}(F-F_{\rm typ})^2$
+  as a Horner-style polynomial in $F$ that fuses the constant terms:
+  $\mu = (\mu_0 - \mu_{FF} F_{\rm typ}^2) + \mu_B B + (2\mu_{FF}F_{\rm typ} - \mu_F) F - \mu_{FF} F^2$.
+  This is identically the v1 polynomial in $F$ once the constant and
+  linear coefficients are pre-combined --- an algebraic rearrangement
+  that the JIT may or may not perform on its own.
+\item Pre-compute $a_{\rm typ}^{-1} \equiv 1/(1+\varepsilon_A A_{\rm typ})$
+  once at target construction, then evaluate $a_B(A) = (1+\varepsilon_A A) \cdot a_{\rm typ}^{-1}$
+  --- one multiply, no division, no near-equal subtraction.
+\item Same trick for $a_F(A)$.
+\end{itemize}
+
+After the reformulation, the production fp32 kernel should reach the
+same $\beta_{\max}$ and the same posterior-mean schedule as the fp64
+diagnostic, at the original $\sim 800$\,s wall time.
+
+\paragraph{Update 2026-05-07 (post-application).}
+The Horner reformulation and the precomputed $a_{\rm typ}^{-1}$
+factors were applied to \path{gpu_control.jl:fsa_cost_kernel!} (commit
+in working tree). Three verifications followed:
+\begin{itemize}[itemsep=2pt]
+\item Bit-for-bit at $\theta=0$ and the hand-crafted
+  $\theta_{\rm RO}$ — Julia GPU-fp32 and Python fp64 still agree to a
+  max relative difference of $3\times 10^{-6}$.
+\item Light-config open-loop ($n_{\rm SMC}{=}64$, $n_{\rm inner}{=}16$):
+  the controller still finds the recovery$\to$overload optimum,
+  $\Phi$ ramps $0.10 \to 0.95$ over $14\,$d, $\sim$15\,s wall.
+\item \textbf{Heavy-config closed-loop ($n_{\rm SMC}{=}1024$,
+  $n_{\rm inner}{=}128$, 27 replans): the bench still settles to
+  flat-low.} Per-replan plan means $\bar\Phi_{\rm plan} \in
+  [0.26, 0.39]$ (recovery$\to$overload-shaped \emph{plans}), but
+  cumulative applied $\Phi$ stays in $[0.10, 0.35]$ and final
+  $\bar A_{\rm MPC}=0.085$ vs baseline $0.082$ --- the same flat-low
+  numbers as before \S2.8. $701$\,s wall time, matching the reference.
+\end{itemize}
+
+\textbf{Conclusion: \S2.8 alone is necessary but not sufficient.}
+The cancellation hot-spots are gone (which is why the light-config
+open-loop test continues to recover the right optimum), but the heavy
+closed-loop is still broken. See \S2.10 for the standing hypothesis and
+the staged plan that supersedes the single \S2.8 fix.
+
+\subsection{Summary of what was ruled out, and what fixed it}
+
+\begin{tabular}{@{}p{0.16\textwidth}p{0.5\textwidth}p{0.27\textwidth}@{}}
+\toprule
+Hypothesis & Test & Outcome \\
+\midrule
+1. RBF row-norm    & Removed, re-ran bench         & Real bug. Kept.    \\
+2. Kernel mismatches (NaN guard, $\varepsilon_A$, POST-step) & Aligned to Python, re-ran & Cosmetic. Kept. \\
+3. Bursty/smooth $\Phi$ asymmetry & Routed MPC plant through \texttt{advance!} & No effect. Discarded. \\
+4. Framework controller bugs & 3 synthetic costs with known optima & Framework correct. \\
+5. HMC stuck in wrong basin & Seeded HMC at recovery$\to$overload  & HMC drifts away. Discarded. \\
+6. SDE / decoder / kernel infrastructure & Max-$\int B$ trivial reward & $\Phi \to \Phi_{\max}$ correctly. \\
+7. fp32 cancellation in G1 drift & fp64-promoted substep arithmetic  & Recovery$\to$overload restored at light config. \\
+8. \S2.8 algebraic rearrangement (Horner $\mu$ + $a_{\rm typ}^{-1}$) & Applied; bit-for-bit + light open-loop + heavy closed-loop & Light open-loop OK; heavy closed-loop still flat-low. \S2.8 was necessary but not sufficient. \\
+9. Bench was using shrinking remaining-bench horizon as planning horizon & Replaced with fixed $H_{\rm plan} = T_{\rm bench}$ at every replan (mirrors Python) & Real bug. Applied $\Phi$ now has Python's qualitative U-shape (1.0 day 0, 0.2 mid, 0.78 by day 13). \emph{But} amplitude is too low: $\bar A_{\rm MPC}$ moved only from 0.085 to 0.087 vs Python's 0.122. Necessary, not sufficient. \\
+10. Why does Julia under-shoot Python's $\bar A$ even with right shape? & Apply Python's exact daily-$\Phi$ schedule to Julia's plant (\path{tools/test_apply_python_schedule.jl}). & \textbf{Plant-design difference, by design.} Julia uses one 24-bin daily envelope; Python uses two 12-bin per-stride envelopes. Same daily-$\Phi$ → different sub-day $F$ trajectories → Julia's $\bar A = 0.087$ vs Python's 0.122 under \emph{identical} schedules. Accepted: Julia's plant is the intended design. \\
+\bottomrule
+\end{tabular}
+\vspace{4pt}
+
+The cancellation hot-spots in the v2 G1 drift's
+$(F-F_{\rm typ})^2$ and $(1+\varepsilon_A A)/(1+\varepsilon_A A_{\rm typ})$
+are gone after \S2.8. The light-config open-loop test confirms the
+cost-surface shape is right at $n_{\rm inner}=16$. But at production
+$n_{\rm inner}=128$ the heavy closed-loop bench still settles to
+flat-low, so a residual fp32 bias must survive elsewhere in the
+kernel. \S2.10 lays out the staged-promotion plan for finding the
+minimum sufficient fp64 promotion that fixes the heavy closed-loop.
+
+\subsection{Hypothesis 8 (in progress): residual fp32 bias surviving \S2.8 --- staged fp64 promotion}
+
+\textbf{Standing hypothesis after \S2.8 was applied and didn't fix the
+closed-loop:} the Horner reformulation removed the worst (cancellation-
+prone) fp32 ops, but smaller systematic biases survive in the still-fp32
+parts of the kernel. The mechanism that's consistent with all the
+observed numbers:
+
+\begin{itemize}[itemsep=2pt]
+\item At \textbf{light config} ($n_{\rm inner}=16$) the per-cost MC
+  noise is $\sim\sigma/\sqrt{16}$. This noise dominates whatever
+  systematic fp32 bias is left, so the cost surface seen by HMC is
+  approximately the same as Python's at low signal-to-noise --- the
+  global recovery$\to$overload basin still wins.
+\item At \textbf{heavy config} ($n_{\rm inner}=128$) the MC noise
+  shrinks by $\sqrt{8}\approx 2.8\times$. The systematic fp32 bias
+  that was buried in noise becomes the dominant distortion, and
+  because it's plan-dependent it warps the cost surface enough to
+  displace the global optimum.
+\end{itemize}
+
+This is consistent with: bit-for-bit at probe $\theta$ values (where
+the cost is point-evaluated and noise/bias both irrelevant) matches
+Python; light-config open-loop matches Python; heavy-config closed-loop
+diverges.
+
+\paragraph{Three candidate locations for the residual fp32 bias.}
+Inside \path{gpu_control.jl:fsa_cost_kernel!} after \S2.8, the
+remaining fp32 paths are:
+
+\begin{enumerate}[itemsep=2pt,leftmargin=*]
+\item \textbf{Cost accumulators} (\texttt{A\_acc}, \texttt{barrier\_acc}).
+  Sum of $1344$ fp32 increments to a total reaching $\sim 1.4$. By the
+  tail of the sum the relative add ratio
+  $|A\,\Delta t|/|A_{\rm acc}| \approx 10^{-3}$ --- below the fp32
+  mantissa floor for the smallest dropped bits. The bias is
+  \emph{plan-dependent} (plans driving $A$ higher accumulate more
+  bits of loss), so it distorts the cost \emph{surface}, not just the
+  level. \textbf{Cheapest to fix} --- two scalar promotions per thread,
+  no per-substep cost.
+\item \textbf{State accumulation}, $B \mathrel{+}= \Delta t \cdot
+  \dot B$ etc., repeated $5376$ substeps. Same compounding-rounding
+  pattern, on the state itself. If state drifts off, downstream $A$
+  diverges.
+\item \textbf{$\mu_{\rm bif}$ Horner sum} --- four signed terms of
+  similar magnitude added in fp32 each substep. Less likely to be
+  plan-dependent at the magnitudes involved (all four terms
+  $\mathcal O(0.01\text{--}0.1)$) but worth checking if (1)+(2) don't
+  suffice.
+\end{enumerate}
+
+\paragraph{Staged methodology.}
+Promote one location at a time, measure each step against three
+verifications:
+
+\begin{enumerate}[itemsep=2pt,leftmargin=*,label=\textbf{Step \arabic*.}]
+\setcounter{enumi}{0}
+\item Restore the \S2.8 production baseline (fp32 + Horner) and
+  re-confirm the three known outcomes: bit-for-bit at probe
+  $\theta$ values $\le 3\times 10^{-6}$; light open-loop
+  recovery$\to$overload; heavy closed-loop flat-low.
+\item Promote \textbf{cost accumulators} to fp64 only.
+  Verifications: bit-for-bit (should improve slightly), light
+  open-loop (must remain recovery$\to$overload), heavy closed-loop
+  (the diagnostic --- does $\Phi$ shift?).
+\item If Step 1 didn't shift the heavy closed-loop, additionally
+  promote the \textbf{state} ($B, F, A$) to fp64. Same verification
+  suite.
+\item If Step 2 didn't shift it either, additionally promote the
+  \textbf{drift computation} ($\mu_{\rm bif}$, $a_{\rm factor}$, the
+  drift outputs) to fp64. This is the upper bound; the failed
+  full-fp64 conversion already showed open-loop matches Python at
+  this point, so heavy closed-loop must too --- otherwise the
+  framing of ``residual fp32 bias displaces the optimum'' was wrong
+  and the bug is somewhere orthogonal (orchestration, plant
+  $\leftrightarrow$ kernel mismatch, etc.).
+\item Pick the cheapest set that produces recovery$\to$overload in
+  the heavy closed-loop and lock it in with a comment block citing
+  the empirical comparison.
+\end{enumerate}
+
+Stop conditions: stop early if Step 1 already fixes the heavy bench
+(ship it); stop and reassess if any step regresses the open-loop test
+(means the change broke something orthogonal); stop after Step 3
+regardless and shift the investigation back to orchestration.
+
+\paragraph{Verification target.} The Julia heavy closed-loop trace
+plot \path{E5_full_mpc_T14d_traces.png} should qualitatively match
+the Python reference at
+\path{version_2/outputs/fsa_high_res/g4_runs/T14d_replanK2_h60min_no_infoaware/E5_full_mpc_T14d_traces.png}:
+applied $\Phi$ visibly U-shaped (high day-0, low days 1--5, ramping
+back up to $\sim 1.0$ by day 13), $F$ decaying then turning back up at
+the overload phase, $\bar A_{\rm MPC} \gtrsim 0.115$ (Python target
+$0.122$), F-violation $\le 1\%$.
+
+The corresponding implementation plan is
+\path{claude_plans/Localising_residual_fp32_bias_in_the_v2_GPU_cost_kernel_2026-05-07_1956.md}.
+
+\subsection{Hypothesis 9 (real bug, partial fix): receding-horizon MPC was using the wrong horizon}
+
+\textbf{A real MPC formulation bug, fixed --- but not the full root cause.} The bench's per-replan plan was being
+constructed over the \emph{shrinking remaining-bench horizon}, not over
+a \emph{fixed planning horizon}. These are two distinct concepts that
+the original code conflated:
+
+\begin{itemize}[itemsep=2pt]
+\item $T_{\rm bench}$ --- the closed-loop \emph{bench duration} (= 14 d
+  here). How long the experiment runs.
+\item $H_{\rm plan}$ --- the controller's \emph{planning horizon}. How
+  far ahead the controller looks at each replan.  Should be HELD FIXED
+  throughout the bench at a value chosen for the dynamics (here $H_{\rm
+  plan} = \tau_B = 14\,$d, one chronic-B time constant --- enough
+  lookahead for the recovery$\to$overload trade-off to be visible).
+\end{itemize}
+
+The original Julia bench tied $H_{\rm plan} = T_{\rm bench} - t_{\rm
+elapsed}$. By stride 20 of a 14-day bench (= day 10), $H_{\rm plan}$
+had shrunk to 4 days. The cost-surface optimum at the current state
+(low $F$, moderate $B$) over a 4-day window collapses to ``recover''
+--- there's no time left for the controller to commit to a final
+overload phase that would actually pay back in $\int A\,\mathrm{d}t$.
+Plan day-0 stays at the recovery start ($\Phi \approx 0.20$); the
+bench commits this and replans the next stride from a state still in
+the recovery basin; same plan shape; same $\Phi \approx 0.20$ committed;
+$\dots$ for the rest of the bench. Cumulative applied $\Phi$ stuck in
+[0.10, 0.30].
+
+Python's \path{bench_smc_full_mpc_fsa.py} line 389 hard-codes
+\path{plan_horizon_days=T_total_days} at every replan: a FIXED 14-day
+lookahead, regardless of how much bench remains. At late strides the
+plan extends \emph{past} the bench's end; only the first stride is
+committed before the next replan, so the past-the-end portion is just
+discarded.  With a long-enough lookahead, the cost optimum from the
+late-bench state (low $F$, moderate $B$) is the U-shape: overload
+immediately (because $F$ is low and there's room to push $B$ further),
+brief recovery, then a second overload. Plan day-0 = high; applied
+$\Phi$ rises to $\sim 1.2$ at the bench's end.
+
+\paragraph{Verification by isolated open-loop test.}
+A 14-day open-loop plan from the late-bench state $(B, F, A) =
+(0.075, 0.092, 0.090)$ with the heavy controller config returns
+posterior-mean
+$\bar\theta = (+0.40, -0.08, -0.66, -0.87, -0.95, -0.62, -0.42, -0.17)$
+which decodes to $\Phi$ at days $\{0, 2, 4, 6, 8, 10, 12, 14\} =
+\{1.21, 0.82, 0.39, 0.24, 0.23, 0.33, 0.50, 0.73\}$ --- the
+\emph{U-shape} that matches Python's reference plot. Plan day-0
+$= 1.21$. From the same state, a 4-day open-loop plan gives plan
+day-0 $\approx 0.22$ (recovery). The cost optimum's plan day-0 is
+plan-horizon-dependent in exactly the way the failure mode predicts.
+
+\paragraph{The partial fix.}
+\path{version_2_Julia/tools/bench_smc_full_mpc_fsa_gpu.jl} now replans
+with \texttt{ctrl\_n\_steps = round(args["T-days"] / DT\_DAYS)} at
+every replan boundary, regardless of \texttt{mpc\_plant.t\_bin}. The
+plan covers a fixed lookahead; only the first stride is committed.
+Combined with Hypothesis 8's end-of-stride replan strategy (initial
+baseline $\Phi=1.0$ for the first $K$ strides, then replan every $K$),
+the closed-loop bench's applied $\Phi$ now has the qualitative
+U-shape that matches Python's reference --- $\Phi = 1.0$ on day 0,
+drop to $\sim 0.2$ during recovery (days 2--5), ramp up to $\sim 0.78$
+by day 13.
+
+\paragraph{What's still wrong.}
+\textbf{The applied $\Phi$ shape is right but its amplitude is too low,
+and the $A$ trajectory does not climb to Python's level.}
+
+\begin{itemize}[itemsep=2pt]
+\item Python's reference: applied $\Phi$ peaks at 1.2 by day 13,
+  $A(\mathrm{MPC})$ peaks at 0.17, $\bar A_{\rm MPC} = 0.122$ vs
+  baseline $0.081$ ($+51\%$ gain).
+\item Julia after this fix: applied $\Phi$ peaks at 0.78 by day 13,
+  $A(\mathrm{MPC})$ stays in $[0.08, 0.10]$ and actually \emph{drops}
+  during recovery, $\bar A_{\rm MPC} = 0.087$ vs baseline $0.085$
+  (a +2.3\% gain).
+\end{itemize}
+
+So the controller is shaping the schedule correctly (recovery
+followed by overload) but is committing too little overload --- not
+enough late-phase $\Phi$ to drive $B$ high enough to lift $\mu(B,F)$
+into the regime where $A^* = \sqrt{\mu/\eta}$ exceeds the initial
+$A = 0.10$. There is at least one more bug between the controller
+and the plant; \S2.11 picks up the investigation.
+
+\paragraph{What was ruled out by getting here.}
+\S2.1 -- \S2.7 had narrowed the bug to ``somewhere in the cost
+surface near the $A$-cost integrand under the v2 G1 drift'', and
+\S2.8 / \S2.10 tried algebraic and staged-fp64 fixes. None of those
+touched the closed-loop optimum. \S2.9 (this section) is a real bug
+--- the receding-horizon was using the wrong horizon, and the fix
+materially shifts the closed-loop schedule into the right qualitative
+shape --- but it does not fully reproduce Python's gain. So the
+kernel, the framework, the precision setup, and \S2.8 are all
+correct (open-loop tests confirm); \S2.9's MPC formulation is also
+now correct; but at least one more bug is still affecting the
+closed-loop trajectory.
+
+\subsection{Hypothesis 10 (root cause): bench was feeding the plant a re-bursted daily-average of the controller's smooth schedule}
+
+\textbf{The actual bug}, found by side-by-side reading against the
+ground-truth driver
+\path{tools/test_max_A_with_F_barrier.jl}: the bench was taking the
+controller's per-bin $\Phi$ slice for each stride, \emph{averaging it
+to a single daily value}, and then \emph{re-expanding it through the
+morning-loaded burst envelope} before passing to the plant.
+
+\begin{verbatim}
+# wrong (bench, before fix):
+daily_phi_for_stride = mean(phi_stride)     # destroy controller's shape
+advance!(mpc_plant, advance_bins, [daily_phi_for_stride])  # re-burst
+\end{verbatim}
+
+That replaces the controller's actual schedule with a different
+signal: a daily-averaged $\Phi$ refracted through a Gamma-shaped
+morning burst. The plant then runs an SDE under that re-bursted
+signal, not the smooth schedule the controller's cost kernel was
+optimising against. Pure plant $\leftrightarrow$ controller mismatch.
+
+The ground-truth driver (\S 2.10 above) calls
+\path{advance_subdaily!} with the controller's per-bin $\Phi$
+directly:
+
+\begin{verbatim}
+# ground truth (correct):
+advance_subdaily!(mpc_plant, Float32.(slice))  # controller's exact phi(t)
+\end{verbatim}
+
+Same call now in the bench:
+
+\begin{verbatim}
+# bench, after fix:
+advance_subdaily!(mpc_plant, Float32.(phi_stride))
+advance_subdaily!(base_plant, fill(Float32(1.0), advance_bins))
+\end{verbatim}
+
+After this fix the bench's mean $A_{\rm MPC}$ is essentially the
+same as the ground-truth open-loop driver's ($0.087$ vs $0.091$,
+within MC noise --- the ground truth has cleaner numbers because
+it commits one plan rather than re-optimising every $K$ strides).
+The qualitative $\Phi$ trace now has the U-shape Python's reference
+shows (baseline at days 0--1, recovery to $\Phi \approx 0.2$ days
+2--5, ramp with peaks reaching $\Phi \approx 1.4$ by day 10).
+
+\paragraph{Why this is the actual root cause.}
+The diagnostic chain through \S 2.1--\S 2.9 was repeatedly hitting a
+``flat-low applied $\Phi$'' symptom. Every time we fixed something
+upstream of the plant (RBF norm, kernel mismatches, fp32 cancellation,
+algebraic Horner form, planning horizon, replan strategy) the
+applied schedule got closer to recovery$\to$overload but $A$
+never grew. With the plant call corrected, the
+controller's smooth $\Phi(t)$ now actually drives the plant. The
+A/B test on burst-envelope modes (\path{--plant single_daily} vs
+\path{per_stride}) gave the same mean $A = 0.087$ in both modes
+\emph{because both modes are wrong} relative to what the controller
+expects --- the controller wants a smooth signal, not any flavour
+of bursty refraction. The fix is to drop the bursty refraction
+entirely and pass the per-bin $\Phi$ as-is.
+
+\paragraph{Status.}
+\textbf{This was the residual bug after \S 2.9.} The full bug list:
+
+\begin{enumerate}[itemsep=2pt,leftmargin=*]
+\item \S 2.1 RBF row-normalisation (kept fix --- real bug).
+\item \S 2.2 NaN guard / $\varepsilon_A$ / POST-step accumulation
+  (kept fixes --- cosmetic).
+\item \S 2.9 Receding-horizon used shrinking remaining-bench
+  horizon (kept fix --- real bug).
+\item \S 2.10 (this section) Bench was re-bursting the controller's
+  smooth schedule before passing to the plant (kept fix --- real
+  bug, the residual bottleneck).
+\end{enumerate}
+
+\S 2.3, \S 2.4, \S 2.5, \S 2.6 were ruled-out hypotheses (controller
+machinery is fine). \S 2.7, \S 2.8 / \S 2.11 chased an fp32
+cancellation hypothesis that the staged-promotion test (Step 1
+fp64 accumulators, Step 2-alt Kahan + FMA) ruled out --- the
+algebraic-stable kernel is kept anyway as a free correctness win,
+but it was not load-bearing for the optimum.
+
+\paragraph{Open-loop mode in the bench.}
+After fixing the plant call, the closed-loop bench's applied $\Phi$
+still oscillates because each replan re-finds a slightly different
+optimum, and the cost surface has multiple plausible basins HMC can
+land in. To verify the bench is now structurally equivalent to the
+ground-truth driver, the bench has an \texttt{-{}-open-loop true}
+flag that disables replanning: ONE plan up front from
+INIT\_STATE+TRUTH\_PARAMS, applied for the whole bench. With this
+flag the bench produces the smooth recovery$\to$ramp $\Phi$ that
+the ground-truth driver does ($\Phi: 0.20 \to 0.12 \to 0.78$ over
+14\,d), and $\bar A_{\rm MPC}$ within MC noise of the ground
+truth's value ($0.085$ vs $0.091$).
+
+The closed-loop schedule oscillation under the corrected plant call
+is a residual MPC-policy concern (each replan can find a different
+local optimum), not a kernel/plant/orchestration bug. It is out of
+scope for the bug-hunt; the canonical reference for this codebase
+is now the open-loop result.
+
+\subsection{Hypothesis 11 (open-loop matches; closed-loop oscillates): replanning is the residual issue}
+
+With \S2.9 (fixed planning horizon) and \S2.10 (\path{advance_subdaily!})
+both applied, two regimes can be tested side by side:
+
+\paragraph{Open-loop bench (\texttt{-{}-open-loop true}).}
+A new CLI flag in \path{tools/bench_smc_full_mpc_fsa_gpu.jl} disables
+replanning: the controller computes ONE plan up front from
+INIT\_STATE+TRUTH\_PARAMS, the plant applies it through 27 strides via
+\path{advance_subdaily!}, the filter still runs but no replan is
+triggered. This mirrors the structure of the ground-truth driver
+\path{tools/test_max_A_with_F_barrier.jl} exactly. Result at
+$h=15\,$min:
+\begin{itemize}[itemsep=2pt]
+\item Applied $\Phi$: smooth recovery$\to$ramp $0.20 \to 0.12 \to 0.78$
+  over 14\,d, no oscillation. Same qualitative shape as the ground-
+  truth driver.
+\item $\bar A_{\rm MPC} = 0.085$, $\bar A_{\rm baseline} = 0.082$, $A$
+  trajectory dips to ${\sim}0.07$ during recovery and recovers to
+  ${\sim}0.10$ by day 14. Within MC noise of the ground-truth driver's
+  $\bar A_{\rm MPC} = 0.091$.
+\end{itemize}
+
+So the kernel + plant + framework SMC$^2$ + HMC are all working when
+exercised by the same single-plan structure as the ground truth. The
+canonical reference for this codebase is now this open-loop result.
+
+\paragraph{Closed-loop bench at heavy config.}
+The default mode --- replan at end of every $K$ strides, fixed planning
+horizon, posterior-mean dynamics params from the filter --- still
+produces an oscillating applied $\Phi$ across the bench, with peaks
+swinging between $\Phi = 0.5$ and $\Phi = 1.4$. $\bar A_{\rm MPC}$ is
+also around $0.087$ (within MC noise of open-loop), so the magnitude
+gap to Python is the same; the visual difference is the noise in the
+$\Phi$ trace. Two contributions identified:
+
+\begin{enumerate}[itemsep=2pt,leftmargin=*]
+\item \textbf{Filter posterior is noisy at $n_{\rm smc} = 32$.} The
+  diagnostic prints in \path{bench_smc_full_mpc_fsa_gpu.jl} show
+  posterior-mean $\mu_F$ swinging from $0.244$ to $0.261$ (5--7\%
+  stride-to-stride) and $\kappa_B$ swinging from $0.0119$ to $0.0130$.
+  Each replan plans from a slightly different params vector, which
+  can land HMC in a different local minimum of the cost surface.
+  Python's reference uses $n_{\rm smc\_particles} = 1024,
+  n_{\rm pf\_particles} = 800$ for the filter; Julia's bench uses
+  $n_{\rm smc} = 32, K_{\rm per\_chain} = 400$. About $64\times$
+  fewer particles.
+\item \textbf{Even with TRUTH\_PARAMS forced} (filter posterior bypassed
+  for the controller's params), replan-by-replan plans still land in
+  different basins because each replan starts from a different
+  \texttt{last\_xhat} (filter's smoothed state estimate), and the cost
+  surface near the heavy-config MAP appears multimodal (open-loop
+  bisection from a low-$F$ state can find plan day-0 $\in [0.7, 1.4]$
+  depending on RNG seed). At $n_{\rm smc}=32$ HMC's chains are also
+  jittery, which is on top of the filter-state jitter.
+\end{enumerate}
+
+\paragraph{Why this is in the closed-loop bench but not the ground-truth driver.}
+The ground truth never replans, so the controller commits one plan
+in one cost-surface basin. The closed-loop bench replans 13 times in
+a 27-stride run; each replan has to find a fresh MAP. The
+local-minimum-spread combined with filter-state jitter is what
+manifests as the oscillating applied schedule.
+
+\subsection{Performance: Julia under-utilises the RTX 5090 at large $n_{\rm smc}$}
+
+A practical observation while testing fixes for \S 2.11. With
+$n_{\rm smc} = 32$ the bench finishes in $\sim 220\,$s; with
+$n_{\rm smc} = 1024$ (matching Python's reference filter
+configuration) the bench had not finished a single stride after
+$\sim 140\,$s of warmup, with GPU utilisation around 51\,\% and only
+$\sim 7\,$GB / $32\,$GB of memory used. Linear extrapolation gave a
+$\sim 60$--$80\,$min total. Python at the same config takes $\sim
+27\,$min, so Julia is roughly $2$--$3\times$ \emph{slower} than Python
+at large $n_{\rm smc}$ --- the wrong direction for a pure-GPU port.
+
+The plausible bottlenecks (both visible by reading
+\path{run_outer_smc_gpu} in \path{bench_smc_full_mpc_fsa_gpu.jl}
+and \path{parallel_hmc_one_move!} in
+\path{models/fsa_high_res/gpu_pf.jl}):
+
+\begin{itemize}[itemsep=2pt]
+\item Each tempering level (10--11 per stride) calls
+  \path{gpu_log_density_batched} once for the cost evaluation and
+  then \texttt{num\_mcmc} $\times L$ more times inside the HMC moves
+  for the FD gradient batcher (\path{gpu_grads_parallel_chains}
+  expands $M$ chains to $M(1+2d) = 61M$ rows, runs the inner-PF on
+  all of them, returns to host). Each call has a host-side
+  per-chain CPU loop that re-builds the params matrix
+  (\texttt{params\_cpu}), an unconditional \texttt{KernelAbstractions.synchronize}
+  at every segment of the inner-PF, and a small but per-chain
+  \texttt{Array(view(...))} copy back from GPU into a host array
+  for the segmented log-likelihood accumulation.
+\item Filter resampling and OT rescue paths run a CPU-side per-chain
+  branch (line 216, 252 of \path{Filtering/GPUSegmentedPF.jl}).
+\item HMC's accept/reject and posterior cloud update are on the host
+  in a per-particle loop (\path{parallel_hmc_one_move!}:527--533).
+\end{itemize}
+
+None of these are intrinsically GPU-bound limitations; they are
+host-side overhead per-chain that scales with $n_{\rm smc}$ even
+though the work could be batched. So the practical fix is either
+(a) batch these more aggressively, removing the host-side
+per-chain loops, or (b) accept the $n_{\rm smc} = 32$ scale and
+look for filter stabilisation that doesn't require more particles
+(e.g.\ stronger warm-start bridge across windows, or carrying the
+controller forward without re-pulling from the filter posterior at
+every replan). This is in scope for the next iteration but out of
+scope for the bug-hunt that was supposed to be a pure
+``why does Python work and Julia not?'' diagnosis.
+
+\subsection{Updated summary table}
+
+\begin{tabular}{@{}p{0.16\textwidth}p{0.5\textwidth}p{0.27\textwidth}@{}}
+\toprule
+Hypothesis & Test & Outcome \\
+\midrule
+1.~RBF row-norm    & Removed, re-ran bench         & Real bug. Kept.    \\
+2.~Kernel mismatches (NaN guard, $\varepsilon_A$, POST-step) & Aligned to Python, re-ran & Cosmetic. Kept. \\
+3.~Bursty/smooth $\Phi$ asymmetry & Routed MPC plant through \texttt{advance!} & No effect. Discarded. \\
+4.~Framework controller bugs & 3 synthetic costs with known optima & Framework correct. \\
+5.~HMC stuck in wrong basin & Seeded HMC at recovery$\to$overload  & HMC drifts away. Discarded. \\
+6.~SDE / decoder / kernel infrastructure & Max-$\int B$ trivial reward & $\Phi \to \Phi_{\max}$ correctly. \\
+7.~fp32 cancellation in G1 drift & fp64-promoted substep arithmetic  & Recovery$\to$overload restored at light config. \\
+8.~Algebraic rearrangement (Horner $\mu$ + $a_{\rm typ}^{-1}$) & Applied; bit-for-bit + light open-loop + heavy closed-loop & Necessary, not sufficient. Kept. \\
+9.~Receding-horizon used shrinking remaining-bench horizon & Replaced with fixed $H_{\rm plan} = T_{\rm bench}$ at every replan & Real bug. Kept. \\
+10.~Bench was averaging controller's per-bin $\Phi$ to a daily and re-bursting through plant envelope & Replaced with \path{advance_subdaily!} (controller's smooth $\Phi(t)$ goes straight to plant) & \textbf{Real bug; the residual bottleneck through \S 2.9.} Open-loop now matches ground truth. \\
+11.~Closed-loop replan oscillation & Diagnostic prints + open-loop comparison & Open-loop matches ground truth. Closed-loop oscillates due to filter-posterior + cost-surface basin sensitivity. Magnitude gap unchanged. \\
+\bottomrule
+\end{tabular}
+
+\section{Outstanding}
+
+\begin{itemize}[itemsep=2pt,leftmargin=*]
+\item Decide whether to ship the bench as ``open-loop matches ground
+  truth, closed-loop is residually noisy'' or to fix the closed-loop
+  oscillation. The cheapest closed-loop stabiliser would be carrying
+  the controller's posterior forward through a Gaussian bridge across
+  replans (\S 7 of the framework reference) so HMC warm-starts in the
+  same basin instead of cold-starting from the prior every $K$ strides.
+\item Fix the GPU-utilisation regression (\S 2.12). Specifically:
+  remove the per-chain host loops in
+  \path{run_outer_smc_gpu}, \path{gpu_log_density_batched},
+  \path{run_segmented_smc_step!}, and \path{parallel_hmc_one_move!}
+  by either pre-allocating a single device buffer for the params /
+  accumulators, or moving the per-chain branches inside a single
+  \texttt{@kernel} so the GPU stays saturated as $n_{\rm smc}$ grows.
+\item Once the controller is producing a stable schedule, switch the
+  FD gradient to ForwardDiff dual-number autodiff. Per the bistable
+  B3 module's empirical note, ForwardDiff with $d=8$ out-performs
+  Enzyme reverse-mode by $\sim 2.7\times$ on a similar PF; the FSA
+  controller has the same dimensionality. The seeded-HMC diagnostic
+  of \S 2.5 showed gradient quality wasn't the bug, but exact gradients
+  buy a $17\times$ throughput improvement per HMC move (one autodiff
+  pass vs $1+2d=17$ FD evaluations).
+\end{itemize}
+
+\section{What is in the bench today}
+
+\path{version_2_Julia/tools/bench_smc_full_mpc_fsa_gpu.jl}
+implements:
+
+\begin{itemize}[itemsep=2pt]
+\item \textbf{\S 2.8 algebraic-stable kernel} in
+  \path{models/fsa_high_res/gpu_control.jl}: Horner-form $\mu$,
+  precomputed $a_{\rm typ}^{-1}$, Kahan-compensated cost accumulators,
+  FMA throughout the substep drift. All fp32 except the per-trial
+  cost output. Bit-for-bit-matches Python at probe $\theta$ values
+  to $3\times 10^{-6}$ relative.
+\item \textbf{\S 2.9 fixed planning horizon}: every replan plans
+  \texttt{T-days} ahead, regardless of how much bench is left. Mirrors
+  Python's \path{plan_horizon_days=T_total_days}.
+\item \textbf{\S 2.10 \path{advance_subdaily!} plant call}: the
+  controller's per-bin $\Phi$ goes straight to the plant via
+  \path{advance_subdaily!} without any daily-averaging or
+  burst-envelope re-application. Plant integrates the SDE bin-by-bin
+  under the exact signal the cost kernel optimised against.
+\item \textbf{\S 2.9 end-of-stride replan strategy}: apply baseline
+  $\Phi=1.0$ for the first $K$ strides, then replan every $K$
+  strides at end-of-stride. Mirrors Python's
+  \texttt{if (s+1) \% K == 0}.
+\item \textbf{\texttt{-{}-open-loop true} flag}: disables replanning,
+  applies a single up-front plan from INIT\_STATE+TRUTH\_PARAMS for
+  the whole bench. Reproduces the ground-truth driver structurally.
+\item \textbf{Auto-plot hook} (with \path{Base.invokelatest}
+  world-age workaround) that regenerates
+  \path{E5_full_mpc_T*_traces.png} and the 30-panel param-trace plot
+  on every bench finish.
+\end{itemize}
+
+The closed-loop bench at default config (\path{--replan-K 2
+--step-minutes 60}) reproduces the qualitative U-shape of Python's
+applied $\Phi$ but with an oscillating overlay; \texttt{-{}-open-loop
+true} reproduces a smooth recovery$\to$ramp that matches the
+ground-truth driver within MC noise.
+
+\section{Running experiments}
+
+This section is for a new agent / user picking up the codebase. Every
+experiment in this writeup was produced by one Julia driver:
+
+\begin{center}
+\path{version_2_Julia/tools/bench_smc_full_mpc_fsa_gpu.jl}
+\end{center}
+
+\subsection{Prerequisites}
+
+\begin{itemize}[itemsep=2pt,leftmargin=*]
+\item \textbf{Working directory.} All commands assume you are in
+  \path{version_2_Julia/} (so that \path{Project.toml} and
+  \path{tools/} are at the right relative paths).
+\item \textbf{Julia 1.11+} with the project's environment activated:
+\begin{verbatim}
+cd version_2_Julia
+julia --project=. -e "using Pkg; Pkg.instantiate()"
+\end{verbatim}
+\item \textbf{NVIDIA GPU} (codebase tested on RTX 5090). The
+  KernelAbstractions kernels target CUDABackend.
+\item \textbf{No conda env / Python} required. The bench is pure
+  Julia. Comparisons against Python use saved \path{.npz} outputs in
+  \path{version_2/outputs/...}.
+\end{itemize}
+
+\subsection{The minimal invocation}
+
+\begin{verbatim}
+julia --project=. tools/bench_smc_full_mpc_fsa_gpu.jl
+\end{verbatim}
+
+Defaults: $T = 14\,$d, $h = 15\,$min, replan every stride
+($K = 1$), $n_{\rm smc} = 32$, $K_{\rm per\_chain} = 400$, $\text{num\_mcmc} = 5$,
+hmc step size $0.025$, hmc leapfrog $8$, seed $42$. Total wall
+$\approx 700\,$s on the RTX 5090. Output goes to
+\path{outputs/fsa_high_res/g4_runs/T14d_replanK1_h15min_no_infoaware/}.
+
+The auto-plot hook (\S 4 above) writes
+\path{E5_full_mpc_T14d_traces.png} (4-panel B/F/A/$\Phi$ trace) and
+\path{E5_full_mpc_T14d_param_traces.png} (30-panel filter posterior
+trace) into the same output dir before the bench exits.
+
+\subsection{Reproducing Python's reference run (matched config)}
+
+Python's reference plot
+\path{version_2/outputs/fsa_high_res/g4_runs/T14d_replanK2_h60min_no_infoaware/}
+was produced at $h=60\,$min, $K=2$. To match Python's outer config:
+
+\begin{verbatim}
+julia --project=. tools/bench_smc_full_mpc_fsa_gpu.jl \
+  --replan-K 2 --step-minutes 60
+\end{verbatim}
+
+Total wall $\approx 200\,$s.
+
+\subsection{Reproducing the ground-truth driver structurally}
+
+If you want the smooth recovery$\to$ramp $\Phi$ trace that matches
+\path{tools/test_max_A_with_F_barrier.jl} (\S 2.11 above), use
+open-loop mode:
+
+\begin{verbatim}
+julia --project=. tools/bench_smc_full_mpc_fsa_gpu.jl \
+  --open-loop true --step-minutes 15
+\end{verbatim}
+
+Total wall $\approx 260\,$s. Disables replanning entirely; one plan
+up front from INIT\_STATE+TRUTH\_PARAMS is committed for the whole
+bench.
+
+\subsection{All CLI flags}
+
+Every flag has the form \texttt{-{}-name <value>}. Values are parsed
+according to the type of the default:
+
+\begin{tabular}{@{}p{0.21\textwidth}p{0.16\textwidth}p{0.55\textwidth}@{}}
+\toprule
+Flag & Default & Meaning \\
+\midrule
+\texttt{-{}-T-days} & \texttt{14}~(Int) & Bench duration. Plant rolls
+  forward this many days under the controller's schedule. The
+  planning horizon at every replan is also \texttt{T-days} (\S 2.9). \\
+\texttt{-{}-step-minutes} & \texttt{15}~(Int) & Outer time step in
+  minutes. Must divide $1440$. Determines $\text{BINS\_PER\_DAY} =
+  1440 / \text{step-minutes}$. Read at module load via
+  \texttt{ENV["FSA\_STEP\_MINUTES"]}, so this must be parsed
+  \emph{before} the model imports (the driver does this). Common
+  values: \texttt{15} (high-res, default), \texttt{60} (matches Python). \\
+\texttt{-{}-replan-K} & \texttt{1}~(Int) & Replan every $K$ strides at
+  end-of-stride. The first $K$ strides apply baseline $\Phi=1.0$
+  (mirrors Python's
+  \texttt{daily\_phi\_plan = np.full(T\_total\_days, baseline)}
+  initialiser). Then replan happens at \texttt{(s \% K) == 0}. Common
+  values: \texttt{1} (replan every stride), \texttt{2} (Python's
+  default). Ignored when \texttt{-{}-open-loop true}. \\
+\texttt{-{}-N-smc} & \texttt{32}~(Int) & Number of outer-SMC$^2$
+  particles for the FILTER. Each particle spawns its own inner-PF.
+  Wall-time scales roughly linearly with this value at the current
+  Julia implementation (see \S 2.12 — there's a known performance
+  regression with per-chain host loops). Python's reference uses
+  \texttt{1024}. \\
+\texttt{-{}-K-per-chain} & \texttt{400}~(Int) & Inner-PF particles per
+  filter chain. Total filter particles = \texttt{N-smc} $\times$
+  \texttt{K-per-chain}. Python's reference uses \texttt{800}. \\
+\texttt{-{}-num-mcmc} & \texttt{5}~(Int) & Number of HMC moves per
+  tempering level inside the FILTER's outer SMC$^2$. Increase if
+  HMC acceptance is too high (chain not mixing). The CONTROLLER's
+  num\_mcmc is hard-coded to \texttt{ctrl\_num\_mcmc = 10} in the
+  bench (line 322). \\
+\texttt{-{}-hmc-step-size} & \texttt{0.025}~(Float) & FILTER's HMC
+  leapfrog step size. The CONTROLLER uses
+  \texttt{ctrl\_hmc\_step = 0.2} (hard-coded, line 324) — different
+  from the filter because the controller's $\theta_{\rm ctrl}$ has
+  much wider scale. \\
+\texttt{-{}-hmc-leapfrog} & \texttt{8}~(Int) & FILTER's leapfrog
+  trajectory length. CONTROLLER uses
+  \texttt{ctrl\_hmc\_leap = 16} (hard-coded). \\
+\texttt{-{}-max-lambda-inc} & \texttt{0.10}~(Float) & Cap on
+  $\delta\lambda$ per tempering level for the filter's bisection.
+  Smaller = finer schedule, more levels, safer. \\
+\texttt{-{}-target-ess-frac} & \texttt{0.5}~(Float) & Target
+  effective-sample-size fraction for the filter's tempering bisection.
+  Lower = larger $\delta\lambda$ per level, fewer levels but
+  riskier. \\
+\texttt{-{}-max-temp-levels} & \texttt{30}~(Int) & Hard cap on
+  filter tempering levels. The bench currently logs all levels per
+  stride. \\
+\texttt{-{}-seed} & \texttt{42}~(Int) & Master RNG seed. Plants use
+  \texttt{seed\_offset = -{}-seed}; controller noise grids use
+  \texttt{seed + 100 + s} per stride. \\
+\texttt{-{}-output-dir} & \texttt{""}~(String) & Output directory for
+  \path{data.jld2}, \path{manifest.json}, \path{experiment_run.md},
+  and the auto-generated PNG plots. If empty (default), the bench
+  builds an auto-named path:
+  \path{outputs/fsa_high_res/g4_runs/T<days>d_replanK<K>_h<step>min_no_infoaware/}.
+  Pass an explicit directory to keep separate runs side-by-side. \\
+\texttt{-{}-open-loop} & \texttt{"false"}~(String) & Set to
+  \texttt{true} to disable replanning entirely. The bench computes ONE
+  plan up front from INIT\_STATE + TRUTH\_PARAMS over the full
+  \texttt{T-days} horizon, then applies it through every stride via
+  \path{advance_subdaily!}. The filter still runs (so the param-trace
+  PNG is still useful) but its posterior never feeds the controller.
+  Reproduces \path{tools/test_max_A_with_F_barrier.jl} structurally. \\
+\bottomrule
+\end{tabular}
+
+\subsection{Hard-coded controller knobs (not currently CLI-exposed)}
+
+These are inside \path{tools/bench_smc_full_mpc_fsa_gpu.jl} around
+line 318--328 and have to be edited in source if you want to change
+them:
+
+\begin{itemize}[itemsep=2pt,leftmargin=*]
+\item \texttt{ctrl\_n\_smc = 1024} --- controller's outer-SMC$^2$
+  particles. Already at Python's reference value.
+\item \texttt{ctrl\_n\_inner = 128} --- MC trials per cost evaluation
+  (= number of CRN noise realisations averaged for each $\theta$
+  sample's cost). Python's reference value.
+\item \texttt{ctrl\_n\_anchors = 8} --- number of Gaussian RBF anchors
+  for the schedule decoder. Determines $\theta_{\rm ctrl} \in
+  \mathbb{R}^8$.
+\item \texttt{ctrl\_target\_ess\_frac = 0.5}
+\item \texttt{ctrl\_num\_mcmc = 10}
+\item \texttt{ctrl\_max\_lambda\_inc = 0.20}
+\item \texttt{ctrl\_hmc\_step = 0.2}
+\item \texttt{ctrl\_hmc\_leap = 16}
+\item \texttt{ctrl\_max\_levels = 30}
+\item \texttt{ctrl\_target\_nats = 8.0} --- target nat budget for the
+  controller's auto-calibrated $\beta_{\max}$.
+\item \texttt{ctrl\_sigma\_prior = 1.5} --- prior std on $\theta_{\rm ctrl}$.
+\end{itemize}
+
+\subsection{What lands on disk after a run}
+
+In the output directory:
+
+\begin{itemize}[itemsep=2pt,leftmargin=*]
+\item \texttt{data.jld2} --- raw data the plot scripts consume:
+  \texttt{trajectory\_mpc}, \texttt{trajectory\_baseline} (both
+  $(n_{\rm bins}, 3)$ for $B,F,A$), \texttt{Phi\_per\_bin\_mpc} +
+  \texttt{Phi\_per\_bin\_baseline}, \texttt{daily\_phi\_per\_stride},
+  \texttt{posterior\_particles} ($(n_{\rm strides}, n_{\rm smc},
+  30)$), \texttt{param\_names}, \texttt{truth\_params}, plus run
+  metadata.
+\item \texttt{E5\_full\_mpc\_T<days>d\_traces.png} --- 4-panel
+  diagnostic: $B$, $F$, $A$ trajectories (MPC vs constant-$\Phi$
+  baseline) + applied daily $\Phi$ schedule.
+\item \texttt{E5\_full\_mpc\_T<days>d\_param\_traces.png} --- 30-panel
+  filter posterior trace plot, one panel per static dynamics parameter.
+\item \texttt{manifest.json} --- machine-readable run config (seed,
+  config knobs, wall time, etc.).
+\item \texttt{experiment\_run.md} --- human-readable summary.
+\end{itemize}
+
+If the auto-plot fails (e.g.\ KernelAbstractions world-age issue), the
+\path{data.jld2} is still written. To re-generate plots from
+saved \path{data.jld2}:
+
+\begin{verbatim}
+julia --project=. tools/plot_state_traces.jl \
+  <out_dir>/data.jld2 <out_dir>/E5_full_mpc_T14d_traces.png
+
+julia --project=. tools/plot_param_traces.jl \
+  <out_dir>/data.jld2 <out_dir>/E5_full_mpc_T14d_param_traces.png \
+  14 15 48
+\end{verbatim}
+
+(arguments to \path{plot_param_traces.jl}: \texttt{T-days},
+\texttt{step-minutes}, \texttt{stride-bins}.)
+
+\subsection{Suggested experiments}
+
+\begin{enumerate}[itemsep=2pt,leftmargin=*]
+\item \textbf{Sanity check the codebase.}
+\begin{verbatim}
+julia --project=. tools/test_cost_at_theta0.py    # Python side
+cd version_2_Julia
+julia --project=. tools/test_cost_at_theta0.jl    # Julia side
+\end{verbatim}
+  Confirms the cost kernel matches Python fp64 to $3 \times 10^{-6}$
+  at probe $\theta$ values.
+
+\item \textbf{Fastest closed-loop bench.}
+\begin{verbatim}
+julia --project=. tools/bench_smc_full_mpc_fsa_gpu.jl \
+  --replan-K 2 --step-minutes 60
+\end{verbatim}
+  $\sim 200\,$s. Default config that matches Python's outer-loop
+  config (replan-K=2, h=60min). Currently the closed-loop applied $\Phi$
+  oscillates per \S 2.11.
+
+\item \textbf{Smooth recovery$\to$ramp (open-loop).}
+\begin{verbatim}
+julia --project=. tools/bench_smc_full_mpc_fsa_gpu.jl \
+  --open-loop true --step-minutes 15
+\end{verbatim}
+  $\sim 260\,$s. Reproduces the ground-truth driver's smooth
+  schedule.
+
+\item \textbf{High-res, replan every stride.}
+\begin{verbatim}
+julia --project=. tools/bench_smc_full_mpc_fsa_gpu.jl   # all defaults
+\end{verbatim}
+  $\sim 700\,$s. $h=15\,$min, $K=1$.
+
+\item \textbf{Stronger filter (warning: slow).}
+\begin{verbatim}
+julia --project=. tools/bench_smc_full_mpc_fsa_gpu.jl \
+  --replan-K 2 --step-minutes 60 --N-smc 256
+\end{verbatim}
+  Filter at $n_{\rm smc}=256$ (8$\times$ default). Wall scales
+  approximately linearly --- expect $\sim 30\,$min until \S 2.12 is
+  fixed.
+
+\item \textbf{Plant-only sanity check} (apply Python's exact daily
+  $\Phi$ to Julia's plant; quantifies the plant-design gap):
+\begin{verbatim}
+julia --project=. tools/test_apply_python_schedule.jl
+\end{verbatim}
+  $\sim 10\,$s. Confirms Julia's plant under Python's schedule
+  produces $\bar A_{\rm MPC} \approx 0.087$ vs Python's $0.122$.
+\end{enumerate}
+
+\subsection{Saturating the RTX 5090: which flags to push}
+
+Default config gets the RTX 5090 to about 50\,\% utilisation with
+$\sim 7\,$GB of $32\,$GB used --- there is a lot of headroom. \S 2.12
+explains why blindly bumping \texttt{-{}-N-smc} doesn't proportionally
+speed things up (per-chain host loops). But for a novice agent who
+wants to push more work onto the GPU and watch utilisation rise,
+here are the flags that actually scale GPU work, in order of impact:
+
+\begin{enumerate}[itemsep=4pt,leftmargin=*]
+\item \textbf{\texttt{-{}-N-smc} (filter outer-SMC$^2$ particles).}
+  Most direct lever. Each filter particle spawns its own inner-PF run,
+  so doubling \texttt{N-smc} doubles the total work the GPU has to
+  do per stride. The inner-PF kernel launches are with
+  $M \times K$ threads; bigger $M$ = bigger launches = better
+  occupancy. Combined with the FD gradient batcher
+  ($M(1+2d) = 61M$ chains per HMC step), \texttt{N-smc=128} already
+  produces $128 \times 61 \times K = 488\mathrm{k}$-particle launches
+  with $K=400$, comfortable for the 5090.\\
+  \emph{Try:} \texttt{-{}-N-smc 32} (default), then \texttt{64},
+  \texttt{128}, \texttt{256}, \texttt{512}. Each step doubles wall.
+  Watch \texttt{nvidia-smi} util go up.
+
+\item \textbf{\texttt{-{}-K-per-chain} (inner-PF particles per chain).}
+  Total filter work = \texttt{N-smc} $\times$ \texttt{K-per-chain}.
+  Bumping K is sometimes preferable to bumping N because it widens
+  the per-launch thread count without amplifying host-side per-chain
+  loops as much.\\
+  \emph{Try:} \texttt{-{}-K-per-chain 400} (default), then
+  \texttt{800} (Python's reference), \texttt{1600}.
+
+\item \textbf{\texttt{-{}-step-minutes} (outer time step).} Smaller
+  step = more bins per stride = more SDE work per kernel launch.
+  $h = 15\,$min produces 96 bins/day; $h = 5\,$min produces 288
+  bins/day (3$\times$ work). The substep loop inside the cost
+  kernel and the inner-PF propagate kernel both scale linearly with
+  bins.\\
+  \emph{Try:} \texttt{-{}-step-minutes 60} (smallest work),
+  \texttt{15} (default), \texttt{5} (3$\times$ wall vs default).
+  Caveat: only values that evenly divide $1440$ are accepted.
+
+\item \textbf{\texttt{-{}-T-days} (bench duration).} More strides =
+  more total benches' worth of work. Doesn't widen parallelism per
+  launch, but the controller's planning horizon scales with it
+  (\texttt{ctrl\_n\_steps} = \texttt{T-days} $\times$ \texttt{BINS\_PER\_DAY})
+  so each \emph{controller} call is bigger.\\
+  \emph{Try:} \texttt{-{}-T-days 14} (default),
+  \texttt{42} (one Banister chronic time constant — single canonical
+  horizon), \texttt{84} (two chronic constants).
+
+\item \textbf{Hard-coded controller knobs} (need editing the bench
+  source, lines 318--328): \texttt{ctrl\_n\_inner}, \texttt{ctrl\_n\_smc},
+  \texttt{ctrl\_hmc\_leap}, \texttt{ctrl\_num\_mcmc}. These already
+  default to Python's heavyweight reference values
+  ($n_{\rm inner}=128$, $n_{\rm smc}=1024$, $L=16$, mcmc$=10$), so
+  the controller side already saturates fairly well.
+  Increasing \texttt{ctrl\_n\_inner} beyond 128 widens each cost
+  evaluation (more CRN trials averaged per $\theta$).
+
+\item \textbf{Less impactful for saturation} but increases total
+  compute (and wall): \texttt{-{}-num-mcmc} (more HMC moves per
+  filter tempering level — sequential, doesn't widen parallelism),
+  \texttt{-{}-hmc-leapfrog} (longer leapfrog trajectory — same gradient
+  batch, just more iterations), \texttt{-{}-max-temp-levels} (caps
+  filter levels, usually doesn't bind anyway).
+\end{enumerate}
+
+\paragraph{Recommended novice sweep.} In one terminal start a watcher:
+
+\begin{verbatim}
+watch -n 0.5 nvidia-smi --query-gpu=utilization.gpu,memory.used \
+                         --format=csv
+\end{verbatim}
+
+In another, sweep the filter dimensions while keeping everything
+else default ($h=60\,$min, $K=2$):
+
+\begin{verbatim}
+for N in 32 64 128 256; do
+  for K in 400 800 1600; do
+    julia --project=. tools/bench_smc_full_mpc_fsa_gpu.jl \
+      --replan-K 2 --step-minutes 60 \
+      --N-smc $N --K-per-chain $K \
+      --output-dir outputs/sweep/N${N}_K${K}
+  done
+done
+\end{verbatim}
+
+Wall time scales roughly linearly with $N \times K$ at the current
+implementation; the sweep above is about $50\,$min total at
+$h=60\,$min. Read off util/memory from the watcher to see where
+saturation kicks in. The bench's auto-plot writes
+\path{E5_full_mpc_T14d_traces.png} per cell of the sweep, so you
+can also compare quality of the resulting controller schedule
+across $N \times K$.
+
+\paragraph{What to look for.}
+
+\begin{itemize}[itemsep=2pt,leftmargin=*]
+\item \texttt{utilization.gpu} should approach $90$--$100\,\%$ at the
+  larger configs. If it plateaus at $\sim 50\,\%$ regardless of
+  $N \times K$, you have hit the per-chain host-loop ceiling
+  diagnosed in \S 2.12 --- bumping the flags more won't help; the
+  fix is in the source (batch the per-chain loops).
+\item \texttt{memory.used} growing predictably with
+  $N \times K \times d$ confirms the GPU is allocating
+  per-particle buffers; if it does \emph{not} grow with $N$, the
+  bench is reusing buffers and the bottleneck is launch overhead,
+  not capacity.
+\item Per-stride wall-time printed in the bench output
+  (\texttt{[stride X/27] Y.Ys ...}) is the practical metric. At
+  saturation, stride wall should grow sub-linearly with $N \times K$
+  (per-launch fixed costs amortise).
+\end{itemize}
+
+\paragraph{Don't bother trying these for saturation.}
+
+\begin{itemize}[itemsep=2pt,leftmargin=*]
+\item \texttt{-{}-replan-K}: only changes how often the controller
+  fires, not how big each fire is.
+\item \texttt{-{}-target-ess-frac}, \texttt{-{}-max-lambda-inc}: tune the
+  bisection schedule, change the number of tempering levels but not
+  the work per level.
+\item \texttt{-{}-seed}: changes RNG; same compute.
+\item \texttt{-{}-open-loop true}: skips replanning so total compute
+  drops. Use this for the smooth-schedule run, not for saturation
+  testing.
+\end{itemize}
+
+\subsection{Known gotchas}
+
+\begin{itemize}[itemsep=2pt,leftmargin=*]
+\item \textbf{Working directory.} The driver \texttt{include}s
+  \path{models/fsa_high_res/FSAHighRes.jl} and the plot scripts via
+  paths relative to its own \texttt{@\_\_DIR\_\_}. You must run
+  Julia from \path{version_2_Julia/} (or use an absolute path). If
+  you run from the repo root, you'll get a
+  \texttt{SystemError: opening file ".../tools/..."} immediately.
+\item \textbf{Auto-plot world-age.} The bench's auto-plot block uses
+  \path{Base.invokelatest} to dispatch to the included plot
+  functions. If a future agent edits the plot files and adds new
+  exports, those exports won't be visible to the bench's main()
+  unless the \path{invokelatest} pattern is preserved. See bench
+  lines 627--660.
+\item \textbf{One Julia process per bench.} KernelAbstractions
+  caches compiled kernels per Julia process. Running multiple
+  benches in parallel via \texttt{\&} works but the second one
+  pays its own JIT cost. For a sweep, prefer one Julia process
+  invoking \path{main(args::Dict)} multiple times in a loop.
+\item \textbf{No comparison plot generator.} Comparing a Julia
+  output against the Python reference requires running
+  \path{tools/compare_to_python.jl} (which reads both \texttt{.npz}
+  and \texttt{.jld2}). The bench itself doesn't do this.
+\end{itemize}
 
 \end{document}

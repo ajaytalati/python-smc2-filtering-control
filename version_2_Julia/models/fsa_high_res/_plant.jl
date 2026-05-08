@@ -152,17 +152,53 @@ Returns a NamedTuple with fields:
 - `C   :: NamedTuple{(:t_idx, :C_value)}`
 """
 function advance!(plant::StepwisePlant, stride_bins::Integer,
-                  Phi_daily::AbstractVector)
+                  Phi_daily::AbstractVector;
+                  envelope_mode::Symbol = :per_stride)
     Phi_daily_f = Vector{Float64}(Phi_daily)
 
-    Phi_subdaily_full = expand_daily_phi_to_subdaily(Phi_daily_f)
-    if length(Phi_subdaily_full) < stride_bins
-        error("Phi_daily of length $(length(Phi_daily_f)) expands to " *
-              "$(length(Phi_subdaily_full)) bins but stride_bins=" *
-              "$stride_bins requested. Ensure len(Phi_daily) * BINS_PER_DAY " *
-              "≥ stride_bins.")
+    # ──────────────────────────────────────────────────────────────────
+    # Two burst-envelope modes (A/B test, per writeup §2.10):
+    #
+    #   :per_stride (default)  — Python-like.  Each call expands daily Φ
+    #     into a single-day envelope and takes the FIRST stride_bins of
+    #     it. With STRIDE_BINS = BINS_PER_DAY÷2, this gives two
+    #     morning-burst envelopes per day (one per stride).
+    #
+    #   :single_daily          — Julia's intended design (writeup §2.10).
+    #     Plant tracks `plant.t_bin % BINS_PER_DAY` and slices the
+    #     CORRESPONDING portion of the daily envelope, so each day has
+    #     one single 24-bin envelope (morning peak + afternoon decay)
+    #     spanning all the strides that touch that day.
+    #
+    # Both modes integrate to the same daily-Φ over each day; they
+    # differ in the sub-day shape, which materially affects the F
+    # trajectory and (downstream) μ(B,F) and A.
+    # ──────────────────────────────────────────────────────────────────
+    if envelope_mode === :single_daily
+        # Need the envelope for BINS_PER_DAY × ceil(...) days.
+        t_offset = plant.t_bin % BINS_PER_DAY
+        n_days_span = ((t_offset + stride_bins) + BINS_PER_DAY - 1) ÷ BINS_PER_DAY
+        if length(Phi_daily_f) < n_days_span
+            # Caller passed fewer days than the stride spans — pad with
+            # the last value (matches Python's "use plan day-0 multiple
+            # times" semantics).
+            pad = fill(Phi_daily_f[end], n_days_span - length(Phi_daily_f))
+            Phi_daily_f = vcat(Phi_daily_f, pad)
+        end
+        Phi_subdaily_full = expand_daily_phi_to_subdaily(Phi_daily_f)
+        # Slice from absolute envelope position based on plant's day clock.
+        Phi_subdaily = Float32.(Phi_subdaily_full[t_offset + 1 : t_offset + stride_bins])
+    else
+        # :per_stride (default, Python-like)
+        Phi_subdaily_full = expand_daily_phi_to_subdaily(Phi_daily_f)
+        if length(Phi_subdaily_full) < stride_bins
+            error("Phi_daily of length $(length(Phi_daily_f)) expands to " *
+                  "$(length(Phi_subdaily_full)) bins but stride_bins=" *
+                  "$stride_bins requested. Ensure len(Phi_daily) * BINS_PER_DAY " *
+                  "≥ stride_bins.")
+        end
+        Phi_subdaily = Float32.(Phi_subdaily_full[1:stride_bins])
     end
-    Phi_subdaily = Float32.(Phi_subdaily_full[1:stride_bins])
 
     # Global time grid for this stride (in days)
     t_grid_global = ((0:stride_bins-1) .+ plant.t_bin) .* plant.dt

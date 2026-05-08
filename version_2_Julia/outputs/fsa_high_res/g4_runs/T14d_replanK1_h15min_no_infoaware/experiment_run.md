@@ -1,9 +1,9 @@
 # FSA-v2 Julia GPU bench — full SMC² rolling-window filter
 
 - **Mode:** filter only (Φ=1.0 from plant; no controller)
-- **Timestamp:** 2026-05-07T15:41:38.287
+- **Timestamp:** 2026-05-07T20:41:21.449
 - **Device:** NVIDIA GeForce RTX 5090
-- **Wall time:** 781.4 s (13.0 min)
+- **Wall time:** 789.6 s (13.2 min)
 - **T_total_days:** 14, step=15 min
 - **BINS_PER_DAY:** 96, WINDOW=96, STRIDE=48
 - **n_strides:** 27

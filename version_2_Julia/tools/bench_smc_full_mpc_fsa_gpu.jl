@@ -28,6 +28,11 @@ function _parse_args(argv::Vector{String})
         "max-temp-levels" => 30,
         "seed"          => 42,
         "output-dir"    => "",
+        # Open-loop mode: do ONE initial plan at INIT_STATE+TRUTH_PARAMS,
+        # apply it throughout the bench, do not replan. Mirrors the ground-
+        # truth driver tools/test_max_A_with_F_barrier.jl. Set "true" to
+        # enable; default "false" runs the closed-loop replanning bench.
+        "open-loop"     => "false",
     )
     i = 1
     while i <= length(argv)
@@ -285,8 +290,8 @@ function main(args::Dict{String,Any})
     @info "building MPC and baseline plants..."
     mpc_plant = StepwisePlant(seed_offset=args["seed"], dt=DT_DAYS)
     base_plant = StepwisePlant(seed_offset=args["seed"], dt=DT_DAYS)
-    @info "  plant final state: B=$(round(plant.state[1], digits=3)), " *
-          "F=$(round(plant.state[2], digits=3)), A=$(round(plant.state[3], digits=3))"
+    @info "  mpc plant init state: B=$(round(mpc_plant.state[1], digits=3)), " *
+          "F=$(round(mpc_plant.state[2], digits=3)), A=$(round(mpc_plant.state[3], digits=3))"
 
     # ── Build GPU PF target (sized for parallel HMC) ─────────────────────
     n_smc = args["N-smc"]
@@ -379,136 +384,113 @@ function main(args::Dict{String,Any})
         )
     end
 
-    # Plan-state: per-bin Φ for the remaining horizon
-    current_phi_per_bin = nothing       # CACHED full-horizon plan
-    current_plan_offset_bin = 0         # Bin position within current_phi_per_bin
+    # Plan-state: per-bin Φ for the remaining horizon.
+    # Initialise to the BASELINE schedule (Φ=Phi_default=1.0) over the entire
+    # horizon. This mirrors Python's bench_smc_full_mpc_fsa.py:184
+    #   daily_phi_plan = np.full(T_total_days, daily_phi_baseline)
+    # which keeps the plant on the canonical-Banister default for the first
+    # K strides until the first replan can run.  Without this, Julia replans
+    # at stride 1 from the cold INIT_STATE and applies the recovery-start of
+    # the resulting plan, which permanently keeps the plant in the recovery
+    # regime — every subsequent replan is from a still-recovering state and
+    # picks the same recovery-start.  Cumulative applied Φ collapses to the
+    # flat-low [0.10, 0.30] band documented in writeup §2.
+    current_phi_per_bin = fill(Float32(1.0), T_total_bins)
+    current_plan_offset_bin = 0
     last_xhat = [Float64(INIT_STATE.B), Float64(INIT_STATE.F), Float64(INIT_STATE.A)]
 
-    @info "running closed-loop MPC SMC² ($(n_strides) windows, replan every K=$(replan_K))..."
+    is_open_loop = lowercase(args["open-loop"]) in ("true", "1", "yes")
+
+    if is_open_loop
+        @info "running OPEN-LOOP bench: one initial plan at INIT_STATE+TRUTH_PARAMS, applied for $(n_strides) strides (no replan). Filter still runs but does not feed the controller."
+    else
+        @info "running closed-loop MPC SMC² ($(n_strides) windows, replan every K=$(replan_K))..."
+    end
     t_start = time()
 
-    # First-stride bootstrap: cold-start filter on a synthetic Φ=1 window so
-    # we have a posterior to plan from. This emulates "filter first, then plan"
-    # at stride 1 (Algorithm 3 step 3 needs a posterior-mean to condition on).
+    # ── Open-loop initial plan ───────────────────────────────────────────
+    # Mirror tools/test_max_A_with_F_barrier.jl's structure: ONE plan up
+    # front from canonical INIT_STATE + TRUTH_PARAMS, applied unmodified
+    # for the whole bench. The current_phi_per_bin buffer is overwritten
+    # before the loop body so stride 1 already gets the planned Φ instead
+    # of baseline.
+    if is_open_loop
+        params_init = (
+            tau_B    = Float64(TRUTH_PARAMS.tau_B),
+            tau_F    = Float64(TRUTH_PARAMS.tau_F),
+            kappa_B  = Float64(TRUTH_PARAMS.kappa_B),
+            kappa_F  = Float64(TRUTH_PARAMS.kappa_F),
+            epsilon_A = Float64(TRUTH_PARAMS.epsilon_A),
+            lambda_A  = Float64(TRUTH_PARAMS.lambda_A),
+            mu_0     = Float64(TRUTH_PARAMS.mu_0),
+            mu_B     = Float64(TRUTH_PARAMS.mu_B),
+            mu_F     = Float64(TRUTH_PARAMS.mu_F),
+            mu_FF    = Float64(TRUTH_PARAMS.mu_FF),
+            eta      = Float64(TRUTH_PARAMS.eta),
+            sigma_B  = Float64(TRUTH_PARAMS.sigma_B),
+            sigma_F  = Float64(TRUTH_PARAMS.sigma_F),
+            sigma_A  = Float64(TRUTH_PARAMS.sigma_A),
+        )
+        ctrl_target_init = FSAControlGPUTarget(
+            n_inner   = ctrl_n_inner,
+            M_max     = ctrl_M_max,
+            n_steps   = T_total_bins,                   # full bench duration
+            n_anchors = ctrl_n_anchors,
+            n_substeps = max(1, BINS_PER_DAY_LOCAL ÷ 24),
+            dt        = DT_DAYS,
+            F_max     = 0.40,
+            Phi_max   = 3.0,
+            Phi_default = 1.0,
+            lam_F     = 1.0,
+            sigma_prior = ctrl_sigma_prior,
+            params    = params_init,
+            init_state = Float32[INIT_STATE.B, INIT_STATE.F, INIT_STATE.A],
+            noise_seed = args["seed"],
+        )
+        log_density_init = make_log_density_fn(ctrl_target_init)
+        rng_init = MersenneTwister(args["seed"])
+        U_init, n_temp_init, _ = run_tempered_smc_gpu(
+            log_density_init, ctrl_M_max, ctrl_n_smc, ctrl_n_anchors,
+            0.0, ctrl_sigma_prior, rng_init;
+            target_nats        = ctrl_target_nats,
+            target_ess_frac    = ctrl_target_ess_frac,
+            max_lambda_inc     = ctrl_max_lambda_inc,
+            max_temp_levels    = ctrl_max_levels,
+            num_mcmc_steps     = ctrl_num_mcmc,
+            hmc_step_size      = ctrl_hmc_step,
+            hmc_num_leapfrog   = ctrl_hmc_leap,
+            chees_L_candidates = [16, 32, 64, 128, 256],
+            h_fd               = 1e-4,
+            calib_n            = 64,
+            verbose            = false,
+        )
+        theta_post = vec(mean(U_init; dims=1))
+        T_total_plan = T_total_bins * DT_DAYS
+        t_grid_local = collect(0:T_total_bins-1) .* DT_DAYS
+        anchors_local = collect(range(0.0, T_total_plan; length=ctrl_n_anchors))
+        σ_rbf = T_total_plan / ctrl_n_anchors
+        Phi_plan = zeros(Float32, T_total_bins)
+        for k in 1:T_total_bins
+            raw = Float64(ctrl_target_init.c_Phi)
+            for j in 1:ctrl_n_anchors
+                v = exp(-0.5 * ((t_grid_local[k] - anchors_local[j]) / σ_rbf)^2)
+                raw += theta_post[j] * v
+            end
+            Phi_plan[k] = Float32(3.0 / (1.0 + exp(-raw)))
+        end
+        current_phi_per_bin = Phi_plan
+        current_plan_offset_bin = 0
+        n_replans = 1
+        push!(replan_strides, 0)
+        q = length(Phi_plan)
+        @info @sprintf("  [open-loop initial plan] %d levels, Phi mean=%.3f  shape=[%.2f→%.2f→%.2f→%.2f→%.2f]",
+                        n_temp_init, mean(Phi_plan),
+                        Phi_plan[1], Phi_plan[max(1, q÷4)], Phi_plan[max(1, q÷2)],
+                        Phi_plan[max(1, (3*q)÷4)], Phi_plan[end])
+    end
 
     for s in 1:n_strides
         t_window = time()
-
-        # ── Decide whether to replan ────────────────────────────────────
-        do_replan = (s == 1) || (((s - 1) % replan_K) == 0)
-        if do_replan
-            # Use the current posterior mean if we have one; else truth.
-            if init_particles === nothing
-                # Cold-start replan with truth params.
-                params_nt = (
-                    tau_B    = Float64(TRUTH_PARAMS.tau_B),
-                    tau_F    = Float64(TRUTH_PARAMS.tau_F),
-                    kappa_B  = Float64(TRUTH_PARAMS.kappa_B),
-                    kappa_F  = Float64(TRUTH_PARAMS.kappa_F),
-                    epsilon_A = Float64(TRUTH_PARAMS.epsilon_A),
-                    lambda_A  = Float64(TRUTH_PARAMS.lambda_A),
-                    mu_0     = Float64(TRUTH_PARAMS.mu_0),
-                    mu_B     = Float64(TRUTH_PARAMS.mu_B),
-                    mu_F     = Float64(TRUTH_PARAMS.mu_F),
-                    mu_FF    = Float64(TRUTH_PARAMS.mu_FF),
-                    eta      = Float64(TRUTH_PARAMS.eta),
-                    sigma_B  = Float64(TRUTH_PARAMS.sigma_B),
-                    sigma_F  = Float64(TRUTH_PARAMS.sigma_F),
-                    sigma_A  = Float64(TRUTH_PARAMS.sigma_A),
-                )
-            else
-                params_nt = _params_nt_from_posterior(
-                    posterior_particles[s - 1, :, :])
-            end
-
-            # Remaining-horizon plan: from current bin to end of T_total.
-            remaining_bins = args["T-days"] * BINS_PER_DAY_LOCAL - mpc_plant.t_bin
-            remaining_days = remaining_bins / BINS_PER_DAY_LOCAL
-            if remaining_days < 0.5
-                # Too little left to plan — fall back to Φ=1.
-                @info "  [stride $s] too little remaining ($(round(remaining_days, digits=2))d); using Φ=1"
-                current_phi_per_bin = ones(Float32, max(remaining_bins, STRIDE_BINS))
-                current_plan_offset_bin = 0
-            else
-                # init_state := x̂_n from posterior particle cloud (Algorithm 3 step 2).
-                # At s=1 we have no posterior yet, so use prior mean (= INIT_STATE).
-                init_state = s == 1 ?
-                    [Float64(INIT_STATE.B), Float64(INIT_STATE.F), Float64(INIT_STATE.A)] :
-                    copy(last_xhat)
-
-                ctrl_n_steps = Int(round(remaining_days / DT_DAYS))
-
-                # Build a fresh GPU controller target with current posterior-
-                # mean dynamics params + current plant state.
-                ctrl_target = FSAControlGPUTarget(
-                    n_inner   = ctrl_n_inner,
-                    M_max     = ctrl_M_max,
-                    n_steps   = ctrl_n_steps,
-                    n_anchors = ctrl_n_anchors,
-                    n_substeps = 4,
-                    dt        = DT_DAYS,
-                    F_max     = 0.40,
-                    Phi_max   = 3.0,
-                    Phi_default = 1.0,
-                    lam_F     = 1.0,    # Eq 37 soft barrier weight on max(F-F_max, 0)²
-                    sigma_prior = ctrl_sigma_prior,
-                    params    = params_nt,
-                    init_state = Float32.(init_state),
-                    noise_seed = args["seed"] + 100 + s,
-                )
-
-                t_plan = time()
-
-                # Wrap the FSA cost target as a generic log-density closure
-                # and hand it to the framework's GPU SMC² controller.
-                log_density_fn = make_log_density_fn(ctrl_target)
-                rng_ctrl = MersenneTwister(args["seed"] + 100 + s)
-
-                U_ctrl, ctrl_n_temp, _ = run_tempered_smc_gpu(
-                    log_density_fn, ctrl_M_max, ctrl_n_smc, ctrl_n_anchors,
-                    0.0, ctrl_sigma_prior, rng_ctrl;
-                    target_nats        = ctrl_target_nats,
-                    target_ess_frac    = ctrl_target_ess_frac,
-                    max_lambda_inc     = ctrl_max_lambda_inc,
-                    max_temp_levels    = ctrl_max_levels,
-                    num_mcmc_steps     = ctrl_num_mcmc,
-                    hmc_step_size      = ctrl_hmc_step,
-                    hmc_num_leapfrog   = ctrl_hmc_leap,
-                    chees_L_candidates = [16, 32, 64, 128, 256],
-                    h_fd               = 1e-4,
-                    calib_n            = 64,
-                    verbose            = false,
-                )
-
-                # Decode posterior-mean theta → Phi schedule.
-                theta_post_mean = vec(mean(U_ctrl; dims=1))
-                # Decode on host (cheap):
-                T_total = ctrl_n_steps * DT_DAYS
-                t_grid_local = collect(0:ctrl_n_steps-1) .* DT_DAYS
-                anchors_local = collect(range(0.0, T_total; length=ctrl_n_anchors))
-                σ_rbf = T_total / ctrl_n_anchors
-                Phi_arr_local = zeros(Float32, ctrl_n_steps)
-                # RAW Gaussian RBF (NO row-normalisation) — matches kernel
-                # and matches Python's smc2fc/control/rbf_schedules.py.
-                for k in 1:ctrl_n_steps
-                    raw = Float64(ctrl_target.c_Phi)
-                    for j in 1:ctrl_n_anchors
-                        v = exp(-0.5 * ((t_grid_local[k] - anchors_local[j]) / σ_rbf)^2)
-                        raw += theta_post_mean[j] * v
-                    end
-                    Phi_arr_local[k] = Float32(3.0 / (1.0 + exp(-raw)))
-                end
-
-                elapsed_plan = time() - t_plan
-                current_phi_per_bin = Phi_arr_local
-                current_plan_offset_bin = 0
-                n_replans += 1
-                push!(replan_strides, s)
-                @info @sprintf("  [replan @ stride %2d] GPU %d levels, %.1fs, Phi mean=%.3f",
-                                s, ctrl_n_temp, elapsed_plan,
-                                mean(current_phi_per_bin))
-            end
-        end
 
         # ── Slice next stride's Φ from current plan ────────────────────
         if s == 1
@@ -527,18 +509,26 @@ function main(args::Dict{String,Any})
         phi_stride = current_phi_per_bin[current_plan_offset_bin + 1 : slice_end]
         current_plan_offset_bin += advance_bins
 
-        # Aggregate controller's per-bin Φ to a single daily Φ for this
-        # stride, then push it through the SAME burst envelope that the
-        # baseline uses. This keeps MPC and baseline plants on the same
-        # fast-dynamics regime (Bug #5 in the writeup).
+        # The bench used to aggregate the controller's per-bin Φ to a
+        # single daily Φ and re-expand it through the burst envelope. That
+        # threw away the controller's actual schedule (which is smooth
+        # per-bin Φ via the sigmoid-RBF decoder) and replaced it with a
+        # different signal: a daily-averaged Φ refracted through a Gamma-
+        # shaped morning-burst envelope. Plant ↔ controller mismatch.
+        # The ground-truth driver tools/test_max_A_with_F_barrier.jl uses
+        # `advance_subdaily!` to apply the controller's per-bin Φ DIRECTLY
+        # — same signal the cost kernel evaluates against. Doing the same
+        # here.  Stash the daily mean only for diagnostic plotting.
         daily_phi_plan_per_stride[s] = mean(phi_stride)
-        daily_phi_for_stride = Float64(daily_phi_plan_per_stride[s])
 
-        # ── Advance MPC plant under bursty-expanded daily Φ ────────────
-        advance!(mpc_plant, advance_bins, [daily_phi_for_stride])
-
-        # ── Advance baseline plant under constant Φ=1.0 ────────────────
-        advance!(base_plant, advance_bins, [1.0])
+        # ── Advance MPC plant under controller's exact per-bin Φ ───────
+        advance_subdaily!(mpc_plant, Float32.(phi_stride))
+        # ── Advance baseline plant under constant Φ=1.0 (smooth) ───────
+        advance_subdaily!(base_plant, fill(Float32(1.0), advance_bins))
+        # No envelope_mode kwarg / --plant switch — both modes were
+        # equivalent for the controller-plant matching question (writeup
+        # §2.10), the actual fix was to drop the burst-envelope refraction
+        # entirely and call advance_subdaily!.
 
         # ── Filter on MPC plant's window obs ────────────────────────────
         t0_bin = (s - 1) * STRIDE_BINS
@@ -561,6 +551,140 @@ function main(args::Dict{String,Any})
         # mean over the inner-PF cloud at end-of-window. Used as init_state for
         # the controller at the NEXT replan boundary.
         last_xhat = _extract_xhat(target, n_smc)
+
+        # ── End-of-stride replan (mirrors Python's `if (s+1) % K == 0`) ────
+        # Skipped entirely in --open-loop mode: the bench applies the single
+        # initial plan throughout (matches the ground-truth driver
+        # tools/test_max_A_with_F_barrier.jl).
+        if !is_open_loop && s % replan_K == 0
+            # Stride 1 cold-start uses TRUTH_PARAMS (no posterior yet);
+            # subsequent replans use the filter's posterior-mean params.
+            params_nt = if posterior_particles[s, 1, 1] == 0f0
+                # No posterior yet (filter row still zeros) — cold start.
+                (
+                    tau_B    = Float64(TRUTH_PARAMS.tau_B),
+                    tau_F    = Float64(TRUTH_PARAMS.tau_F),
+                    kappa_B  = Float64(TRUTH_PARAMS.kappa_B),
+                    kappa_F  = Float64(TRUTH_PARAMS.kappa_F),
+                    epsilon_A = Float64(TRUTH_PARAMS.epsilon_A),
+                    lambda_A  = Float64(TRUTH_PARAMS.lambda_A),
+                    mu_0     = Float64(TRUTH_PARAMS.mu_0),
+                    mu_B     = Float64(TRUTH_PARAMS.mu_B),
+                    mu_F     = Float64(TRUTH_PARAMS.mu_F),
+                    mu_FF    = Float64(TRUTH_PARAMS.mu_FF),
+                    eta      = Float64(TRUTH_PARAMS.eta),
+                    sigma_B  = Float64(TRUTH_PARAMS.sigma_B),
+                    sigma_F  = Float64(TRUTH_PARAMS.sigma_F),
+                    sigma_A  = Float64(TRUTH_PARAMS.sigma_A),
+                )
+            else
+                _params_nt_from_posterior(posterior_particles[s, :, :])
+            end
+
+            # ──────────────────────────────────────────────────────────
+            # Two distinct concepts, conflated in the original bench:
+            #
+            #   bench_duration_days  = how long the CLOSED-LOOP runs.
+            #                          (= args["T-days"], the experiment.)
+            #   planning_horizon_days = how far AHEAD the controller looks
+            #                          at each replan. Held FIXED for the
+            #                          whole bench. Set to T_total_days here
+            #                          (one chronic-B time constant) so each
+            #                          plan has enough lookahead for the
+            #                          optimum to recover the U-shape.
+            #
+            # Original (incorrect) MPC formulation: plan the SHRINKING
+            # remaining-bench horizon. At late strides this gave the
+            # controller only ~4 days of lookahead, which collapsed the
+            # cost optimum from "overload, recover, overload" (U-shape) to
+            # "just recover" — there was no longer enough time left in the
+            # planning window to commit to a final overload phase. The
+            # cumulative applied schedule was therefore stuck in the
+            # recovery band [0.10, 0.30] across every late stride.
+            #
+            # Correct receding-horizon formulation: plan a fixed-size
+            # window AHEAD at every replan, regardless of how much bench
+            # is left. Python's bench_smc_full_mpc_fsa.py:389 hard-codes
+            # this via `plan_horizon_days=T_total_days`. The plan extends
+            # past the bench end at late strides, but only the first
+            # stride is committed before the next replan, so that's fine.
+            # ──────────────────────────────────────────────────────────
+            planning_horizon_days = Float64(args["T-days"])
+            remaining_bins = args["T-days"] * BINS_PER_DAY_LOCAL - mpc_plant.t_bin
+            remaining_days = remaining_bins / BINS_PER_DAY_LOCAL
+
+            if remaining_days >= 0.5
+                ctrl_n_steps = Int(round(planning_horizon_days / DT_DAYS))
+                ctrl_target = FSAControlGPUTarget(
+                    n_inner   = ctrl_n_inner,
+                    M_max     = ctrl_M_max,
+                    n_steps   = ctrl_n_steps,
+                    n_anchors = ctrl_n_anchors,
+                    n_substeps = max(1, BINS_PER_DAY_LOCAL ÷ 24),
+                    dt        = DT_DAYS,
+                    F_max     = 0.40,
+                    Phi_max   = 3.0,
+                    Phi_default = 1.0,
+                    lam_F     = 1.0,
+                    sigma_prior = ctrl_sigma_prior,
+                    params    = params_nt,
+                    init_state = Float32.(copy(last_xhat)),
+                    noise_seed = args["seed"] + 100 + s,
+                )
+
+                t_plan = time()
+                log_density_fn = make_log_density_fn(ctrl_target)
+                rng_ctrl = MersenneTwister(args["seed"] + 100 + s)
+
+                U_ctrl, ctrl_n_temp, _ = run_tempered_smc_gpu(
+                    log_density_fn, ctrl_M_max, ctrl_n_smc, ctrl_n_anchors,
+                    0.0, ctrl_sigma_prior, rng_ctrl;
+                    target_nats        = ctrl_target_nats,
+                    target_ess_frac    = ctrl_target_ess_frac,
+                    max_lambda_inc     = ctrl_max_lambda_inc,
+                    max_temp_levels    = ctrl_max_levels,
+                    num_mcmc_steps     = ctrl_num_mcmc,
+                    hmc_step_size      = ctrl_hmc_step,
+                    hmc_num_leapfrog   = ctrl_hmc_leap,
+                    chees_L_candidates = [16, 32, 64, 128, 256],
+                    h_fd               = 1e-4,
+                    calib_n            = 64,
+                    verbose            = false,
+                )
+
+                theta_post_mean = vec(mean(U_ctrl; dims=1))
+                T_total = ctrl_n_steps * DT_DAYS
+                t_grid_local = collect(0:ctrl_n_steps-1) .* DT_DAYS
+                anchors_local = collect(range(0.0, T_total; length=ctrl_n_anchors))
+                σ_rbf = T_total / ctrl_n_anchors
+                Phi_arr_local = zeros(Float32, ctrl_n_steps)
+                for k in 1:ctrl_n_steps
+                    raw = Float64(ctrl_target.c_Phi)
+                    for j in 1:ctrl_n_anchors
+                        v = exp(-0.5 * ((t_grid_local[k] - anchors_local[j]) / σ_rbf)^2)
+                        raw += theta_post_mean[j] * v
+                    end
+                    Phi_arr_local[k] = Float32(3.0 / (1.0 + exp(-raw)))
+                end
+
+                elapsed_plan = time() - t_plan
+                current_phi_per_bin = Phi_arr_local
+                current_plan_offset_bin = 0
+                n_replans += 1
+                push!(replan_strides, s)
+                q = length(Phi_arr_local)
+                phi_samples = [Phi_arr_local[1],
+                               Phi_arr_local[max(1, q÷4)],
+                               Phi_arr_local[max(1, q÷2)],
+                               Phi_arr_local[max(1, (3*q)÷4)],
+                               Phi_arr_local[end]]
+                @info @sprintf("  [end-of-stride %2d replan] GPU %d levels, %.1fs, Phi mean=%.3f  shape=[%.2f→%.2f→%.2f→%.2f→%.2f]",
+                                s, ctrl_n_temp, elapsed_plan,
+                                mean(current_phi_per_bin),
+                                phi_samples[1], phi_samples[2], phi_samples[3],
+                                phi_samples[4], phi_samples[5])
+            end
+        end
 
         elapsed_per_window[s] = time() - t_window
         n_temp_per_window[s]  = n_temp
@@ -611,6 +735,35 @@ function main(args::Dict{String,Any})
         f["F_max"]               = F_max
     end
     @info "wrote $(data_path)"
+
+    # ── Auto-generate diagnostic plots ──────────────────────────────────
+    # State traces (4-panel: B, F, A, applied Φ) and the 30-panel parameter
+    # trace plot. Equivalent to running tools/plot_state_traces.jl and
+    # tools/plot_param_traces.jl on the just-written data.jld2 — done
+    # in-process so a finished bench produces ready-to-view plots.
+    try
+        let plotters_dir = @__DIR__
+            include(joinpath(plotters_dir, "plot_state_traces.jl"))
+            include(joinpath(plotters_dir, "plot_param_traces.jl"))
+            # `include` inside main() puts new methods in a newer world age
+            # than the calling frame, so direct calls hit MethodError. Wrap
+            # via invokelatest to defer dispatch to the latest world.
+            data_dict = Base.invokelatest(Main.load_run_data, data_path)
+
+            traces_path = joinpath(out_dir, "E5_full_mpc_T$(args["T-days"])d_traces.png")
+            Base.invokelatest(Main.plot_state_traces, data_dict; out_path=traces_path)
+            @info "wrote $traces_path"
+
+            params_path = joinpath(out_dir, "E5_full_mpc_T$(args["T-days"])d_param_traces.png")
+            Base.invokelatest(Main.plot_param_traces, data_dict; out_path=params_path,
+                              T_total_days=Float64(args["T-days"]),
+                              step_minutes=args["step-minutes"],
+                              stride_bins=STRIDE_BINS)
+            @info "wrote $params_path"
+        end
+    catch e
+        @warn "plot generation failed (data.jld2 still saved)" exception=(e, catch_backtrace())
+    end
 
     # ── Manifest ─────────────────────────────────────────────────────────
     manifest = Dict(
