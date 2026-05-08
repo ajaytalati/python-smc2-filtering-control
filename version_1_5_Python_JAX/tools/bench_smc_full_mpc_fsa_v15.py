@@ -46,10 +46,27 @@ def parse_args():
                     help='filter outer SMC² particles')
     ap.add_argument('--k-pf', type=int, default=200,
                     help='filter inner PF particles per chain')
-    ap.add_argument('--ctrl-n-smc', type=int, default=128,
+    # Controller knobs — defaults match the v1.5 Julia bench
+    # (`bench_smc_full_mpc_fsa_gpu.jl`) so a no-flag invocation produces
+    # the same configuration on both stacks.
+    ap.add_argument('--ctrl-n-smc', type=int, default=256,
                     help='controller outer SMC² particles')
-    ap.add_argument('--ctrl-n-inner', type=int, default=32,
-                    help='controller inner CRN-MC trials')
+    ap.add_argument('--ctrl-n-inner', type=int, default=64,
+                    help='controller inner CRN-MC trials per cost evaluation')
+    ap.add_argument('--ctrl-num-mcmc', type=int, default=8,
+                    help='controller HMC moves per tempering level')
+    ap.add_argument('--ctrl-hmc-step', type=float, default=0.2,
+                    help='controller HMC leapfrog step size')
+    ap.add_argument('--ctrl-hmc-leap', type=int, default=16,
+                    help='controller HMC leapfrog trajectory length')
+    ap.add_argument('--ctrl-target-nats', type=float, default=8.0,
+                    help='controller β_max auto-calibration target (nats)')
+    ap.add_argument('--ctrl-max-levels', type=int, default=25,
+                    help='controller hard cap on tempering levels per replan')
+    ap.add_argument('--ctrl-max-lambda-inc', type=float, default=0.20,
+                    help='controller max λ increment per tempering bisection')
+    ap.add_argument('--ctrl-sigma-prior', type=float, default=1.5,
+                    help='controller prior std on θ_ctrl RBF coefficients')
     ap.add_argument('--seed', type=int, default=42)
     ap.add_argument('--smoke', action='store_true',
                     help='single stride only — sanity check that imports + '
@@ -121,12 +138,19 @@ def main():
         num_mcmc_steps=3, hmc_step_size=0.05, hmc_num_leapfrog=4,
         num_mcmc_steps_bridge=3, max_lambda_inc_bridge=0.20,
     )
-    # Controller config
+    # Controller config — every knob exposed at CLI so config can match
+    # `version_1_5_Julia/tools/bench_smc_full_mpc_fsa_gpu.jl` 1:1.
     ctrl_cfg = SMCControlConfig(
-        n_smc=args.ctrl_n_smc, n_inner=args.ctrl_n_inner, sigma_prior=1.5,
-        target_ess_frac=0.5, max_lambda_inc=0.20,
-        num_mcmc_steps=8, hmc_step_size=0.2, hmc_num_leapfrog=16,
-        beta_max_target_nats=8.0, max_temp_steps=25,
+        n_smc=args.ctrl_n_smc,
+        n_inner=args.ctrl_n_inner,
+        sigma_prior=args.ctrl_sigma_prior,
+        target_ess_frac=0.5,
+        max_lambda_inc=args.ctrl_max_lambda_inc,
+        num_mcmc_steps=args.ctrl_num_mcmc,
+        hmc_step_size=args.ctrl_hmc_step,
+        hmc_num_leapfrog=args.ctrl_hmc_leap,
+        beta_max_target_nats=args.ctrl_target_nats,
+        max_temp_steps=args.ctrl_max_levels,
     )
 
     # Compile-once log-density factory for the filter
@@ -348,7 +372,15 @@ def main():
         n_strides=n_strides,
         replan_K=args.replan_K,
         n_smc=args.n_smc, k_pf=args.k_pf,
-        ctrl_n_smc=args.ctrl_n_smc, ctrl_n_inner=args.ctrl_n_inner,
+        ctrl_n_smc=args.ctrl_n_smc,
+        ctrl_n_inner=args.ctrl_n_inner,
+        ctrl_num_mcmc=args.ctrl_num_mcmc,
+        ctrl_hmc_step=args.ctrl_hmc_step,
+        ctrl_hmc_leap=args.ctrl_hmc_leap,
+        ctrl_target_nats=args.ctrl_target_nats,
+        ctrl_max_levels=args.ctrl_max_levels,
+        ctrl_max_lambda_inc=args.ctrl_max_lambda_inc,
+        ctrl_sigma_prior=args.ctrl_sigma_prior,
         smoke=args.smoke,
         seed=args.seed,
         device=jax.devices()[0].platform,
