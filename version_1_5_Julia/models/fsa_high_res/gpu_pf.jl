@@ -260,7 +260,37 @@ function FSAGPUTarget(; K_per_chain::Int, M_max::Int, T_steps::Int,
                        R::Int = 4,
                        dt::Real,
                        a_shrink::Real = 0.98,
-                       ot_max_weight::Real = 0.01,
+                       # ─────────────────────────────────────────────────
+                       #  ⚠️  ot_max_weight default = 0.0  (OT OFF)  ⚠️
+                       # ─────────────────────────────────────────────────
+                       #  Setting this > 0 enables the framework's
+                       #  `gpu_ot_blend_chain!` rescue
+                       #  (julia/SMC2FC/src/Filtering/GPUSegmentedPF.jl:199)
+                       #  which has a per-chain Julia for-loop with two
+                       #  PCIe round-trips per chain (Array(chain_log_w)
+                       #  + CuArray(b_cpu) per chain). At v1.5's matched
+                       #  config this multiplies `gpu_log_density` wall
+                       #  time by ~116×:
+                       #
+                       #      ot_max = 0.0   →   0.73 ms / call
+                       #      ot_max = 0.01  →  84.78 ms / call    (116×)
+                       #
+                       #  And the closed-loop bench wall time by ~12.77×.
+                       #
+                       #  v1.5's strong direct-Gaussian obs model does
+                       #  not need OT — Python+JAX runs without it and
+                       #  matches truth fine. Only enable this if you
+                       #  hit filter degeneracy at very low ESS / hard
+                       #  obs models. See `tools/bench_smc_full_mpc_fsa_gpu.jl`'s
+                       #  `--ot-max-weight` CLI flag and the writeup
+                       #  §6.3 / §6.6 for the algorithmic context.
+                       #
+                       #  When the framework's OT rescue is rewritten as
+                       #  a single batched-across-chains GPU kernel the
+                       #  cost will go away and this default can return
+                       #  to a non-zero value.
+                       # ─────────────────────────────────────────────────
+                       ot_max_weight::Real = 0.0,
                        ot_threshold_frac::Real = 0.05,
                        ot_temperature::Real = 5.0,
                        noise_seed::Int = 0)

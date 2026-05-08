@@ -38,20 +38,58 @@ function _parse_args(argv::Vector{String})
         # θ_i := a·θ_i + (1-a)·θ_mean + √(1-a²)·jitter, between resample
         # and HMC. Helps posterior diversity at low N=32.
         "liu-west-a"      => 0.0,
-        # OT (optimal-transport) sigmoid-blend rescue weight on the inner
-        # PF. 0.01 (default) was found to dominate `gpu_log_density`
-        # wall time at v1.5's config: the framework's `gpu_ot_blend_chain!`
-        # has a per-chain Julia loop with two PCIe round-trips per chain
-        # (Array(chain_log_w) + CuArray(b_cpu)). At M=32 and 5 segments
-        # per call, this is ~320 round-trips per `gpu_log_density` call,
-        # which the headline microbench measures as ~85 ms vs Python's
-        # ~5 ms. Set this to 0.0 to disable OT rescue entirely; the
-        # writeup section 6.3 confirms v1.5's strong direct-Gaussian obs
-        # model does not need OT (Python+JAX runs without it). A future
-        # framework rewrite of `gpu_ot_blend_chain!` to a fully batched
-        # GPU kernel would eliminate the cost without losing the
-        # algorithmic option.
-        "ot-max-weight"   => 0.01,
+        # ─────────────────────────────────────────────────────────────────
+        #  ⚠️  OT (optimal-transport) sigmoid-blend rescue weight ⚠️
+        # ─────────────────────────────────────────────────────────────────
+        #  DEFAULT: 0.0  (OT rescue DISABLED — fast path).
+        #
+        #  ⚠️  WARNING — turning this on (e.g. 0.01) causes a
+        #      ~12× WALL-TIME SLOWDOWN on this stack at v1.5's config. ⚠️
+        #
+        #  Why it's so expensive on Julia:
+        #    The framework's `gpu_ot_blend_chain!` (in
+        #    `julia/SMC2FC/src/Filtering/GPUSegmentedPF.jl:199`) wraps the
+        #    OT step in a per-CHAIN Julia for-loop that does
+        #
+        #        log_w_arr = Array(chain_log_w)   # GPU → CPU sync + memcpy
+        #        ... softmax on CPU ...
+        #        b_gpu     = CuArray(b_cpu)       # CPU → GPU sync + memcpy
+        #
+        #    once per chain. With M=32 chains and ~5 segments per
+        #    `gpu_log_density` call, that's ~320 PCIe round-trips per
+        #    call. Microbench at matched config (RTX 5090, N=32, K=200,
+        #    T_steps=24):
+        #
+        #        ot_max = 0.0   →  median 0.73 ms / call
+        #        ot_max = 0.01  →  median  84.78 ms / call    (116×!)
+        #
+        #    Closed-loop bench at T=2d, N=16, K=100, seed=42:
+        #
+        #        --ot-max-weight 0.0   →  total wall  12.5 s
+        #        --ot-max-weight 0.01  →  total wall 159.5 s   (12.77×)
+        #
+        #    Numerical effect of disabling OT at v1.5: mean A identical;
+        #    7 of 10 posterior parameter medians bit-identical, the other
+        #    3 differ < 22% relative inside the IQR band. The Python+JAX
+        #    reference (smc2fc.filtering.gk_dpf_v3_lite) runs without an
+        #    explicit OT rescue and matches the truth posterior fine.
+        #    The writeup §6.3 covers this in detail.
+        #
+        #  When to turn it back on:
+        #    Filter degeneracy at very low ESS / hard obs models. v1.5's
+        #    obs (3-channel direct Gaussian on every bin) is informative
+        #    enough that OT is unnecessary. v2's obs model is sparser
+        #    and may benefit.
+        #
+        #  How to make it cheap:
+        #    Replace the per-chain Julia loop in `gpu_ot_blend_chain!`
+        #    with a single batched-across-chains GPU kernel (the Sinkhorn
+        #    + barycentric projection are already GPU-resident; only the
+        #    softmax + dispatch are on the host). That is framework work
+        #    in `julia/SMC2FC/src/Filtering/GPUSegmentedPF.jl`, out of
+        #    scope here.
+        # ─────────────────────────────────────────────────────────────────
+        "ot-max-weight"   => 0.0,
         "seed"            => 42,
         "output-dir"      => "",
         "open-loop"       => "false",
@@ -381,14 +419,24 @@ function main(args::Dict{String,Any})
     d = length(PARAM_NAMES)
     M_max = n_smc * (1 + 2 * d)
     @info "filter target: N_SMC=$n_smc K_per_chain=$K_per_chain d=$d M_max=$M_max"
+    # NB: ot-max-weight defaults to 0.0 (OT rescue DISABLED — fast path).
+    # Setting it to 0.01 enables the framework's `gpu_ot_blend_chain!`
+    # rescue, which carries a ~12× wall-time penalty at this config
+    # (per-chain Julia loop with PCIe round-trips). See the heavily-
+    # commented default in `_parse_args` above for the full story.
     target = FSAGPUTarget(
         K_per_chain = K_per_chain, M_max = M_max,
         T_steps = window_bins, R = 4, dt = dt_days,
         noise_seed = 0,
         ot_max_weight = args["ot-max-weight"],
     )
-    @info "filter target: ot_max_weight = $(args["ot-max-weight"])  " *
-          "(0.0 = OT rescue disabled, fastest path)"
+    if args["ot-max-weight"] >= 1e-6
+        @warn "OT rescue ENABLED (ot-max-weight = $(args["ot-max-weight"])). " *
+              "Expect ~12× slowdown on Julia vs the default OT-off path. " *
+              "See the comment block on `ot-max-weight` in this script."
+    else
+        @info "filter target: OT rescue DISABLED (ot-max-weight = 0.0, fast path)"
+    end
 
     # ── Filter prior (unconstrained, v1.5 PARAM_PRIOR_CONFIG) ──
     prior_means  = Float64[m for (_, _, m, _) in PARAM_PRIOR_CONFIG]
