@@ -80,6 +80,7 @@ using JSON3
 using CUDA
 using StaticArrays
 using StableRNGs
+using Plots                # for the auto-generated param-traces plot
 
 const REPO_ROOT = abspath(joinpath(@__DIR__, ".."))
 include(joinpath(REPO_ROOT, "models", "fsa_high_res", "FSAHighRes.jl"))
@@ -436,11 +437,16 @@ function main(args::Dict{String,Any})
     end
 
     # ── Closed-loop foldl over strides ──
+    # `all_filter_posts` is a per-stride list of unconstrained posterior
+    # particle clouds (one (n_smc, n_params) Matrix per stride; Nothing
+    # for warmup strides). Keeps the param-traces plot's input cheap to
+    # build at end-of-bench.
     init_acc = (
         plant_state    = init_plant_state(),
         plan_phi       = initial_plan,
         plan_offset    = 0,
         filter_post    = nothing,
+        all_filter_posts = Vector{Union{Nothing,Matrix{Float64}}}(),
         traj_history   = Matrix{Float64}(undef, 0, 3),
         obs_history    = (B = Float32[], F = Float32[], A = Float32[],
                           Phi = Float32[]),
@@ -521,11 +527,19 @@ function main(args::Dict{String,Any})
             (acc.plan_phi, slice_end)
         end
 
+        # Snapshot the latest filter posterior into the per-stride store.
+        # Stride that ran the filter contributes a Matrix; warmup strides
+        # contribute `nothing` (caller handles the mask).
+        post_entry = hist_end < window_bins ? nothing : new_filter_post
+        new_all_filter_posts = vcat(acc.all_filter_posts,
+                                      Union{Nothing,Matrix{Float64}}[post_entry])
+
         return (
             plant_state    = p.final_state,
             plan_phi       = new_plan,
             plan_offset    = new_offset,
             filter_post    = new_filter_post,
+            all_filter_posts = new_all_filter_posts,
             traj_history   = new_traj,
             obs_history    = new_obs,
             per_stride_log = vcat(acc.per_stride_log, [(stride = stride_idx,
@@ -554,6 +568,18 @@ function main(args::Dict{String,Any})
     # lengths between MPC and baseline.
     n_mpc_bins = size(final.traj_history, 1)
     data_path = joinpath(out_dir, "data.jld2")
+    # ── Per-stride posterior particles + mask, in CONSTRAINED space.
+    # All 10 v1.5 priors are LogNormal, so constrained = exp(unconstrained).
+    n_params_est = length(PARAM_NAMES)
+    posterior_particles_arr = zeros(Float64, n_strides, n_smc, n_params_est)
+    posterior_window_mask   = falses(n_strides)
+    for (s, U) in enumerate(final.all_filter_posts)
+        if U !== nothing
+            posterior_particles_arr[s, 1:size(U, 1), :] = exp.(Float64.(U))
+            posterior_window_mask[s] = true
+        end
+    end
+
     JLD2.jldopen(data_path, "w") do f
         f["trajectory_mpc"]       = Float32.(final.traj_history)
         f["trajectory_baseline"]  = Float32.(base_out.trajectory[1:n_mpc_bins, :])
@@ -562,11 +588,14 @@ function main(args::Dict{String,Any})
         f["daily_phi_per_stride"] = daily_phi_plan_per_stride
         f["BINS_PER_DAY"]         = bins_per_day
         f["STRIDE_BINS"]          = stride_bins
+        f["WINDOW_BINS"]          = window_bins
         f["dt_days"]              = dt_days
         f["F_max"]                = 0.40
         if final.filter_post !== nothing
             f["filter_post_unc"]  = Float64.(final.filter_post)
         end
+        f["posterior_particles"]    = posterior_particles_arr
+        f["posterior_window_mask"]  = posterior_window_mask
         f["param_names"]          = String.(PARAM_NAMES)
         f["truth_params_dict"]    = Dict{String,Float64}(string(k) => v
                                                           for (k, v) in DEFAULT_PARAMS)
@@ -639,7 +668,94 @@ function main(args::Dict{String,Any})
         @warn "plot generation failed (data.jld2 still saved)" exception=(e, catch_backtrace())
     end
 
+    # ── Posterior parameter-traces plot (mirrors version_2_Python_JAX/
+    #    tools/plot_param_traces.py: per-param 5/95 quantile band +
+    #    median + truth red dashed horizontal line). ──
+    if any(posterior_window_mask)
+        try
+            param_path = joinpath(out_dir, "v15_T$(args["T-days"])d_param_traces.png")
+            _plot_param_traces_v15(
+                posterior_particles_arr,
+                posterior_window_mask,
+                String.(PARAM_NAMES),
+                Dict(string(k) => Float64(v) for (k, v) in DEFAULT_PARAMS),
+                n_strides, stride_bins, window_bins, bins_per_day,
+                args["T-days"], args["step-minutes"];
+                out_path = param_path,
+                mean_A_mpc  = mean(final.traj_history[:, 3]),
+                mean_A_base = mean(base_out.trajectory[1:n_mpc_bins, 3]),
+            )
+            @info "wrote $param_path"
+        catch e
+            @warn "param-traces plot failed (data.jld2 still saved)" exception=(e, catch_backtrace())
+        end
+    end
+
     return final
+end
+
+# ── Param-traces plot helper ─────────────────────────────────────────────
+"""
+    _plot_param_traces_v15(posterior, mask, param_names, truth, n_strides,
+                            stride_bins, window_bins, bins_per_day,
+                            T_days, step_minutes; out_path, mean_A_mpc,
+                            mean_A_base)
+
+Per-parameter posterior trace across rolling windows. One panel per
+estimated param; 5-95% quantile band + median + truth horizontal line.
+Layout mirrors `version_2_Python_JAX/tools/plot_param_traces.py`.
+"""
+function _plot_param_traces_v15(
+        posterior::Array{Float64,3},
+        mask::AbstractVector{Bool},
+        param_names::Vector{String},
+        truth::Dict{String,Float64},
+        n_strides::Int, stride_bins::Int, window_bins::Int,
+        bins_per_day::Int, T_days, step_minutes;
+        out_path::AbstractString,
+        mean_A_mpc::Float64, mean_A_base::Float64)
+    end_t_days = ((collect(0:n_strides-1) .* stride_bins) .+ window_bins) ./ bins_per_day
+    end_t_days = end_t_days[mask]
+    valid = posterior[mask, :, :]                    # (n_valid, n_smc, n_params)
+    n_valid, n_smc, n_params = size(valid)
+    q05 = [quantile(vec(valid[s, :, p]), 0.05)
+           for s in 1:n_valid, p in 1:n_params]
+    q50 = [quantile(vec(valid[s, :, p]), 0.50)
+           for s in 1:n_valid, p in 1:n_params]
+    q95 = [quantile(vec(valid[s, :, p]), 0.95)
+           for s in 1:n_valid, p in 1:n_params]
+
+    n_cols = 5
+    n_rows = (n_params + n_cols - 1) ÷ n_cols
+    panels = Plots.Plot[]
+    for i in 1:n_params
+        name = param_names[i]
+        p = plot(end_t_days, q50[:, i];
+                  ribbon = (q50[:, i] .- q05[:, i], q95[:, i] .- q50[:, i]),
+                  fillalpha = 0.30, color = :steelblue, lw = 1.4,
+                  label = "median", title = name, titlefontsize = 9,
+                  legend = false, grid = true, gridalpha = 0.3,
+                  tickfontsize = 7,
+                  xlabel = i > n_params - n_cols ? "end of window (days)" : "",
+                  xguidefontsize = 7)
+        if haskey(truth, name)
+            hline!(p, [truth[name]]; color = :red, ls = :dash, lw = 1.0,
+                    label = "truth")
+        end
+        push!(panels, p)
+    end
+    for _ in n_params+1:n_rows*n_cols
+        push!(panels, plot(framestyle = :none, ticks = false, legend = false))
+    end
+    fig = plot(panels...; layout = (n_rows, n_cols),
+                size = (n_cols * 320, n_rows * 220), dpi = 120,
+                plot_title = "FSA-v1.5 posterior parameter traces — " *
+                             "T=$(T_days)d, h=$(step_minutes)min, " *
+                             "n_strides=$n_strides, " *
+                             "mean A $(round(mean_A_mpc, digits=3)) " *
+                             "vs baseline $(round(mean_A_base, digits=3))",
+                plot_titlefontsize = 10)
+    savefig(fig, out_path)
 end
 
 main(ARGS_DICT)

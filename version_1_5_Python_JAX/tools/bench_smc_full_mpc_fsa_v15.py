@@ -148,6 +148,15 @@ def main():
     daily_phi_per_stride = []
     replan_history = []
 
+    # Per-stride posterior particle clouds (constrained space) for the
+    # param-traces plot. `posterior_mask[s]=True` iff the filter
+    # actually ran on stride s (i.e. we had ≥ WINDOW_BINS of obs).
+    n_params = em.n_params
+    posterior_particles = np.zeros(
+        (n_strides, args.n_smc, n_params), dtype=np.float64,
+    )
+    posterior_mask = np.zeros(n_strides, dtype=bool)
+
     prev_particles = None
     fixed_init_state = COLD_START_INIT
     last_replan_stride = 0
@@ -205,6 +214,14 @@ def main():
                     seed=args.seed + s * 1000,
                 )
             prev_particles = particles
+            # Snapshot constrained posterior into per-stride store for
+            # the param-traces plot at end of bench.
+            samp_constrained = np.array([
+                np.asarray(unconstrained_to_constrained(jnp.asarray(p), T_arr))
+                for p in np.asarray(particles)
+            ])
+            posterior_particles[s, :samp_constrained.shape[0], :] = samp_constrained
+            posterior_mask[s] = True
             print(f"  stride {s+1}/{n_strides}: filter {n_temp} levels, "
                   f"{elapsed_f:.1f}s")
         else:
@@ -305,6 +322,12 @@ def main():
                    f'{"_smoke" if args.smoke else ""}_seed{args.seed}')
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    param_names = list(em.all_names)
+    # Truth values for each estimated param: read from v1.5 DEFAULT_PARAMS
+    # (the basis matches `params_v15` so the names line up directly).
+    truth_params = {n: float(DEFAULT_PARAMS[n]) for n in param_names
+                     if n in DEFAULT_PARAMS}
+
     np.savez(out_dir / 'trajectory.npz',
               trajectory_mpc=full_traj_arr,
               trajectory_baseline=traj_baseline,
@@ -313,6 +336,9 @@ def main():
               accumulated_obs_F=np.array(accumulated_obs['obs_F']),
               accumulated_obs_A=np.array(accumulated_obs['obs_A']),
               accumulated_Phi=np.array(accumulated_obs['Phi']),
+              posterior_particles=posterior_particles,
+              posterior_window_mask=posterior_mask,
+              param_names=np.array(param_names, dtype=object),
               BINS_PER_DAY=BINS_PER_DAY,
               STRIDE_BINS=STRIDE_BINS,
               dt_days=DT_BIN_DAYS)
@@ -328,6 +354,12 @@ def main():
         device=jax.devices()[0].platform,
         total_elapsed_s=total_elapsed,
         replan_history=replan_history,
+        param_names=param_names,
+        truth_params=truth_params,
+        BINS_PER_DAY=int(BINS_PER_DAY),
+        STRIDE_BINS=int(STRIDE_BINS),
+        WINDOW_BINS=int(WINDOW_BINS),
+        step_minutes=60 // (BINS_PER_DAY // 24),
     )
     (out_dir / 'manifest.json').write_text(json.dumps(manifest, indent=2))
 
@@ -347,6 +379,28 @@ def main():
             out_path=plot_path,
         )
         print(f"  wrote {plot_path}")
+
+    # ── Posterior parameter-traces plot (mirrors v2's
+    #    plot_param_traces.py: per-param 5/95 quantile band + median +
+    #    truth horizontal line, indexed by end-of-window day). ──
+    if posterior_mask.any():
+        param_path = out_dir / f'v15_T{args.T_days}d_param_traces.png'
+        _plot_param_traces(
+            posterior_particles=posterior_particles,
+            posterior_mask=posterior_mask,
+            param_names=param_names,
+            truth=truth_params,
+            n_strides=n_strides,
+            stride_bins=STRIDE_BINS,
+            window_bins=WINDOW_BINS,
+            bins_per_day=BINS_PER_DAY,
+            T_days=args.T_days,
+            step_minutes=60 // (BINS_PER_DAY // 24),
+            mean_A_mpc=float(np.mean(full_traj_arr[:, 2])),
+            mean_A_base=float(np.mean(traj_baseline[:, 2])),
+            out_path=param_path,
+        )
+        print(f"  wrote {param_path}")
 
     print(f"  artefacts written to {out_dir}/")
     print('=' * 76)
@@ -434,6 +488,68 @@ def _plot_state_traces(*, traj_mpc, traj_baseline, daily_phi_per_stride,
     ax.legend(fontsize=8)
 
     fig.tight_layout(rect=[0, 0, 1, 0.95])
+    fig.savefig(out_path)
+    plt.close(fig)
+
+
+def _plot_param_traces(*, posterior_particles, posterior_mask, param_names,
+                         truth, n_strides, stride_bins, window_bins,
+                         bins_per_day, T_days, step_minutes,
+                         mean_A_mpc, mean_A_base, out_path):
+    """Posterior parameter-traces plot. Direct port of
+    `version_2_Python_JAX/tools/plot_param_traces.py:main` — one panel
+    per parameter showing the 5-95% quantile band + median over rolling
+    windows, with the truth value as a horizontal red dashed line.
+
+    `posterior_particles` is (n_strides, n_smc, n_params); `posterior_mask`
+    is (n_strides,) of bool indicating which strides have valid filter
+    output (warmup strides — before the first full WINDOW — are False).
+    """
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    end_t_days = (np.arange(n_strides) * stride_bins + window_bins) / bins_per_day
+    end_t_days = end_t_days[posterior_mask]
+
+    valid = posterior_particles[posterior_mask]   # (n_valid, n_smc, n_params)
+    q05 = np.quantile(valid, 0.05, axis=1)
+    q50 = np.quantile(valid, 0.50, axis=1)
+    q95 = np.quantile(valid, 0.95, axis=1)
+
+    n_params = len(param_names)
+    n_cols = 5
+    n_rows = (n_params + n_cols - 1) // n_cols
+    fig, axes = plt.subplots(n_rows, n_cols,
+                              figsize=(n_cols * 3.0, n_rows * 2.2),
+                              sharex=True, dpi=120)
+    axes = axes.flatten() if n_rows > 1 else axes
+
+    for i, name in enumerate(param_names):
+        ax = axes[i]
+        ax.fill_between(end_t_days, q05[:, i], q95[:, i],
+                        color='C0', alpha=0.3, label='5-95%')
+        ax.plot(end_t_days, q50[:, i], color='C0', lw=1.4, label='median')
+        if name in truth:
+            ax.axhline(truth[name], color='red', lw=1.0, ls='--',
+                       label='truth')
+        ax.set_title(name, fontsize=9)
+        ax.tick_params(labelsize=8)
+        ax.grid(True, alpha=0.3)
+
+    for j in range(n_params, len(axes)):
+        axes[j].axis('off')
+
+    for ax in axes[-n_cols:]:
+        ax.set_xlabel('end of window (days)', fontsize=8)
+
+    fig.suptitle(
+        f"FSA-v1.5 posterior parameter traces — T={T_days}d, "
+        f"h={step_minutes}min, n_strides={n_strides}, "
+        f"mean A {mean_A_mpc:.3f} vs baseline {mean_A_base:.3f}",
+        fontsize=11,
+    )
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
     fig.savefig(out_path)
     plt.close(fig)
 
