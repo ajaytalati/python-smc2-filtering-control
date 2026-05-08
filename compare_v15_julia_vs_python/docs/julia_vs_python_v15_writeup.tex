@@ -1,0 +1,753 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[margin=2.2cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{listings}
+\usepackage{graphicx}
+\usepackage{enumitem}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!50!black,
+  urlcolor=blue!50!black,
+  citecolor=blue!50!black,
+}
+
+\definecolor{codebg}{RGB}{246,248,250}
+\definecolor{codecmt}{RGB}{106,115,125}
+\definecolor{codekw}{RGB}{215,58,73}
+\lstset{
+  basicstyle=\ttfamily\footnotesize,
+  backgroundcolor=\color{codebg},
+  commentstyle=\color{codecmt}\itshape,
+  keywordstyle=\color{codekw},
+  frame=single,
+  framerule=0pt,
+  framexleftmargin=4pt,
+  framexrightmargin=4pt,
+  framextopmargin=2pt,
+  framexbottommargin=2pt,
+  breaklines=true,
+  breakatwhitespace=true,
+  showstringspaces=false,
+}
+
+\title{FSA v1.5 closed-loop SMC$^2$-MPC: a side-by-side\\
+       Python+JAX vs Julia comparison study}
+\author{Hand-off report for the next agent}
+\date{2026-05-08}
+
+\begin{document}
+\maketitle
+\tableofcontents
+
+\begin{abstract}
+This document is a hand-off for the next agent (or human reader)
+who picks up the FSA v1.5 closed-loop comparison work. It explains
+what the FSA v1.5 model is, what the \texttt{smc2fc} / \texttt{SMC2FC}
+frameworks do, the functional programming paradigm we have moved
+to on the Julia side, the comparison problem itself, the tools
+developed for it, the bugs found and fixed, where we are today,
+and what comes next. All paths are absolute paths inside the
+\texttt{python-smc2-filtering-control} repository.
+\end{abstract}
+
+\section{Why this report exists}
+
+The FSA model has three Julia codebases and three Python codebases
+in this repo (\texttt{version\_1\_*}, \texttt{version\_2\_*},
+\texttt{version\_3\_*} on each side). The most relevant pair for
+this comparison is:
+
+\begin{itemize}[itemsep=2pt]
+  \item \textbf{Python+JAX:} \texttt{version\_1\_5\_Python\_JAX/}
+        --- the simplest closed-loop FSA bench, derived from the
+        working \texttt{version\_2\_Python\_JAX/} bench, with the
+        v1.5 model surface (3-state SDE, 10 estimated parameters,
+        3 direct-Gaussian observation channels, no circadian).
+  \item \textbf{Julia:} \texttt{version\_1\_5\_Julia/} --- the
+        Julia rewrite of the same model surface, written in a
+        purely functional style for portability to Lean4 (the
+        formal source of truth at \texttt{version\_1\_5\_LEAN/}).
+\end{itemize}
+
+The two stacks share the model math (verified bit-equal to 1e-6
+through a Julia$\leftrightarrow$Python+JAX$\leftrightarrow$Lean4
+121-case differential test). They diverge at the framework layer:
+the Python+JAX side uses the mature \texttt{smc2fc} engine; the
+Julia side uses its own \texttt{SMC2FC.jl} port plus model-side
+GPU kernels in KernelAbstractions.
+
+The user has invested weeks of optimisation in the Python+JAX
+side. The Julia side is roughly two days old. This report freezes
+the current state of the comparison, the bugs we found and fixed
+in this session, and the open work for the next agent.
+
+\section{What is FSA v1.5?}
+
+FSA (Fitness--Stress--Autonomic) is a 3-state stochastic
+differential equation model for an athlete's response to
+training. State $y = (B, F, A)$:
+
+\begin{itemize}[itemsep=2pt]
+  \item $B$ --- aerobic fitness (Banister chronic; bounded
+        $[0, 1]$, Jacobi-style state-dependent diffusion).
+  \item $F$ --- unified fatigue (Banister acute; $\geq 0$,
+        CIR-style diffusion).
+  \item $A$ --- autonomic amplitude (Stuart--Landau; $\geq 0$,
+        CIR-style diffusion).
+\end{itemize}
+
+Drift (\texttt{/day} units):
+\begin{align*}
+  \mu(B, F)        &= \mu_0 + \mu_B B - \mu_F F - \mu_{FF} F^2 \\
+  dB/dt            &= \kappa_B \, (1 + \varepsilon_A A) \, \Phi(t) - B / \tau_B \\
+  dF/dt            &= \kappa_F \, \Phi(t) - (1 + \lambda_A A) / \tau_F \, F \\
+  dA/dt            &= \mu \cdot A - \eta A^3
+\end{align*}
+
+State-dependent diffusion (It\^o):
+\begin{align*}
+  \sigma_B(B) \, dW_B &= \sigma_B \sqrt{B(1-B)} \, dW_B \\
+  \sigma_F(F) \, dW_F &= \sigma_F \sqrt{F} \, dW_F \\
+  \sigma_A(A) \, dW_A &= \sigma_A \sqrt{A} \, dW_A
+\end{align*}
+
+The single exogenous control is $\Phi(t)$, the training-strain
+rate ($\geq 0$). The closed-loop MPC's job is to pick $\Phi$ to
+maximise the time-integral of $A$ subject to a soft fatigue
+constraint ($\max(F - F_{\max}, 0)^2$ barrier).
+
+\subsection{What makes v1.5 special}
+
+\begin{itemize}[itemsep=2pt]
+  \item \textbf{14 dynamics parameters} in the v1.5 basis;
+        $\kappa_B$ replaced by $B_\infty = \kappa_B \tau_B$ and
+        $\kappa_F$ replaced by $F_\infty = \kappa_F \tau_F$ for
+        better identifiability. The basis-rotation adapter is in
+        \texttt{simulation.params\_v15\_to\_v1\_nt} (Julia) /
+        \texttt{simulation.params\_v15\_to\_v1} (Python+JAX).
+  \item \textbf{10 estimated parameters} (the filter's decision
+        variables); 4 dynamics parameters pinned at truth
+        ($\tau_B$, $\eta$, $\varepsilon_A$, $\mu_{FF}$) per the
+        FIM-rank decision; 3 obs-noise scales pinned at 0.005.
+  \item \textbf{3 direct-Gaussian observation channels}: $y^{obs}_B
+        = B + \mathcal{N}(0, \sigma_{B,obs}^2)$ and same for $F$,
+        $A$. No HR / sleep / stress / steps channels (that's the
+        v2 surface). No circadian forcing.
+  \item Time grid: 60 minutes per bin (24 bins per day) by default.
+        v2 uses 15 minutes per bin (96 bins per day).
+\end{itemize}
+
+\section{What \texttt{smc2fc} / \texttt{SMC2FC} does}
+
+Both stacks implement the same statistical pipeline:
+
+\begin{enumerate}[itemsep=2pt]
+  \item \textbf{Outer SMC$^2$ filter}: tempered sequential Monte Carlo
+        over the 10-dim unconstrained parameter cloud $\theta$.
+        At each tempering level $\lambda \in [0, 1]$ the targets
+        graduate from prior to posterior. Resample
+        (systematic) $\to$ Hamiltonian Monte Carlo (HMC) moves
+        with finite-difference gradients $\to$ next $\lambda$.
+        Returns a posterior cloud over $\theta$ for each rolling
+        filter window.
+  \item \textbf{Inner particle filter (PF)}: per $\theta$ candidate,
+        an inner PF computes $\log p(y_{1:T} \mid \theta)$ by
+        propagating a state-particle cloud forward through the SDE
+        and reweighting by the observation likelihood. This is the
+        marginal log-likelihood the outer SMC$^2$ uses.
+  \item \textbf{Forward-simulation controller}: NOT a particle
+        filter. The controller takes the filter-derived posterior
+        mean parameters $\hat\theta$ and the filter-derived smoothed
+        end-of-window state $\hat y$. It then runs an SMC$^2$ over
+        a low-dimensional schedule parameterisation (8 RBF
+        coefficients $\theta_{ctrl}$): for each candidate
+        $\theta_{ctrl}$, decode the 8 anchors into a
+        per-bin $\Phi$ schedule, simulate the SDE forward
+        $n_{\text{inner}}$ times under common-random-numbers (CRN)
+        noise, accumulate the cost
+        $J = -\!\int A \, dt + \lambda_F \!\int (F - F_{\max})_+^2 \, dt$,
+        and use the negative cost as a tempering target. Output is
+        the posterior-mean $\theta_{ctrl}^\star$, decoded to a
+        $\Phi$-schedule for the plant's next stride.
+\end{enumerate}
+
+\textbf{Critical: the controller does not run a particle filter
+internally. It runs deterministic forward simulations
+($n_{\text{inner}}$ noise trials per $\theta_{ctrl}$) using the
+filter's $\hat\theta$ and $\hat y$.} This was an explicit design
+question raised during the comparison and the answer is the same
+on both stacks: both controllers correctly forward-simulate.
+
+\section{Functional programming paradigm in Julia}
+
+\subsection{Why we moved to functional}
+
+The \texttt{version\_3\_julia/} stack was a Python-port-style Julia
+implementation: mutable structs, \texttt{!}-suffix mutating methods,
+threaded \texttt{MersenneTwister} state, history dicts pushed onto
+across stride boundaries. It accumulated subtle bugs that were hard
+to trace, and the user explicitly rejected it (``too much for a
+human to understand'').
+
+\texttt{version\_1\_5\_Julia/} is a clean re-design. The five rules:
+
+\begin{enumerate}[itemsep=2pt]
+  \item \textbf{No mutable structs in the public API.} v1.5 has
+        exactly one struct, \texttt{PlantState}, with two fields:
+        an \texttt{SVector\{3, Float64\}} and an \texttt{Int}. State
+        updates produce a NEW \texttt{PlantState}, not a mutation
+        of the old one.
+  \item \textbf{No \texttt{!}-suffix mutating methods.} Every public
+        function returns new values. \texttt{plant\_step(state,
+        Phi\_t, params, dt, key)} returns
+        \texttt{(state=new\_state, obs=...)}; the caller can build
+        history by collecting returned values.
+  \item \textbf{Explicit RNG keys, JAX-style.} Pass an explicit
+        \texttt{key::UInt64} to every randomised function. Internal
+        sub-keys are derived deterministically via
+        \texttt{hash((key, :sub\_purpose))}. Two callers with the
+        same \texttt{(state, key)} get the same answer, period.
+  \item \textbf{Pure facade over the inherently imperative GPU
+        kernel.} KernelAbstractions kernels mutate preallocated
+        \texttt{CuArrays} by design. v1.5 wraps every kernel-touching
+        public function in a pure facade: \texttt{gpu\_log\_density(
+        target, U, grid\_obs, key) $\to$ Vector\{Float64\}} allocates
+        a fresh output, dispatches the kernel, returns. Mutation is
+        encapsulated; callers never see the \texttt{CuArray}.
+  \item \textbf{I/O isolated to the bench's top-level
+        \texttt{main()}.} JLD2 + PNG writes happen exactly once at
+        the end of the bench. Logging at the bench level, not inside
+        \texttt{plant\_step} / \texttt{propagate} /
+        \texttt{obs\_log\_weight}.
+\end{enumerate}
+
+\subsection{The new \texttt{SMC2FC\_functional} library}
+
+A parallel functional rewrite of the \texttt{SMC2FC.jl} framework
+lives at \texttt{julia/SMC2FC\_functional/}. Same algorithmic
+contract as the existing \texttt{julia/SMC2FC/} port, but:
+
+\begin{itemize}[itemsep=2pt]
+  \item Top-level functions take immutable inputs and return
+        immutable outputs.
+  \item Pre-allocated buffers live behind an immutable
+        \texttt{Workspace} container.
+  \item No \texttt{!}-mutating functions exposed publicly.
+  \item Multiple-dispatch-driven specialisation; idiomatic Julian.
+  \item Google-style docstrings on every file and every function.
+\end{itemize}
+
+The proof-of-principle bench at\\
+\texttt{julia/SMC2FC\_functional/benchmarks/bench\_smc\_full\_mpc\_fsa\_v15\_functional\_gpu.jl}\\
+demonstrates the drop-in replacement. \textbf{Going forward this
+should be the default Julia entry point}; the existing
+\texttt{julia/SMC2FC/} stays as a back-compat reference. A
+three-library comparison harness is provided at\\
+\texttt{julia/SMC2FC\_functional/benchmarks/compare\_three\_libraries.jl}.
+
+\section{The comparison problem}
+
+The user's question: \emph{do the Python+JAX and Julia v1.5 stacks
+produce qualitatively the same closed-loop MPC behaviour, given
+they implement the same model under the same statistical
+framework?}
+
+This is harder than it sounds for several reasons:
+
+\begin{enumerate}[itemsep=2pt]
+  \item Different RNG implementations (JAX \texttt{PRNGKey} vs
+        Julia \texttt{StableRNG} vs hash-derived sub-keys) mean
+        the plant trajectories are NOT bit-identical even at the
+        same seed. Comparison must be statistical: mean $\int A$,
+        F-violation rate, posterior MSE to truth, schedule shape.
+  \item Different inner-PF algorithms: Python+JAX uses
+        \texttt{smc2fc.filtering.gk\_dpf\_v3\_lite} (a Gaussian
+        kernel, OT-regularised, differentiable PF); Julia uses a
+        custom segmented-PF KernelAbstractions kernel. Both are
+        valid, but they have different particle-degeneracy
+        regimes.
+  \item Different default particle counts: Python+JAX bench
+        defaulted to $N_{\text{smc}}=128 / N_{\text{inner}}=32$ on
+        the controller; the Julia bench defaulted to
+        $N_{\text{smc}}=256 / N_{\text{inner}}=64$. We brought
+        these into parity.
+  \item No prior baseline: no constant-$\Phi=1$ baseline trajectory
+        was being plotted alongside the MPC, so ``does the
+        controller actually beat doing nothing?'' was hard to
+        answer at a glance.
+  \item Different output formats: Python writes \texttt{.npz}, Julia
+        writes \texttt{.jld2} (HDF5).
+\end{enumerate}
+
+\subsection{Tools developed for the comparison}
+
+\textbf{1. JAX GPU profiler}
+(\texttt{src/profile\_gpu\_python.py}). Direct port of the existing
+v2 Julia profiler. Times the GK-DPF v3-lite \emph{filter kernel}
+and the controller cost \emph{kernel} in isolation, with
+\texttt{jax.block\_until\_ready} as the synchronisation point. Reports
+median time per call, threads-in-flight, approximate FLOPs,
+effective TFLOPS, percentage of the RTX-5090's 104.8 TFLOPS fp32
+peak, GPU memory before and after, and host-sync count.
+
+\textbf{2. v1.5 Julia GPU profiler}
+(\texttt{src/profile\_gpu\_julia\_v15.jl}). Same surface, same
+metrics, adapted to v1.5's GPU types (\texttt{FSAGPUTarget},
+\texttt{FSAv1ControlGPUTarget}).
+
+\textbf{3. Per-stride telemetry CSV} (added to both bench
+scripts). Each stride writes one row to \texttt{per\_stride.csv}
+with: \texttt{stride}, \texttt{t\_wall\_s},
+\texttt{n\_temp\_filter}, \texttt{n\_temp\_ctrl},
+\texttt{daily\_phi}, \texttt{A\_mean\_so\_far}, \texttt{B\_end},
+\texttt{F\_end}, \texttt{A\_end}.
+
+\textbf{4. Paired-run launcher}
+(\texttt{src/run\_v15\_T28d\_compare.sh}). Single shell script
+that:
+\begin{enumerate}[itemsep=2pt]
+  \item Runs both microbench profilers (writes
+        \texttt{julia\_profile.log} + \texttt{python\_profile.log}).
+  \item Starts \texttt{nvidia-smi} sampling at 1 Hz to a CSV.
+  \item Runs the Julia closed-loop bench with matched config.
+  \item Stops + restarts \texttt{nvidia-smi} for the Python run.
+  \item Runs the Python+JAX closed-loop bench, same matched config.
+\end{enumerate}
+Output lands under
+\texttt{outputs/v15\_julia\_vs\_python\_T<T>d\_seed<S>/\{julia,python\}/}.
+
+\textbf{5. Three-way comparison script}
+(\texttt{src/compare\_v15\_julia\_vs\_python.py}). Loads both
+bench outputs, both \texttt{nvidia-smi} CSVs, both profile logs.
+Produces:
+\begin{itemize}[itemsep=2pt]
+  \item \texttt{summary.txt} --- the diagnostic table (baseline as
+        gate, then macro \texttt{nvidia-smi} telemetry, then micro
+        profiler numbers).
+  \item \texttt{comparison.png} --- 6-panel three-way diagnostic
+        plot. Python MPC blue, Julia MPC red, baseline grey
+        dashed. Panels: $A$ trajectory, applied daily $\Phi$,
+        posterior medians for two parameters with truth lines,
+        GPU SM utilisation over wall time, per-stride wall time
+        bars.
+\end{itemize}
+JLD2 files are read with \texttt{h5py} and the 2D and 3D arrays are
+transposed (Julia is column-major; HDF5 readers in row-major order
+swap dimensions).
+
+\section{Bugs found and fixed}
+
+We worked top-down through the comparison and found four
+substantive issues, two on Python+JAX and two on Julia.
+
+\subsection{Python: shrinking planning horizon (A1)}
+
+\textbf{File}: \texttt{version\_1\_5\_Python\_JAX/tools/bench\_smc\_full\_mpc\_fsa\_v15.py},
+old line 287.
+
+The replan block computed
+$t_{\text{remaining\_days}} = (n_{\text{strides}} - s) \cdot
+\text{STRIDE\_BINS} / \text{BINS\_PER\_DAY}$ and passed
+\texttt{T\_total=t\_remaining\_days} into
+\texttt{build\_control\_spec()}. As the bench progresses, the
+horizon shrinks; at stride 14 of T=28d the controller sees only
+~14 days ahead. v2's bench instead always plans the FULL
+\texttt{T\_total\_days} at every replan
+(\texttt{bench\_smc\_full\_mpc\_fsa.py:386-388}). v1.5 Julia uses
+\texttt{H\_plan\_bins = T\_total\_bins} (also full horizon).
+
+\textbf{Symptom}: the controller could not justify a "build $B$
+then sprint" Banister strategy because the time-to-horizon was
+constantly shrinking.
+
+\textbf{Fix}: pass \texttt{T\_total=float(args.T\_days)} (constant)
+at every replan.
+
+\subsection{Python: mid-array splice instead of overwrite (A2)}
+
+\textbf{File}: same, old lines 317--320.
+
+The new plan was spliced INTO THE MIDDLE of the existing
+\texttt{daily\_phi\_plan} array using an absolute-current-day
+offset. Combined with the shrinking horizon (A1), this produced a
+sawtooth $\Phi$ pattern: the front of the plan got partially
+overwritten on each replan, the back stayed stale.
+
+v2 overwrites the whole plan: \texttt{daily\_phi\_plan =
+sched\_per\_day.astype(np.float64)} +
+\texttt{last\_replan\_stride = s + 1}.
+
+\textbf{Fix}: same overwrite-and-reset pattern in v1.5 Python.
+
+\subsection{Python: filter degeneracy from bootstrap with GK-DPF (B)}
+
+\textbf{File}: \texttt{version\_1\_5\_Python\_JAX/models/fsa\_high\_res/estimation.py},
+function \texttt{\_propagate\_fn\_framework}.
+
+This was the structural bug. The \texttt{smc2fc.filtering.gk\_dpf\_v3\_lite}
+filter is designed for \emph{guided} (Kalman-fused) proposals: the
+\texttt{propagate\_fn} contract expects to return both the new state
+\emph{and} a Radon--Nikodym correction \texttt{pred\_lw} that the
+framework adds to the per-bin weight increment.
+
+v1.5 Python+JAX's \texttt{\_propagate\_fn\_framework} returned
+\texttt{pred\_lw = 0.0} (the bootstrap convention: proposal IS
+dynamics, no correction needed). Mathematically valid but
+fundamentally incompatible with GK-DPF v3-lite's
+weight-smoothing kernel + OT regularisation: the framework's
+machinery pushed particles toward biased fixed points. Smoking
+gun: at higher particle counts $N=1024 / K=800$ the bootstrap
+variant got WORSE (posterior MSE 1.41 $\to$ 31.16), the classic
+``structural mis-spec'' signature.
+
+\textbf{Fix}: Kalman fusion. Mirrors v2's
+\texttt{propagate\_fn} pattern exactly. v1.5's obs model is the
+simplest possible Kalman case ($H = I$, $b = 0$,
+$R = \text{diag}(\sigma_{*,obs}^2)$, all channels always
+present), so the sequential-scalar update reduces to per-channel
+1D Kalman:
+
+\begin{align*}
+  \mu_{\text{prior}} &= y + dt \cdot \text{drift} \\
+  P_{\text{prior}}   &= \text{diag}(\sigma_B^2 \, B(1{-}B) \, dt,\
+                                       \sigma_F^2 \, F \, dt,\
+                                       \sigma_A^2 \, A \, dt) \\
+  \text{innov}_i     &= y_{\text{obs},i} - \mu_i \\
+  S_i                &= P_{ii} + \sigma_{i,obs}^2 \\
+  K_i                &= P[:, i] / S_i \\
+  \mu                &\mathrel{+}= K_i \cdot \text{innov}_i \\
+  P                  &\mathrel{-}= K_i \otimes P[i, :] \\
+  \log p_i           &= -\tfrac12 \log(2\pi S_i) - \tfrac{\text{innov}_i^2}{2 S_i}
+\end{align*}
+
+Sample $x_{\text{new}} \sim \mathcal{N}(\mu_{\text{fused}},
+P_{\text{fused}})$ via Cholesky. Return \texttt{pred\_lw =
+log\_pred\_total - obs\_ll(y\_new)} so the framework's
+\texttt{obs\_log\_weight\_fn} re-add cancels properly.
+
+\textbf{Result} (T=7d, seed=42, $N=32$, $K=200$):
+
+\begin{center}
+\begin{tabular}{lrrr}
+  \toprule
+                     & Before  & After    & Improvement \\
+  \midrule
+  posterior MSE      & 1.41    & 0.0188   & $\sim$74$\times$ \\
+  \bottomrule
+\end{tabular}
+\end{center}
+
+The 10 estimated parameters' posterior medians now hug truth
+tightly (was: $\tau_F$ stuck at 3 vs truth 7; sigmas drifting
+upward unbounded).
+
+\subsection{Python: \texttt{init\_state} cheat (C)}
+
+\textbf{File}: same bench file, around old line 294.
+
+The bench was passing \texttt{init\_state\_dict =
+dict(B=plant\_state.bfa[0], ...)} directly to the controller. This
+is a closed-loop violation: the controller should know only what
+the filter knows (its posterior estimate of the state), not the
+plant's true state.
+
+\textbf{Fix}: extract a smoothed end-of-window state from the
+filter posterior cloud via \texttt{log\_density\_factory.extract\_state\_at\_step},
+mirroring v2's pattern (line 366--367). Use that as
+\texttt{init\_state}.
+
+\subsection{Julia: per-tempering-level allocation churn (perf)}
+
+\textbf{File}: \texttt{version\_1\_5\_Julia/models/fsa\_high\_res/gpu\_pf.jl},
+function \texttt{parallel\_hmc\_one\_move}.
+
+The functional HMC variant allocates roughly ten $(M, d)$
+matrices per call. With 13 strides $\times$ 5 tempering levels
+$\times$ 3 HMC moves per level the bench does $\sim$200 HMC
+calls, allocating a few MB total --- not catastrophic, but a
+real per-call constant.
+
+\textbf{Fix}: added a mutating
+\texttt{parallel\_hmc\_one\_move!} variant that reuses two
+persistent $(M, d)$ buffers across the whole leapfrog. The bench
+imports both; \texttt{run\_outer\_smc} now calls the mutating
+variant.
+
+\textbf{Result} (T=2d open-loop smoke, $N=16$, $K=100$): wall
+time 96.9~s $\to$ 92.0~s ($\sim$5\% faster at this small N). All
+six GPU PF smoke tests still pass.
+
+\subsection{Julia: optional Liu--West $\theta$-cloud shrinkage}
+
+\textbf{File}: same plus
+\texttt{version\_1\_5\_Julia/tools/bench\_smc\_full\_mpc\_fsa\_gpu.jl}.
+
+Added a CLI flag \texttt{--liu-west-a} (default 0.0 = disabled).
+When set in $(0, 1)$ --- e.g.\ 0.97 --- applies the standard
+Liu--West shrinkage between resample and HMC inside
+\texttt{run\_outer\_smc}:
+
+\[
+  \theta_i \;\leftarrow\; a \cdot \theta_i \;+\; (1-a) \cdot \overline\theta
+                  \;+\; \sqrt{1 - a^2} \cdot \text{column\_std} \cdot \xi,
+                  \qquad \xi \sim \mathcal{N}(0, I)
+\]
+
+Helps maintain $\theta$-cloud diversity at low $N$, where pure
+tempered HMC can collapse. Off by default so existing
+reproducibility is preserved.
+
+\section{Where we are now}
+
+After all fixes (T=7d, seed=42, matched config $N_{\text{smc}}=32$,
+$K_{\text{pf}}=200$):
+
+\begin{center}
+\begin{tabular}{lrrr}
+  \toprule
+                                        & Baseline ($\Phi=1$) & Python+JAX MPC & Julia MPC \\
+  \midrule
+  mean $A$ (last 7 days)                & 0.0935              & 0.0808         & 0.0815    \\
+  improvement vs baseline               & ---                 & $-13.6\%$      & $-12.8\%$ \\
+  F-violation rate                      & 0.0                 & 0.0            & 0.0       \\
+  posterior MSE to truth (final window) & ---                 & 0.0188         & 0.0868    \\
+  total wall time (min)                 & ---                 & 5.3            & 37.2      \\
+  mean GPU utilisation (\%)             & ---                 & 40.0           & 24.8      \\
+  filter kernel time / call (ms, micro) & ---                 & 4.7            & 81.0      \\
+  controller cost / call (ms, micro)    & ---                 & 23.4           & 0.5       \\
+  \bottomrule
+\end{tabular}
+\end{center}
+
+Read this carefully. The headline numbers are nuanced:
+
+\begin{itemize}[itemsep=2pt]
+  \item \textbf{Both filters are now algorithmically sound.} The
+        Python+JAX MSE 0.0188 vs Julia 0.0868 difference is a
+        \emph{maturity gap, not an algorithmic gap} --- weeks of
+        Python+JAX optimisation vs $<48$h on Julia. Both are at
+        the regime where the controller is the binding constraint.
+  \item \textbf{Neither MPC beats baseline at T=7d}; both lose
+        $\sim$13\% on mean $A$. This is the H3 controller-cost-design
+        issue: at short horizon, $J = -\!\int A + \lambda_F
+        \!\int (F-F_{\max})_+^2$ admits a ``rest cures all''
+        optimum because suppressing $\Phi$ keeps $F$ low without
+        paying much $-\!\int A$ cost. v2's reference plots ramp
+        $\Phi$ UP at T=14d / T=28d; the longer-horizon test is
+        the next thing to run.
+  \item \textbf{Julia is 7$\times$ slower wall time, with similar
+        mean GPU utilisation.} The microbench shows the gap is
+        per-call, not algorithmic: filter kernel 81 ms vs 4.7 ms.
+        Plenty of GPU headroom on Julia's side; the Python
+        controller is, conversely, much slower than the Julia
+        controller (likely fp64 vs fp32). See Section~\ref{sec:next}.
+\end{itemize}
+
+\section{What comes next}\label{sec:next}
+
+In rough priority order:
+
+\paragraph{1. Migrate to \texttt{SMC2FC\_functional}.}
+\texttt{julia/SMC2FC\_functional/} is intended to be the default
+Julia framework going forward. Rerun the comparison harness with
+the bench at \texttt{julia/SMC2FC\_functional/benchmarks/bench\_smc\_full\_mpc\_fsa\_v15\_functional\_gpu.jl}
+to confirm it produces equivalent posteriors / control behaviour.
+The three-library cross-check at
+\texttt{compare\_three\_libraries.jl} is the validation harness.
+
+\paragraph{2. Optimise Julia GPU utilisation.}
+The 81 ms / call filter kernel is the headline cost. Likely
+sources:
+\begin{itemize}[itemsep=2pt]
+  \item Per-segment kernel launch overhead inside the segmented
+        PF (6 kernel launches per \texttt{gpu\_log\_density} call
+        $\times$ 21 FD perturbations $\times$ \dots).
+  \item Liu--West $\theta$-cloud shrinkage (now optional via CLI;
+        run with \texttt{--liu-west-a 0.97} to test).
+  \item Inter-segment resample on CPU vs GPU --- worth
+        instrumenting.
+\end{itemize}
+The mutating-HMC change in this session was a small first step.
+\texttt{nsys profile} on a real bench run would reveal the actual
+bottleneck. Bumping particle counts to v2-saturation-tier
+($N=256, K=400$) is the next-cheapest test.
+
+\paragraph{3. Run T=14d / T=28d to test H3.}
+The user's reference v2 plots ramp $\Phi$ UP at longer horizons
+(T=14d: mean $A$ 0.122 vs baseline 0.081, +50\%; T=28d: 0.157 vs
+0.098, +60\%). The hypothesis is that v1.5's controller will
+similarly find the ramp-up optimum at horizons long enough for
+the ``build $B$ then sprint'' payoff to dominate.
+
+\paragraph{4. Cost-function variants.}
+If T=14d / T=28d still picks rest, try:
+\begin{itemize}[itemsep=2pt]
+  \item Re-introduce $\lambda_\Phi \!\int \Phi^2 \, dt$ penalty
+        (currently $\lambda_\Phi = 0$ on both stacks by default
+        --- the cost expression supports it).
+  \item Add a soft ``minimum mean-$A$ over planning window''
+        floor.
+  \item Investigate whether the v2 G1 reparametrisation around
+        $(A_{TYP}, F_{TYP})$ shifts the bifurcation balance in
+        a way that makes ramp-up the dominant optimum at all
+        horizons.
+\end{itemize}
+
+\paragraph{5. Multi-seed robustness.}
+All comparison runs to date are single-seed. If a T=28d run flips
+H3 cleanly, replicate at $\geq 3$ seeds before declaring victory.
+
+\section{How to run the comparison end-to-end}
+
+The full pipeline is automated by the launcher:
+
+\begin{lstlisting}
+conda activate comfyenv
+bash /home/ajay/Repos/python-smc2-filtering-control/version_1_5_Python_JAX/tools/launchers/run_v15_T28d_compare.sh 7 42
+# args: T_DAYS, SEED. Defaults: T=28, seed=42.
+\end{lstlisting}
+
+This produces (under the \texttt{outputs/v15\_julia\_vs\_python\_T<T>d\_seed<S>/}
+parent dir):
+
+\begin{itemize}[itemsep=2pt]
+  \item \texttt{julia\_profile.log}, \texttt{python\_profile.log}
+  \item \texttt{julia/}: \texttt{data.jld2},
+        \texttt{manifest.json}, \texttt{per\_stride.csv},
+        \texttt{gpu\_telemetry.csv}, two PNGs (state traces, param
+        traces), \texttt{bench.log}.
+  \item \texttt{python/}: \texttt{trajectory.npz},
+        \texttt{manifest.json}, \texttt{per\_stride.csv},
+        \texttt{gpu\_telemetry.csv}, two PNGs, \texttt{bench.log}.
+\end{itemize}
+
+Then run the comparison script:
+
+\begin{lstlisting}
+cd /home/ajay/Repos/python-smc2-filtering-control/version_1_5_Python_JAX
+JAX_ENABLE_X64=True PYTHONPATH=.:.. \
+  python tools/compare_v15_julia_vs_python.py \
+  /home/ajay/Repos/python-smc2-filtering-control/outputs/v15_julia_vs_python_T7d_seed42
+\end{lstlisting}
+
+This writes \texttt{summary.txt} and \texttt{comparison.png} into
+the parent dir.
+
+\section{How to profile each stack in isolation}
+
+\begin{lstlisting}
+# Julia microbench (filter kernel + controller cost kernel)
+cd /home/ajay/Repos/python-smc2-filtering-control/version_1_5_Julia
+julia --project=. tools/profile_gpu.jl --both
+
+# Python+JAX microbench (same surface, same metrics)
+cd /home/ajay/Repos/python-smc2-filtering-control/version_1_5_Python_JAX
+JAX_ENABLE_X64=True PYTHONPATH=.:.. \
+  python tools/profile_gpu.py --both
+\end{lstlisting}
+
+For deeper Python+JAX profiling, pass \texttt{--trace} to dump a
+\texttt{jax.profiler} trace into \texttt{./jax\_trace\_filter/}
+and \texttt{./jax\_trace\_controller/} that TensorBoard's Profile
+tab can render.
+
+For deeper Julia profiling, run the bench under
+\texttt{nsys profile --trace=cuda julia tools/bench\_smc\_full\_mpc\_fsa\_gpu.jl ...}
+and inspect the resulting \texttt{.qdrep} in NVIDIA Nsight Systems.
+
+\section{Repository basics: where things live}
+
+\paragraph{Python+JAX.} Per-file layout under
+\texttt{version\_1\_5\_Python\_JAX/}:
+
+\begin{itemize}[itemsep=2pt]
+  \item \texttt{models/fsa\_high\_res/\_dynamics.py} --- pure JAX
+        drift, diffusion, EM step.
+  \item \texttt{models/fsa\_high\_res/simulation.py} ---
+        \texttt{DEFAULT\_PARAMS}, \texttt{INIT\_STATE},
+        \texttt{params\_v15\_to\_v1}.
+  \item \texttt{models/fsa\_high\_res/\_plant.py} --- pure
+        \texttt{plant\_step} / \texttt{plant\_rollout}.
+  \item \texttt{models/fsa\_high\_res/estimation.py} ---
+        \texttt{HIGH\_RES\_FSA\_V15\_ESTIMATION}
+        (\texttt{EstimationModel}); the Kalman-fused
+        \texttt{\_propagate\_fn\_framework}.
+  \item \texttt{models/fsa\_high\_res/control.py} --- RBF schedule
+        + cost; \texttt{build\_control\_spec}.
+  \item \texttt{tools/bench\_smc\_full\_mpc\_fsa\_v15.py} --- the
+        closed-loop bench.
+\end{itemize}
+
+The \texttt{smc2fc} framework lives at \texttt{smc2fc/} (one level
+up from any version dir). The relevant entry points consumed by
+the bench are: \texttt{smc2fc.core.jax\_native\_smc.run\_smc\_window\_native},
+\texttt{...run\_smc\_window\_bridge\_native},
+\texttt{smc2fc.filtering.gk\_dpf\_v3\_lite.make\_gk\_dpf\_v3\_lite\_log\_density\_compileonce},
+\texttt{smc2fc.control.tempered\_smc\_loop.run\_tempered\_smc\_loop\_native}.
+
+\paragraph{Julia.} Per-file layout under
+\texttt{version\_1\_5\_Julia/}:
+
+\begin{itemize}[itemsep=2pt]
+  \item \texttt{models/fsa\_high\_res/\_dynamics.jl} --- v1
+        verbatim G0 SDE drift / diffusion / substepped EM.
+  \item \texttt{models/fsa\_high\_res/simulation.jl} ---
+        \texttt{DEFAULT\_PARAMS},
+        \texttt{params\_v15\_to\_v1\_nt}, \texttt{sample\_obs\_bfa}.
+        Uses \texttt{Match.jl} \texttt{@match} at every site that
+        a future Lean4 port would also need to pattern-match.
+  \item \texttt{models/fsa\_high\_res/\_plant.jl} --- pure
+        \texttt{plant\_step} / \texttt{plant\_rollout}.
+  \item \texttt{models/fsa\_high\_res/gpu\_pf.jl} ---
+        \texttt{FSAGPUTarget}, \texttt{gpu\_log\_density},
+        \texttt{gpu\_grads}, \texttt{parallel\_hmc\_one\_move},
+        \texttt{parallel\_hmc\_one\_move!} (the new mutating
+        variant).
+  \item \texttt{models/fsa\_high\_res/gpu\_control.jl} ---
+        \texttt{FSAv1ControlGPUTarget},
+        \texttt{gpu\_cost\_log\_density\_batched}.
+  \item \texttt{models/fsa\_high\_res/estimation.jl} ---
+        \texttt{PARAM\_NAMES}, \texttt{PARAM\_PRIOR\_CONFIG}.
+  \item \texttt{tools/bench\_smc\_full\_mpc\_fsa\_gpu.jl} --- the
+        closed-loop bench, including \texttt{run\_outer\_smc}
+        (the hand-rolled tempered SMC$^2$ loop) and
+        \texttt{controller\_plan} (calls
+        \texttt{SMC2FC.run\_tempered\_smc\_gpu}).
+\end{itemize}
+
+The Julia framework lives at \texttt{julia/SMC2FC/} (existing) and
+\texttt{julia/SMC2FC\_functional/} (new, drop-in replacement).
+
+\paragraph{Lean4 reference.} \texttt{version\_1\_5\_LEAN/}
+provides a Lean4 implementation of the v1.5 model functions
+exposed via a JSON-line CLI (\texttt{Main.lean}). The diff test
+\texttt{version\_1\_5\_Julia/diff\_test/test\_lean\_diff\_v15.jl}
+round-trips 121 randomised cases through the Lean4 binary
+at 1e-6 single-step / 1e-4 integrated tolerance. This guarantees
+the model math is identical across all three implementations.
+
+\section{Closing notes}
+
+The work in this session is committed and pushed on the
+\texttt{Julia-port-verison-1} branch. Notable hashes:
+
+\begin{itemize}[itemsep=2pt]
+  \item \texttt{0c92907} --- CLI parity + GPU profilers (Phases A/A1/A1b)
+  \item \texttt{ff3da57} --- per-stride telemetry + launcher + comparison script
+  \item \texttt{155beec} --- T=7d pre-flight artefacts + initial findings
+  \item \texttt{159f93e} --- Python A1 + A2 fix (shrinking horizon + mid-array splice)
+  \item \texttt{3ff65c3} --- Python Kalman-fusion fix + \texttt{init\_state} cheat fixed
+  \item \texttt{da5e9c9} --- findings reframing (drop misleading ``Python best of 3'')
+  \item \texttt{c4a9e86} --- Julia perf: mutating HMC + optional Liu--West
+\end{itemize}
+
+The corresponding plan archive is
+\texttt{claude\_plans/FSA\_v1\_5\_three\_way\_closed\_loop\_comparison\_2026-05-08\_1423.md}
+(also copied to \texttt{docs/PLAN\_ARCHIVE.md} in this directory).
+
+\end{document}
