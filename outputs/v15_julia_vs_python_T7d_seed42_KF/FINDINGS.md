@@ -19,20 +19,31 @@
                                   Baseline (Φ=1.0)   Python+JAX MPC   Julia MPC
 mean A (last 7 days)              0.0935             0.0808           0.0815
   vs baseline                          —             -13.6%           -12.8%
-posterior MSE to truth                 —             0.0188 ★          0.0868
+posterior MSE to truth                 —             0.0188            0.0868
 total wall time (min)                  —             5.3              37.2
 mean GPU utilisation (%)               —             40.0             24.8
 ```
 
-★ = best of all three.
+> The two MSE numbers are NOT directly comparable as a fairness statement
+> about the two stacks — the comparison is a **maturity gap, not an
+> algorithmic gap**. Python+JAX has had weeks of optimization (v2 paved
+> the path; we back-ported v2's working Kalman-fused proposal and the
+> filter-derived `init_state` extraction in this commit). v1.5 Julia is
+> ~48 hours old and has obvious optimization headroom (kernel batching,
+> mutating HMC moves, and Liu-West-style shrinkage on the θ cloud are
+> all on the table). Treat both numbers as "filter is now algorithmically
+> sound on each side".
 
 ## Verdict
 
 **Filter side: FIXED.** Python's posterior MSE dropped from 1.41 → 0.0188
-— a **74× improvement** — and is now **5× better than Julia's 0.087** at
-matched config (N=32 outer, K=200 inner). The param-traces plot shows
-every one of the 10 estimated params hugging truth with tight bands
-(was: tau_F stuck at 3 vs truth 7; sigmas drifting upward unbounded).
+— a **74× improvement vs the previous broken Python configuration**. The
+param-traces plot shows every one of the 10 estimated params hugging
+truth with tight bands (was: tau_F stuck at 3 vs truth 7; sigmas drifting
+upward unbounded). This brings Python's filter up to v2's algorithmic
+maturity. The Julia stack's filter is *also* algorithmically sound (MSE
+0.087); both are now in the regime where the controller, not the filter,
+is the binding constraint.
 
 The fix was Kalman fusion in `_propagate_fn_framework` (mirrors v2's
 working pattern with the same smc2fc framework). The smc2fc GK-DPF
