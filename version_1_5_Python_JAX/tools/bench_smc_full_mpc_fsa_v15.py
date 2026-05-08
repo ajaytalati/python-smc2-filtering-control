@@ -294,9 +294,16 @@ def main():
                 n_inner=args.ctrl_n_inner,
             )
 
-            key, ctrl_key = jax.random.split(key)
+            # `run_tempered_smc_loop_native` is keyword-only and `seed`
+            # is an `int`, not a JAX PRNGKey. Derive a stable int from
+            # the rolling key + stride idx.
+            key, _ = jax.random.split(key)   # advance the key for
+                                              # consistency w/ Julia's
+                                              # hash-based subkey style
+            ctrl_seed_int = int(args.seed) + 100_000 + s
             res = run_tempered_smc_loop_native(
-                ctrl_spec, ctrl_cfg, ctrl_key,
+                spec=ctrl_spec, cfg=ctrl_cfg, seed=ctrl_seed_int,
+                print_progress=False,
             )
             # `res` carries `mean_theta` → schedule → daily mean Φ
             mean_theta = jnp.asarray(res['mean_theta'])
@@ -312,7 +319,10 @@ def main():
             for di in range(min(n_plan_days, args.T_days - day_now)):
                 daily_phi_plan[day_now + di] = new_daily[di]
             last_replan_stride = s
-            n_temp_ctrl_s = int(res.get('n_temp', 0))
+            # The native-path return dict uses `n_temp_levels`; fall
+            # back to `n_temp` for the legacy BlackJAX-path contract.
+            n_temp_ctrl_s = int(res.get('n_temp_levels',
+                                        res.get('n_temp', 0)))
             replan_history.append({
                 'stride': s,
                 'plan_per_day': new_daily.tolist(),

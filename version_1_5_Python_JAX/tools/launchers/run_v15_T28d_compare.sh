@@ -50,10 +50,15 @@ echo "  parent dir: $PARENT_DIR"
 echo "================================================================="
 
 # ── Conda activate (lazy — sourced only if available) ──────────────────
+# Drop -u briefly: conda's activate scripts reference unbound vars
+# (e.g. ADDR2LINE in activate-binutils_linux-64.sh) and would fail
+# under strict mode.
 if [[ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]]; then
+    set +u
     # shellcheck disable=SC1091
     source "$HOME/miniconda3/etc/profile.d/conda.sh"
     conda activate comfyenv
+    set -u
 fi
 
 # ── Helper: start nvidia-smi in background, sample every 1 s ──────────
