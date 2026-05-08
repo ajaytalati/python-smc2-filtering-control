@@ -255,6 +255,26 @@ def main():
             posterior_particles[s, :samp_constrained.shape[0], :] = samp_constrained
             posterior_mask[s] = True
             n_temp_filter_s = int(n_temp)
+
+            # ── Extract filter-derived smoothed state at end-of-window ──
+            # Mirrors v2 bench's pattern (`smoothed_state = jnp.mean(states,
+            # axis=0)`). Used as the controller's init_state so the bench
+            # plays fair (no peeking at plant_state). v1.5's earlier code
+            # passed `plant_state.bfa` directly — a closed-loop violation.
+            n_extract = min(10, particles.shape[0])
+            us_extract = jnp.asarray(particles[:n_extract])
+            target_step_arr = jnp.asarray(STRIDE_BINS, dtype=jnp.int32)
+            extract_partial = jax.tree_util.Partial(
+                log_density_factory.extract_state_at_step,
+                grid_obs=grid_obs,
+                fixed_init_state=fixed_init_state,
+                w_start=jnp.asarray(0, dtype=jnp.int32),
+                key0=smc_key,
+                target_step=target_step_arr,
+            )
+            states = jax.vmap(extract_partial)(us_extract)
+            fixed_init_state = jnp.asarray(jnp.mean(states, axis=0))
+
             print(f"  stride {s+1}/{n_strides}: filter {n_temp} levels, "
                   f"{elapsed_f:.1f}s")
         else:
@@ -283,17 +303,18 @@ def main():
                                 ('sigma_B_obs', 'sigma_F_obs', 'sigma_A_obs')})
 
             # Build a fresh ControlSpec around the posterior-mean params,
-            # taking the current plant state as the new initial condition.
+            # taking the FILTER's smoothed end-of-window state as the new
+            # initial condition. Earlier code peeked at `plant_state.bfa`
+            # directly — a closed-loop violation. Now we play fair (matches
+            # v2 bench line 367: `fixed_init_state = jnp.array(smoothed_state)`).
+            #
             # CRITICAL: plan the FULL `args.T_days` horizon at every replan
             # — matches v2's `bench_smc_full_mpc_fsa.py:386-388` pattern
-            # ("plan T_total days ahead at every replan"). The earlier
-            # bug used a shrinking horizon `(n_strides - s) * STRIDE_BINS /
-            # BINS_PER_DAY` which gave the controller no time-to-horizon
-            # to justify a "build B then sprint" Banister strategy and
-            # made it pick rest-heavy schedules.
-            init_state_dict = dict(B=float(plant_state.bfa[0]),
-                                    F=float(plant_state.bfa[1]),
-                                    A=float(plant_state.bfa[2]))
+            # ("plan T_total days ahead at every replan").
+            xhat = np.asarray(fixed_init_state, dtype=np.float64)
+            init_state_dict = dict(B=float(xhat[0]),
+                                    F=float(xhat[1]),
+                                    A=float(xhat[2]))
             ctrl_spec = build_control_spec(
                 T_total=float(args.T_days), dt_days=DT_BIN_DAYS,
                 params_v15=params_v15, init_state=init_state_dict,

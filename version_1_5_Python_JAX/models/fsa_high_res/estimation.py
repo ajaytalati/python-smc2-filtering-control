@@ -208,21 +208,106 @@ def propagate(particles, Phi_t, params, dt, key):
 
 def _propagate_fn_framework(y, t, dt, params, grid_obs, k,
                               sigma_diag, noise, rng_key):
-    """Framework-API single-particle propagate. `params` is the
-    constrained filter vector (length 10) per `_PI` order; we expand to
-    a v1.5 dict, rotate to v1, then take one EM step using `noise`."""
+    """Framework-API single-particle propagate with **Kalman-fused
+    proposal** over v1.5's 3 direct-Gaussian obs channels.
+
+    Mirrors v2's `propagate_fn` pattern (sequential-scalar Kalman fusion
+    + Cholesky sample + Radon-Nikodym pred_lw correction). The earlier
+    bootstrap/prior-predictive variant (`return … , 0.0`) caused the
+    GK-DPF v3-lite framework filter to degenerate (posterior MSE 1.41
+    at N=32/K=200, 31.16 at N=1024/K=800) because GK-DPF's weight-
+    smoothing kernel + OT regularization were designed for guided
+    proposals.
+
+    v1.5's obs model is the simplest possible Kalman case:
+      obs_B = B + N(0, σ_B_obs²)   →  H = [1, 0, 0],  bias = 0,  R = σ_B_obs²
+      obs_F = F + N(0, σ_F_obs²)   →  H = [0, 1, 0],  bias = 0,  R = σ_F_obs²
+      obs_A = A + N(0, σ_A_obs²)   →  H = [0, 0, 1],  bias = 0,  R = σ_A_obs²
+    All three channels always present; obs noise pinned at FROZEN constants.
+
+    Returns (y_new, pred_lw) where pred_lw absorbs the Gaussian
+    predictive log-marginal minus the obs Gaussian at y_new — the
+    framework re-adds obs_log_weight at line 156 of gk_dpf_v3_lite.py.
+    """
     del t, sigma_diag, rng_key
+
+    # ── v1.5 Banister Euler drift prediction (v1 basis after rotation) ──
     p_v15 = _params_v15_from_filter_vector(params)
     p_v1 = params_v15_to_v1(p_v15)
     Phi_k = grid_obs['Phi'][k]
-    d = drift_jax(y, p_v1, Phi_k)
-    sigma = diffusion_state_dep(y, p_v1)
-    y_pred = y + dt * d + sigma * jnp.sqrt(dt) * noise
-    B_next = jnp.where(y_pred[0] < 0.0, -y_pred[0],
-                       jnp.where(y_pred[0] > 1.0, 2.0 - y_pred[0], y_pred[0]))
-    F_next = jnp.abs(y_pred[1])
-    A_next = jnp.abs(y_pred[2])
-    return jnp.array([B_next, F_next, A_next]), 0.0   # 0 pred_lw — no fusion
+    d = drift_jax(y, p_v1, Phi_k)            # (3,) [dB, dF, dA] /day
+    B_pred = y[0] + dt * d[0]
+    F_pred = y[1] + dt * d[1]
+    A_pred = y[2] + dt * d[2]
+    mu_prior = jnp.array([B_pred, F_pred, A_pred])
+
+    # ── State-dependent process-noise variance per dimension ──
+    # σ_B(B) = sigma_B · √(B(1-B));  similarly for F, A (CIR-style).
+    B_cl = jnp.clip(y[0], 1e-4, 1.0 - 1e-4)
+    F_cl = jnp.maximum(y[1], 0.0)
+    A_cl = jnp.maximum(y[2], 0.0)
+    sigma_B_dyn = p_v1['sigma_B']
+    sigma_F_dyn = p_v1['sigma_F']
+    sigma_A_dyn = p_v1['sigma_A']
+    var_B = jnp.maximum(sigma_B_dyn ** 2 * B_cl * (1.0 - B_cl) * dt, 1e-12)
+    var_F = jnp.maximum(sigma_F_dyn ** 2 * F_cl * dt, 1e-12)
+    var_A = jnp.maximum(sigma_A_dyn ** 2 * (A_cl + 1e-4) * dt, 1e-12)
+    P_prior = jnp.diag(jnp.array([var_B, var_F, var_A]))
+
+    # ── Linear obs model: H = I, bias = 0, R = diag(σ_*_obs²) ──
+    H = jnp.eye(3, dtype=mu_prior.dtype)
+    bias = jnp.zeros(3, dtype=mu_prior.dtype)
+    R_diag = jnp.array([SIGMA_B_OBS_FROZEN ** 2,
+                         SIGMA_F_OBS_FROZEN ** 2,
+                         SIGMA_A_OBS_FROZEN ** 2], dtype=mu_prior.dtype)
+    obs_vals = jnp.array([grid_obs['obs_B'][k],
+                           grid_obs['obs_F'][k],
+                           grid_obs['obs_A'][k]], dtype=mu_prior.dtype)
+    # All channels always present in v1.5 (no gating).
+    obs_pres = jnp.ones(3, dtype=mu_prior.dtype)
+
+    # ── Sequential scalar Kalman fusion (mirrors v2 line 217-235) ──
+    def _kalman_step(carry, ch):
+        mu, P, lp = carry
+        h_i, b_i, r_i, y_i, pres_i = ch
+        innov = y_i - (h_i @ mu + b_i)
+        Ph    = P @ h_i
+        S_i   = h_i @ Ph + r_i
+        K_i   = Ph / S_i
+        ll_i  = -0.5 * jnp.log(2.0 * jnp.pi * S_i) - 0.5 * innov ** 2 / S_i
+        mu = mu + pres_i * K_i * innov
+        P  = P  - pres_i * jnp.outer(K_i, Ph)
+        lp = lp + pres_i * ll_i
+        return (mu, P, lp), None
+
+    (mu_fused, P_fused, log_pred_total), _ = jax.lax.scan(
+        _kalman_step,
+        (mu_prior, P_prior, jnp.asarray(0.0, dtype=mu_prior.dtype)),
+        (H, bias, R_diag, obs_vals, obs_pres),
+    )
+
+    # ── Sample x_new from fused Gaussian posterior ──
+    P_safe = P_fused + jnp.asarray(1e-10, dtype=P_fused.dtype) \
+                       * jnp.eye(3, dtype=P_fused.dtype)
+    L = jnp.linalg.cholesky(P_safe)
+    x_new = mu_fused + L @ noise
+
+    # ── Physical bounds (B ∈ [0, 1], F ≥ 0, A ≥ 0) ──
+    B_new = jnp.clip(x_new[0], 1e-4, 1.0 - 1e-4)
+    F_new = jnp.maximum(x_new[1], 0.0)
+    A_new = jnp.maximum(x_new[2], 0.0)
+    y_new = jnp.array([B_new, F_new, A_new])
+
+    # ── Weight correction: pred_lw = log_pred_total - obs_ll(y_new) ──
+    # Framework re-adds `obs_log_weight_fn(y_new, ...)` at line 156 of
+    # gk_dpf_v3_lite.py, so subtracting it here cancels the double-count.
+    preds_new = H @ y_new + bias
+    resids_new = obs_vals - preds_new
+    obs_ll_new = jnp.sum(obs_pres * (-0.5 * resids_new ** 2 / R_diag
+                                      - 0.5 * jnp.log(R_diag) - HALF_LOG_2PI))
+    pred_lw = log_pred_total - obs_ll_new
+
+    return y_new, pred_lw
 
 
 def _diffusion_fn_framework(params):
