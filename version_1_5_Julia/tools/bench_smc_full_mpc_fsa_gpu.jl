@@ -38,6 +38,20 @@ function _parse_args(argv::Vector{String})
         # θ_i := a·θ_i + (1-a)·θ_mean + √(1-a²)·jitter, between resample
         # and HMC. Helps posterior diversity at low N=32.
         "liu-west-a"      => 0.0,
+        # OT (optimal-transport) sigmoid-blend rescue weight on the inner
+        # PF. 0.01 (default) was found to dominate `gpu_log_density`
+        # wall time at v1.5's config: the framework's `gpu_ot_blend_chain!`
+        # has a per-chain Julia loop with two PCIe round-trips per chain
+        # (Array(chain_log_w) + CuArray(b_cpu)). At M=32 and 5 segments
+        # per call, this is ~320 round-trips per `gpu_log_density` call,
+        # which the headline microbench measures as ~85 ms vs Python's
+        # ~5 ms. Set this to 0.0 to disable OT rescue entirely; the
+        # writeup section 6.3 confirms v1.5's strong direct-Gaussian obs
+        # model does not need OT (Python+JAX runs without it). A future
+        # framework rewrite of `gpu_ot_blend_chain!` to a fully batched
+        # GPU kernel would eliminate the cost without losing the
+        # algorithmic option.
+        "ot-max-weight"   => 0.01,
         "seed"            => 42,
         "output-dir"      => "",
         "open-loop"       => "false",
@@ -371,7 +385,10 @@ function main(args::Dict{String,Any})
         K_per_chain = K_per_chain, M_max = M_max,
         T_steps = window_bins, R = 4, dt = dt_days,
         noise_seed = 0,
+        ot_max_weight = args["ot-max-weight"],
     )
+    @info "filter target: ot_max_weight = $(args["ot-max-weight"])  " *
+          "(0.0 = OT rescue disabled, fastest path)"
 
     # ── Filter prior (unconstrained, v1.5 PARAM_PRIOR_CONFIG) ──
     prior_means  = Float64[m for (_, _, m, _) in PARAM_PRIOR_CONFIG]

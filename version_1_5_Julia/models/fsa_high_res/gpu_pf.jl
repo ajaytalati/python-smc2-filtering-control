@@ -137,6 +137,35 @@ export FSAGPUTarget, gpu_log_density, gpu_grads, parallel_hmc_one_move
 end
 
 
+# ── Per-chain log-lik accumulation kernel (one thread per chain) ─────────
+#
+# Replaces the per-segment GPU→CPU transfer pattern that used to live
+# inside `gpu_log_density`'s segment loop. The previous code did
+#
+#     log_max_cpu = Array(view(bufs.log_max, 1:M))   # PCIe round-trip
+#     log_z_cpu   = Array(view(bufs.log_z,   1:M))   # PCIe round-trip
+#     for m in 1:M; log_lik_acc[m] += log_max_cpu[m] + log_z_cpu[m] - log_K; end
+#
+# in the inner segment loop, firing two GPU→CPU transfers + an implicit
+# synchronisation per segment per `gpu_log_density` call. With 6
+# segments per call and many calls per filter window, that pattern
+# dominated the wall time (microbench: 85 ms / call vs Python+JAX's
+# 4.7 ms / call). The fix below keeps the accumulator on the GPU and
+# reduces the transfer to ONE memcpy at the end of `gpu_log_density`.
+@kernel function gpu_log_lik_accumulate_kernel!(
+    log_lik_acc,         # (M,)  Float64, in-out
+    log_max,             # (M,)  Float32
+    log_z,               # (M,)  Float32
+    log_K::Float32,
+    M::Int,
+)
+    m = @index(Global, Linear)
+    if m <= M
+        @inbounds log_lik_acc[m] += Float64(log_max[m] + log_z[m] - log_K)
+    end
+end
+
+
 # ── Constrained ↔ unconstrained map (matches PARAM_PRIOR_CONFIG order) ──
 # All 10 estimated params in v1.5 are LogNormal — see Estimation.PARAM_PRIOR_CONFIG.
 # Unconstrained `u` ↦ constrained `exp(u)`.
@@ -218,6 +247,12 @@ struct FSAGPUTarget
     noise_grid::CuArray{Float32, 3}            # (K, T, 3) — CRN
     bufs::GPUSegmentedBuffers                  # framework: particles + log_w + ...
     propagate_kernel::Any                      # KernelAbstractions handle
+    # ── GPU-resident per-chain log-likelihood accumulator ────────────────
+    # Kept GPU-resident across the segment loop in `gpu_log_density` so
+    # the inner loop never crosses PCIe (was: two `Array(view(...))`
+    # transfers per segment, see kernel doc above).
+    log_lik_acc_gpu::CuArray{Float64, 1}       # (M_max,)
+    log_lik_accum_kernel::Any                  # KernelAbstractions handle
 end
 
 
@@ -266,6 +301,10 @@ function FSAGPUTarget(; K_per_chain::Int, M_max::Int, T_steps::Int,
         CuArray(noise_cpu),
         bufs,
         propagate_segment_kernel!(CUDABackend(), 256),
+        # GPU log-lik accumulator + its kernel handle. 64-thread block is
+        # plenty since M_max is typically ≤ ~700 (see gpu_grads).
+        CUDA.zeros(Float64, M_max),
+        gpu_log_lik_accumulate_kernel!(CUDABackend(), 64),
     )
 end
 
@@ -336,8 +375,10 @@ function gpu_log_density(target::FSAGPUTarget,
     fill!(view(bufs.particles_a, 1:Ntot, 3), Float32(grid_obs.A_init))
     fill!(view(bufs.log_w, 1:Ntot), 0f0)
 
-    log_lik_acc = zeros(Float64, M)
-    log_K = log(Float32(K))
+    # Init the GPU accumulator. We zero only the first M slots because
+    # `target.log_lik_acc_gpu` is sized for M_max; the rest is unused.
+    fill!(view(target.log_lik_acc_gpu, 1:M), 0.0)
+    log_K = Float32(log(Float32(K)))
 
     for seg in 1:n_segments
         seg_step_offset = (seg - 1) * R
@@ -356,7 +397,14 @@ function gpu_log_density(target::FSAGPUTarget,
             R, K, seg_step_offset;
             ndrange = Ntot,
         )
-        KernelAbstractions.synchronize(CUDABackend())
+        # NOTE: previously had `KernelAbstractions.synchronize(...)` here,
+        # which was needed when the host read `bufs.log_max`/`log_z`
+        # between kernels (the old per-segment `Array(view(...))`
+        # accumulator). With the GPU-resident accumulator below, no host
+        # read happens between kernels in this loop — kernels on the
+        # same backend stream are serialised by the runtime, so the
+        # explicit sync is redundant. Removing it lets the GPU pipeline
+        # consecutive segments without per-segment host-side stalls.
 
         # Pattern-match on (seg, n_segments) — the last segment skips the
         # SMC resample step (no further use of the resampled cloud) and just
@@ -375,7 +423,11 @@ function gpu_log_density(target::FSAGPUTarget,
                     M, K, n_states;
                     ndrange = M,
                 )
-                KernelAbstractions.synchronize(CUDABackend())
+                # No sync here either — the next op is the accumulator
+                # kernel, which depends on bufs.log_max/log_z and runs on
+                # the same backend; stream ordering handles the
+                # dependency. The final `Array(view(...))` at function
+                # exit syncs once for the host return value.
             end
             _ => begin
                 # Non-last segment: run segmented-SMC step (resample + Liu-West + OT).
@@ -386,14 +438,23 @@ function gpu_log_density(target::FSAGPUTarget,
                                          use_ot = use_ot)
             end
         end
-        # Accumulate per-chain log-likelihood (same in both branches).
-        log_max_cpu = Array(view(bufs.log_max, 1:M))
-        log_z_cpu   = Array(view(bufs.log_z,   1:M))
-        @inbounds for m in 1:M
-            log_lik_acc[m] += Float64(log_max_cpu[m] + log_z_cpu[m] - log_K)
-        end
+        # Accumulate per-chain log-likelihood ENTIRELY ON THE GPU. The
+        # previous implementation pulled `bufs.log_max` and `bufs.log_z`
+        # back to host on every segment via `Array(view(...))` — two
+        # PCIe round-trips + an implicit synchronize per segment, which
+        # dominated the wall time on the headline microbench (85 ms /
+        # call). Same maths; a single tiny kernel writes into the
+        # GPU-resident accumulator.
+        target.log_lik_accum_kernel(
+            view(target.log_lik_acc_gpu, 1:M),
+            view(bufs.log_max, 1:M),
+            view(bufs.log_z,   1:M),
+            log_K, M;
+            ndrange = M,
+        )
     end
-    return log_lik_acc
+    # Single GPU→CPU transfer at the end of the function.
+    return Array(view(target.log_lik_acc_gpu, 1:M))
 end
 
 
