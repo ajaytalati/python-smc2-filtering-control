@@ -745,6 +745,56 @@ read pattern and disabling the OT rescue's per-chain Julia loop.
         See \S\ref{sec:next}.
 \end{itemize}
 
+\subsection{Saturation results --- 2026-05-08}
+
+A first saturation pass was run; full details and artefacts in
+\texttt{compare\_v15\_julia\_vs\_python/example\_run/julia\_saturation/}
+\texttt{FINDINGS\_T28d\_julia\_saturated.md}. Headline:
+
+\begin{center}
+\begin{tabular}{lrr}
+  \toprule
+  metric (T=28d, seed=42, RTX 5090, Julia-only)
+                                       & default    & saturated \\
+  \midrule
+  \texttt{N-smc}                       & 32         & 512       \\
+  \texttt{K-per-chain}                 & 200        & 1000      \\
+  \texttt{ctrl-n-smc}                  & 256        & 2048      \\
+  \texttt{ctrl-num-mcmc}               & 8          & 16        \\
+  \texttt{ctrl-n-anchors}              & 8          & 12        \\
+  \midrule
+  total wall time                      & 100\,s     & 1169\,s (19.5\,min) \\
+  mean GPU utilisation                 & 38.5\,\%   & 49.5\,\%  \\
+  peak GPU memory                      & 6090\,MiB  & 6662\,MiB \\
+  per-replan controller cost           & $\sim$3\,s & $\sim$40\,s \\
+  stride 21 applied $\bar\Phi$         & 0.379      & \textbf{0.695} \\
+  final-stride $\hat x_B$ (chronic)    & $\sim$0.105 & 0.169    \\
+  \bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Headline scientific finding.} At the saturated config the
+controller spends $\sim$14$\times$ more compute per replan and converges
+to a markedly more aggressive ``build $B$ then sprint'' ramp-up
+schedule. At stride 21 of T=28d, the applied daily $\bar\Phi$ rises from
+0.379 (default) to 0.695 (saturated), a $+83\%$ shift toward training
+strain. Final-stride chronic fitness B rises correspondingly. This is
+the ramp-up Banister-overload optimum the writeup §7 hypothesised
+would emerge at long horizon, now confirmed inside Julia at moderate
+saturation.
+
+\paragraph{What's NOT yet exploited.} Memory is still at $\sim$20\,\%
+of the 32\,GB. An aggressive
+($N_{\text{smc}}=1024, K_{\text{pf}}=4000$, $\mathit{ctrl\_n\_smc}=4096$,
+$\mathit{n\_anchors}=16$) tier was attempted and reached
+\textbf{30.8\,GB peak (94\,\% VRAM)} but did not produce log output in
+33\,min wall time --- the JIT-compile and first-kernel-launch on those
+huge buffers is not wall-time-feasible without further engineering
+(GPU-resident batched OT or a kernel-fusion pass). The moderate
+Phase D config is the recommended operating point; bumping
+$K_{\text{pf}}$ to 2000 should lift memory to $\sim$35\,\% without
+blowing wall time.
+
 \section{What comes next}\label{sec:next}
 
 In rough priority order:
