@@ -30,8 +30,14 @@ using Match
 import ..Simulation: DEFAULT_PARAMS, fill_pinned_nt, params_v15_to_v1_nt
 import ..Estimation: PARAM_NAMES, PARAM_PRIOR_CONFIG
 
-import SMC2FC
-using SMC2FC: GPUSegmentedBuffers, run_segmented_smc_step!
+# Framework migration (2026-05-08): the original julia/SMC2FC/ has been
+# renamed to julia/SMC2FC_DEPRECIATED_USE_FUNCTIONAL/ and the new default
+# framework is julia/SMC2FC_functional/. The migration was demonstrated
+# bit-identical at commit 4a5c007. Both libraries provide the same
+# GPUSegmentedBuffers and run_segmented_smc_step! symbols (identical
+# bytes — Filtering/GPUSegmentedPF.jl was a verbatim COPY+DOC).
+import SMC2FC_functional
+using SMC2FC_functional: GPUSegmentedBuffers, run_segmented_smc_step!
 
 export FSAGPUTarget, gpu_log_density, gpu_grads, parallel_hmc_one_move
 

@@ -103,6 +103,38 @@ function _parse_args(argv::Vector{String})
         "ctrl-max-levels" => 25,          # tempering bisection cap
         "ctrl-target-nats" => 8.0,
         "ctrl-sigma-prior" => 1.5,
+        # ─────────────────────────────────────────────────────────────────
+        #  ctrl-n-anchors — RBF basis cardinality on the controller side
+        # ─────────────────────────────────────────────────────────────────
+        #  DEFAULT: 8 anchors (the historical hardcoded value).
+        #
+        #  Bumping this gives the controller a richer schedule basis:
+        #  more degrees of freedom for the per-bin Φ schedule, finer
+        #  daily resolution. The RBF coefficients θ_ctrl are the
+        #  outer-SMC² decision variable, so n_anchors is also the
+        #  posterior dimension on the control side.
+        #
+        #  Wall-time scaling is roughly O(n_anchors²) over the full
+        #  controller SMC² run, because:
+        #    1. each cost-kernel thread loops over n_anchors to decode
+        #       Φ(t) (linear in n_anchors per thread), AND
+        #    2. the FD-gradient batch packs M chains × (1 + 2·n_anchors)
+        #       perturbations into one kernel call, so the gradient
+        #       batch grows with n_anchors too.
+        #
+        #  GPU memory scales linearly: M_max = ctrl_n_smc × (1 + 2·n_anchors).
+        #  With ctrl-n-smc=256 and n_anchors=8 → M_max = 4,352. With
+        #  n_anchors=16 → M_max = 8,448. The cost_per_thread buffer is
+        #  (M_max × n_inner) Float32 = 4 bytes per cell, so VRAM at
+        #  defaults is ~1 MB; even at the maxed config it stays under
+        #  10 MB. Memory is not the binding constraint; per-thread
+        #  compute is.
+        #
+        #  Recommended bump for richer schedules: 8 → 12 (modest) or
+        #  8 → 16 (aggressive). Beyond 16, FD-gradient noise per
+        #  dimension may dominate the signal — diminishing returns.
+        # ─────────────────────────────────────────────────────────────────
+        "ctrl-n-anchors"  => 8,
     )
     i = 1
     while i <= length(argv)
@@ -150,7 +182,10 @@ using .FSAHighRes.GPUPF: FSAGPUTarget, gpu_log_density, gpu_grads,
                           parallel_hmc_one_move, parallel_hmc_one_move!
 using .FSAHighRes.GPUControl: FSAv1ControlGPUTarget, gpu_cost_log_density_batched,
                                 make_log_density_fn
-using SMC2FC: run_tempered_smc_gpu
+# Framework migration (2026-05-08): from SMC2FC (renamed to deprecated
+# location) to the now-default SMC2FC_functional. Symbol is byte-
+# identical between the two; see commit 4a5c007 + writeup §6.9.
+using SMC2FC_functional: run_tempered_smc_gpu
 
 
 # ── Pure outer SMC² — tempered + parallel HMC ─────────────────────────────
@@ -456,7 +491,7 @@ function main(args::Dict{String,Any})
     )
 
     # ── Controller config — all knobs CLI-exposed ──
-    ctrl_n_anchors = 8
+    ctrl_n_anchors = args["ctrl-n-anchors"]
     ctrl_n_smc     = args["ctrl-n-smc"]
     ctrl_n_inner   = args["ctrl-n-inner"]
     ctrl_M_max     = ctrl_n_smc * (1 + 2 * ctrl_n_anchors)
