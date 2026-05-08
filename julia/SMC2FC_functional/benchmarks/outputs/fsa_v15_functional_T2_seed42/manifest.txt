@@ -1,0 +1,15 @@
+bench: bench_smc_full_mpc_fsa_v15_functional.jl
+library: SMC2FC_functional (CPU-side)
+T_days: 2
+n_strides: 4
+stride_bins: 12
+window_bins: 24
+n_smc: 4
+k_pf: 16
+smoke: false
+elapsed_s: 139.87
+mean_A: 0.0985
+replans: 3
+  stride=2  mean_phi=0.499  n_temp=4
+  stride=3  mean_phi=0.677  n_temp=5
+  stride=4  mean_phi=0.363  n_temp=4
