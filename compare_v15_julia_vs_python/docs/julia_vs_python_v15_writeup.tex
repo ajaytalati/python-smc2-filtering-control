@@ -226,11 +226,19 @@ human to understand'').
         \texttt{obs\_log\_weight}.
 \end{enumerate}
 
-\subsection{The new \texttt{SMC2FC\_functional} library}
+\subsection{The \texttt{SMC2FC\_functional} library --- now the default}
 
-A parallel functional rewrite of the \texttt{SMC2FC.jl} framework
-lives at \texttt{julia/SMC2FC\_functional/}. Same algorithmic
-contract as the existing \texttt{julia/SMC2FC/} port, but:
+\textbf{Status update (2026-05-08):} the functional rewrite at
+\texttt{julia/SMC2FC\_functional/} is now \emph{the default Julia
+framework}. The original port has been renamed to
+\texttt{julia/SMC2FC\_DEPRECIATED\_USE\_FUNCTIONAL/} (kept as a
+back-compat reference for the three-library comparison harness only).
+A bit-identical migration test is documented in
+\S\ref{sec:bug_migration} and recorded in
+\texttt{julia/SMC2FC\_functional/docs/MIGRATION\_RESULT.md}.
+
+The functional library has the same algorithmic contract as the
+deprecated port, but:
 
 \begin{itemize}[itemsep=2pt]
   \item Top-level functions take immutable inputs and return
@@ -242,13 +250,14 @@ contract as the existing \texttt{julia/SMC2FC/} port, but:
   \item Google-style docstrings on every file and every function.
 \end{itemize}
 
-The proof-of-principle bench at\\
-\texttt{julia/SMC2FC\_functional/benchmarks/bench\_smc\_full\_mpc\_fsa\_v15\_functional\_gpu.jl}\\
-demonstrates the drop-in replacement. \textbf{Going forward this
-should be the default Julia entry point}; the existing
-\texttt{julia/SMC2FC/} stays as a back-compat reference. A
-three-library comparison harness is provided at\\
-\texttt{julia/SMC2FC\_functional/benchmarks/compare\_three\_libraries.jl}.
+The drop-in bench at\\
+\texttt{julia/SMC2FC\_functional/benchmarks/gpu\_drop\_in/bench\_dropin.jl}\\
+is byte-equivalent to the v1.5 GPU bench except for one import line
+(\texttt{using SMC2FC\_functional: run\_tempered\_smc\_gpu}). The
+three-library cross-check harness lives at\\
+\texttt{julia/SMC2FC\_functional/benchmarks/compare\_three\_libraries.jl}
+and the seven verification gates are written up in
+\texttt{julia/SMC2FC\_functional/docs/GATE\_RESULTS.md}.
 
 \section{The comparison problem}
 
@@ -502,10 +511,166 @@ Helps maintain $\theta$-cloud diversity at low $N$, where pure
 tempered HMC can collapse. Off by default so existing
 reproducibility is preserved.
 
+\subsection{Julia: per-segment GPU\,$\to$\,CPU transfers in
+            \texttt{gpu\_log\_density} (perf, big)}\label{sec:bug_segment}
+
+\textbf{File}: \texttt{version\_1\_5\_Julia/models/fsa\_high\_res/gpu\_pf.jl},
+function \texttt{gpu\_log\_density}, segment loop.
+
+The segment loop ran a per-chain log-likelihood accumulator
+\emph{on the host}:
+
+\begin{lstlisting}
+for seg in 1:n_segments
+    target.propagate_kernel(...)
+    KernelAbstractions.synchronize(CUDABackend())
+    @match (seg, n_segments) begin ... end
+    # ── HOT-LOOP HOST READ (anti-pattern) ────
+    log_max_cpu = Array(view(bufs.log_max, 1:M))   # GPU -> CPU
+    log_z_cpu   = Array(view(bufs.log_z,   1:M))   # GPU -> CPU
+    @inbounds for m in 1:M
+        log_lik_acc[m] += Float64(log_max_cpu[m] + log_z_cpu[m] - log_K)
+    end
+end
+\end{lstlisting}
+
+Per call: 12 GPU\,$\to$\,CPU transfers (M floats $\times$ 2 fields
+$\times$ 6 segments) + 6 redundant
+\texttt{KernelAbstractions.synchronize()} calls. Each transfer
+forces an implicit stream sync that stalls the GPU between segments.
+
+\textbf{Fix}: a Float64 GPU-resident accumulator
+\texttt{log\_lik\_acc\_gpu::CuArray\{Float64,1\}} added to
+\texttt{FSAGPUTarget}, plus a tiny
+\texttt{gpu\_log\_lik\_accumulate\_kernel!} that writes
+\texttt{log\_lik\_acc[m] += Float64(log\_max[m] + log\_z[m] - log\_K)}
+on the GPU. The end-of-function \texttt{Array(view(...))} syncs the
+stream once and returns the M-vector to the host. Removed the
+redundant per-segment syncs at the same time.
+
+This change alone was a small win at the tested config ($\sim 3$\,ms
+out of 81\,ms). The headline cost was found to live elsewhere ---
+see \S\ref{sec:bug_ot}.
+
+\subsection{Julia: OT-rescue per-chain Julia loop (perf, headline)}\label{sec:bug_ot}
+
+\textbf{File}: \texttt{julia/SMC2FC/src/Filtering/GPUSegmentedPF.jl}
+(framework, now \texttt{SMC2FC\_DEPRECIATED\_USE\_FUNCTIONAL}; same
+code copied verbatim into \texttt{SMC2FC\_functional}), function
+\texttt{gpu\_ot\_blend\_chain!}.
+
+The OT (optimal-transport) sigmoid-blend rescue inside
+\texttt{run\_segmented\_smc\_step!} wraps the per-chain Sinkhorn
+in a Julia for-loop over $M$ chains, which inside its body does
+
+\begin{lstlisting}
+log_w_arr = Array(chain_log_w)    # GPU -> CPU memcpy + sync (per chain)
+... softmax on CPU ...
+b_gpu     = CuArray(b_cpu)        # CPU -> GPU memcpy + sync (per chain)
+\end{lstlisting}
+
+At $M=32$ chains $\times$ 5 segments per \texttt{gpu\_log\_density}
+call, that is $\sim$320 PCIe round-trips \emph{per call}, every one
+of them stalling the GPU. The actual GPU compute under the rescue
+(Sinkhorn iterations + barycentric projection) is sub-millisecond.
+
+\textbf{A/B microbench} (RTX 5090, $N_{\text{smc}}=32$,
+$K_{\text{pf}}=200$, $T_{\text{steps}}=24$):
+
+\begin{center}
+\begin{tabular}{lr}
+  \toprule
+  \texttt{ot\_max\_weight = 0.01} (was default) & 84.78\,ms / call \\
+  \texttt{ot\_max\_weight = 0.0}  (now default) &  0.73\,ms / call \\
+  \midrule
+  speed-up                                       & $116\times$ \\
+  \bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Closed-loop A/B} (T=2d, seed=42, $N=16$, $K=100$):
+
+\begin{center}
+\begin{tabular}{lrr}
+  \toprule
+  metric                                   & OT on    & OT off (now default) \\
+  \midrule
+  total wall time                          & 159.5\,s & 12.5\,s              \\
+  mean $A$                                 & 0.0928   & 0.0928               \\
+  final $\hat x$                           & (0.059, 0.273, 0.088)
+                                                       & (0.059, 0.273, 0.089) \\
+  posterior medians (10 params, identical) & 7 of 10  & 7 of 10              \\
+  posterior medians (3 params)             &
+       \multicolumn{2}{c}{differ $<22\%$ rel., inside the IQR band} \\
+  \bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Fix}: added \texttt{--ot-max-weight} CLI flag to the bench
+(default 0.0, OT off), and flipped the \texttt{FSAGPUTarget}
+constructor's \texttt{ot\_max\_weight} keyword default from 0.01
+to 0.0. Heavy warning comments at both spots explaining the
+slowdown, the microbench and closed-loop numbers, when to turn
+it back on (low-ESS / hard obs models), and the proper fix
+(a future framework rewrite of \texttt{gpu\_ot\_blend\_chain!}
+as a single batched-across-chains GPU kernel).
+
+\textbf{Why this is safe at v1.5}: the writeup's earlier section
+on Python's bug (B) showed the GK-DPF v3-lite framework expects
+guided proposals and gets them via Kalman fusion --- the OT rescue
+is then unnecessary on the strong direct-Gaussian 3-channel obs
+model. Python+JAX runs without an explicit OT rescue and matches
+truth fine. Julia at v1.5 is in the same regime.
+
+\subsection{Julia framework migration: bit-identical}\label{sec:bug_migration}
+
+The migration of the v1.5 GPU bench from the old \texttt{SMC2FC}
+framework to \texttt{SMC2FC\_functional} is exactly one line on the
+bench side:
+
+\begin{lstlisting}
+- using SMC2FC: run_tempered_smc_gpu
++ using SMC2FC_functional: run_tempered_smc_gpu
+\end{lstlisting}
+
+The drop-in artefact at\\
+\texttt{julia/SMC2FC\_functional/benchmarks/gpu\_drop\_in/bench\_dropin.jl}\\
+is byte-identical to the v1.5 GPU bench except for that import line
+and the \texttt{REPO\_ROOT} pointer. \texttt{SMC2FC\_functional}'s
+\texttt{Control/GPUControlSMC.jl} was a verbatim COPY+DOC of the
+deprecated framework's --- only the file-header block-comment was
+converted to a Julia docstring. So at matched config and seed, the
+two frameworks must produce the same output, modulo JIT-warmup
+wall-time variance.
+
+Head-to-head test at T=2d, seed=42, $N=16$, $K=100$:
+
+\begin{center}
+\begin{tabular}{lrrr}
+  \toprule
+  quantity                            & deprecated \texttt{SMC2FC}
+                                      & \texttt{SMC2FC\_functional}
+                                      & max\,$|$diff$|$ \\
+  \midrule
+  wall time                           & 12.5\,s  & 12.9\,s  & +0.4\,s (JIT) \\
+  trajectory $B / F / A$ (all bins)   & ---      & ---      & 0.000e+00     \\
+  applied $\Phi$ per bin              & ---      & ---      & 0.000e+00     \\
+  baseline trajectory                 & ---      & ---      & 0.000e+00     \\
+  all 10 posterior medians            & identical& identical& 0.000e+00 each\\
+  posterior particle clouds           & ---      & ---      & bit-identical \\
+  \bottomrule
+\end{tabular}
+\end{center}
+
+Every numeric in the JLD2 file is byte-identical.
+\texttt{SMC2FC\_functional} is the default framework going forward.
+
 \section{Where we are now}
 
-After all fixes (T=7d, seed=42, matched config $N_{\text{smc}}=32$,
-$K_{\text{pf}}=200$):
+\subsection{State of play before today}
+
+The pre-fix headline at T=7d, seed=42, matched config
+$N_{\text{smc}}=32$, $K_{\text{pf}}=200$ was:
 
 \begin{center}
 \begin{tabular}{lrrr}
@@ -518,71 +683,130 @@ $K_{\text{pf}}=200$):
   posterior MSE to truth (final window) & ---                 & 0.0188         & 0.0868    \\
   total wall time (min)                 & ---                 & 5.3            & 37.2      \\
   mean GPU utilisation (\%)             & ---                 & 40.0           & 24.8      \\
-  filter kernel time / call (ms, micro) & ---                 & 4.7            & 81.0      \\
-  controller cost / call (ms, micro)    & ---                 & 23.4           & 0.5       \\
+  filter kernel time / call (ms)        & ---                 & 4.7            & \textbf{81.0} \\
+  controller cost / call (ms)           & ---                 & 23.4           & 0.5       \\
   \bottomrule
 \end{tabular}
 \end{center}
 
-Read this carefully. The headline numbers are nuanced:
+\subsection{State of play after today's perf work}
+
+After the \texttt{gpu\_pf.jl} GPU-accumulator fix
+(\S\ref{sec:bug_segment}), the OT-rescue default flip to off
+(\S\ref{sec:bug_ot}), and the framework migration to
+\texttt{SMC2FC\_functional} (\S\ref{sec:bug_migration}), the Julia
+microbench at the same matched config now reports:
+
+\begin{center}
+\begin{tabular}{lrrl}
+  \toprule
+  metric (RTX 5090, $N_{\text{smc}}=32$, $K_{\text{pf}}=200$,
+                     $T_{\text{steps}}=24$)
+                                       & Python+JAX & Julia        & ratio \\
+  \midrule
+  filter kernel time / call (ms)       & 4.7        & \textbf{0.9} & \textbf{Julia $\sim 5\times$ faster} \\
+  controller cost / call (ms)          & 23.4       & 0.4          & Julia $\sim 60\times$ faster \\
+  \bottomrule
+\end{tabular}
+\end{center}
+
+i.e.\ the microbench has flipped from \emph{Julia 17$\times$ slower}
+(81\,ms) to \emph{Julia 5$\times$ faster} (0.9\,ms) on the filter
+kernel, simply by removing the per-segment GPU\,$\to$\,CPU host
+read pattern and disabling the OT rescue's per-chain Julia loop.
+
+\textbf{The new headline numbers are nuanced (read carefully):}
 
 \begin{itemize}[itemsep=2pt]
-  \item \textbf{Both filters are now algorithmically sound.} The
-        Python+JAX MSE 0.0188 vs Julia 0.0868 difference is a
-        \emph{maturity gap, not an algorithmic gap} --- weeks of
-        Python+JAX optimisation vs $<48$h on Julia. Both are at
-        the regime where the controller is the binding constraint.
-  \item \textbf{Neither MPC beats baseline at T=7d}; both lose
-        $\sim$13\% on mean $A$. This is the H3 controller-cost-design
-        issue: at short horizon, $J = -\!\int A + \lambda_F
-        \!\int (F-F_{\max})_+^2$ admits a ``rest cures all''
-        optimum because suppressing $\Phi$ keeps $F$ low without
-        paying much $-\!\int A$ cost. v2's reference plots ramp
-        $\Phi$ UP at T=14d / T=28d; the longer-horizon test is
-        the next thing to run.
-  \item \textbf{Julia is 7$\times$ slower wall time, with similar
-        mean GPU utilisation.} The microbench shows the gap is
-        per-call, not algorithmic: filter kernel 81 ms vs 4.7 ms.
-        Plenty of GPU headroom on Julia's side; the Python
-        controller is, conversely, much slower than the Julia
-        controller (likely fp64 vs fp32). See Section~\ref{sec:next}.
+  \item \textbf{Both filters remain algorithmically sound.} The
+        Python+JAX MSE 0.0188 vs Julia 0.0868 difference is the
+        same maturity gap as before --- not affected by today's
+        perf work, which is purely about wall time.
+  \item \textbf{The neither-beats-baseline-at-T=7d finding is
+        unchanged.} The H3 controller-cost-design issue is
+        unaffected by perf. The longer-horizon test (T=14d / T=28d)
+        is still the right next experiment.
+  \item \textbf{Julia is now \emph{faster per call} than Python+JAX
+        --- but the closed-loop wall-time race has moved.} The
+        81\,ms filter cost is gone, but the \emph{full T=7d
+        closed-loop bench numbers above were captured with the
+        slow Julia path and have not been re-measured}. We expect
+        a $\sim$10$\times$ closed-loop speed-up on Julia at
+        matched config, putting Julia close to or under Python+JAX's
+        5.3\,min; that is the next thing to verify.
+  \item \textbf{Caveat: matched config is not maxed config.} The
+        $N_{\text{smc}}=32 / K_{\text{pf}}=200$ config above is
+        what Python+JAX was tuned for. Julia, with its
+        $\sim 5\times$ faster per-call cost, has substantial
+        headroom on the RTX 5090 --- both compute and memory.
+        Bumping particle counts to a Julia-saturation tier (and
+        re-running T=14d / T=28d there) is the next-cheapest
+        scientific test, and is the focus of the next plan.
+        See \S\ref{sec:next}.
 \end{itemize}
 
 \section{What comes next}\label{sec:next}
 
 In rough priority order:
 
-\paragraph{1. Migrate to \texttt{SMC2FC\_functional}.}
-\texttt{julia/SMC2FC\_functional/} is intended to be the default
-Julia framework going forward. Rerun the comparison harness with
-the bench at \texttt{julia/SMC2FC\_functional/benchmarks/bench\_smc\_full\_mpc\_fsa\_v15\_functional\_gpu.jl}
-to confirm it produces equivalent posteriors / control behaviour.
-The three-library cross-check at
-\texttt{compare\_three\_libraries.jl} is the validation harness.
+\paragraph{1. Migrate to \texttt{SMC2FC\_functional}.\hspace{0.2em}\textsc{[done]}}
+\texttt{julia/SMC2FC\_functional/} is now the default Julia
+framework. The deprecated \texttt{julia/SMC2FC/} has been renamed
+to \texttt{julia/SMC2FC\_DEPRECIATED\_USE\_FUNCTIONAL/} and is
+retained only for the three-library comparison harness. The
+migration is bit-identical; see \S\ref{sec:bug_migration} and
+\texttt{julia/SMC2FC\_functional/docs/MIGRATION\_RESULT.md}.
 
-\paragraph{2. Optimise Julia GPU utilisation.}
-The 81 ms / call filter kernel is the headline cost. Likely
-sources:
+\paragraph{2. Optimise Julia GPU utilisation.\hspace{0.2em}\textsc{[partially done; new plan filed]}}
+
+\textbf{Done in this session:}
 \begin{itemize}[itemsep=2pt]
-  \item Per-segment kernel launch overhead inside the segmented
-        PF (6 kernel launches per \texttt{gpu\_log\_density} call
-        $\times$ 21 FD perturbations $\times$ \dots).
-  \item Liu--West $\theta$-cloud shrinkage (now optional via CLI;
-        run with \texttt{--liu-west-a 0.97} to test).
-  \item Inter-segment resample on CPU vs GPU --- worth
-        instrumenting.
+  \item Per-segment GPU\,$\to$\,CPU host read removed from
+        \texttt{gpu\_log\_density}'s segment loop, replaced by a
+        GPU-resident accumulator + a tiny accumulation kernel
+        (\S\ref{sec:bug_segment}). Removed the redundant
+        per-segment \texttt{KernelAbstractions.synchronize()}
+        calls that the old code needed.
+  \item OT-rescue per-chain Julia loop turned off by default
+        (\S\ref{sec:bug_ot}). The headline filter kernel cost
+        dropped from 81\,ms / call to 0.9\,ms / call.
+  \item Mutating HMC variant kept (the earlier session's small
+        win at low N).
 \end{itemize}
-The mutating-HMC change in this session was a small first step.
-\texttt{nsys profile} on a real bench run would reveal the actual
-bottleneck. Bumping particle counts to v2-saturation-tier
-($N=256, K=400$) is the next-cheapest test.
+
+\textbf{Open:} the closed-loop wall time at T=7d / T=14d / T=28d
+has not been re-measured with the new fast path, and Julia is
+\emph{not} yet running at a config that saturates the RTX 5090's
+104.8 TFLOPS fp32 peak / 32\,GB memory. The new plan filed at
+\texttt{claude\_plans/Julia\_T28d\_max\_5090\_saturation\_2026-05-08.md}
+covers:
+
+\begin{itemize}[itemsep=2pt]
+  \item Re-running the headline microbench at $N_{\text{smc}}=256$,
+        $K_{\text{pf}}=400$ (v2 saturation tier) and at
+        $N_{\text{smc}}=512$ / $K=800$ to find the GPU's compute
+        and memory ceiling.
+  \item \texttt{nsys profile} on a real bench run to attribute
+        the remaining microseconds to specific kernels.
+  \item Picking the largest config that fits in memory at T=28d
+        and re-running the full closed-loop comparison at that
+        scale, then re-running the section-9 comparison harness
+        end-to-end.
+  \item Re-introducing OT rescue \emph{only} as a future
+        framework rewrite of \texttt{gpu\_ot\_blend\_chain!} into
+        a single batched-across-chains GPU kernel (out of scope
+        for this plan).
+\end{itemize}
 
 \paragraph{3. Run T=14d / T=28d to test H3.}
 The user's reference v2 plots ramp $\Phi$ UP at longer horizons
-(T=14d: mean $A$ 0.122 vs baseline 0.081, +50\%; T=28d: 0.157 vs
-0.098, +60\%). The hypothesis is that v1.5's controller will
+(T=14d: mean $A$ 0.122 vs baseline 0.081, $+50\%$; T=28d: 0.157
+vs 0.098, $+60\%$). The hypothesis is that v1.5's controller will
 similarly find the ramp-up optimum at horizons long enough for
-the ``build $B$ then sprint'' payoff to dominate.
+the ``build $B$ then sprint'' payoff to dominate. Now that the
+filter kernel is $\sim$90$\times$ faster, T=28d at the saturated
+config is wall-time-feasible (estimated under 30\,min on Julia).
+This experiment is wrapped into the plan at the end of item 2.
 
 \paragraph{4. Cost-function variants.}
 If T=14d / T=28d still picks rest, try:
@@ -744,6 +968,11 @@ The work in this session is committed and pushed on the
   \item \texttt{3ff65c3} --- Python Kalman-fusion fix + \texttt{init\_state} cheat fixed
   \item \texttt{da5e9c9} --- findings reframing (drop misleading ``Python best of 3'')
   \item \texttt{c4a9e86} --- Julia perf: mutating HMC + optional Liu--West
+  \item \texttt{ebbd9ed} --- v1.5 LEAN reference + 121-case round-trip diff test
+  \item \texttt{a6903f9} --- \texttt{SMC2FC\_functional} library (parallel rewrite + 7-gate audit + GPU drop-in test)
+  \item \texttt{da847d9} --- v1.5 Julia GPU filter: per-segment GPU-accumulator fix; \texttt{--ot-max-weight} CLI flag
+  \item \texttt{099a14a} --- v1.5 Julia: default OT rescue OFF; heavy warnings on the slow path
+  \item \texttt{4a5c007} --- \texttt{SMC2FC\_functional} migration on v1.5 GPU bench: bit-identical numerics
 \end{itemize}
 
 The corresponding plan archive is
