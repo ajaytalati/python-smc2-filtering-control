@@ -506,9 +506,9 @@ function main(args::Dict{String,Any})
         end
 
         # 5. Maybe replan (closed-loop only)
-        new_plan, new_offset = if !is_open_loop &&
-                                  stride_idx % args["replan-K"] == 0 &&
-                                  new_filter_post !== nothing
+        new_plan, new_offset, n_temp_ctrl = if !is_open_loop &&
+                                                stride_idx % args["replan-K"] == 0 &&
+                                                new_filter_post !== nothing
             t_plan = time()
             params_post_v15 = posterior_mean_v15(new_filter_post)
             params_post_v1  = params_v15_to_v1_nt(fill_pinned_nt(params_post_v15))
@@ -522,9 +522,9 @@ function main(args::Dict{String,Any})
                            ctrl_out.Phi_plan[length(ctrl_out.Phi_plan) ÷ 2],
                            ctrl_out.Phi_plan[end],
                            ctrl_out.n_temp_ctrl)
-            (ctrl_out.Phi_plan, 0)
+            (ctrl_out.Phi_plan, 0, Int(ctrl_out.n_temp_ctrl))
         else
-            (acc.plan_phi, slice_end)
+            (acc.plan_phi, slice_end, 0)
         end
 
         # Snapshot the latest filter posterior into the per-stride store.
@@ -534,6 +534,15 @@ function main(args::Dict{String,Any})
         new_all_filter_posts = vcat(acc.all_filter_posts,
                                       Union{Nothing,Matrix{Float64}}[post_entry])
 
+        # Per-stride telemetry — written to per_stride.csv at end of bench
+        # so the comparison script (Phase D) can plot per-stride wall time
+        # and tempering levels alongside the Python equivalent.
+        t_stride_s     = time() - t_start
+        A_mean_so_far  = isempty(new_traj) ? NaN : mean(new_traj[:, 3])
+        bfa_end        = (size(new_traj, 1) == 0) ?
+                            (NaN, NaN, NaN) :
+                            (new_traj[end, 1], new_traj[end, 2], new_traj[end, 3])
+
         return (
             plant_state    = p.final_state,
             plan_phi       = new_plan,
@@ -542,9 +551,21 @@ function main(args::Dict{String,Any})
             all_filter_posts = new_all_filter_posts,
             traj_history   = new_traj,
             obs_history    = new_obs,
-            per_stride_log = vcat(acc.per_stride_log, [(stride = stride_idx,
-                                                          n_temp = n_temp_filter,
-                                                          phi_mean = mean(phi))]),
+            per_stride_log = vcat(acc.per_stride_log, [(
+                stride         = stride_idx,
+                t_wall_s       = t_stride_s,
+                n_temp_filter  = n_temp_filter,
+                n_temp_ctrl    = n_temp_ctrl,
+                daily_phi      = mean(phi),
+                A_mean_so_far  = A_mean_so_far,
+                B_end          = bfa_end[1],
+                F_end          = bfa_end[2],
+                A_end          = bfa_end[3],
+                # legacy keys kept for compat with the existing
+                # daily_phi_plan_per_stride builder below.
+                n_temp         = n_temp_filter,
+                phi_mean       = mean(phi),
+            )]),
             last_xhat      = new_xhat,
         )
     end
@@ -595,7 +616,10 @@ function main(args::Dict{String,Any})
             f["filter_post_unc"]  = Float64.(final.filter_post)
         end
         f["posterior_particles"]    = posterior_particles_arr
-        f["posterior_window_mask"]  = posterior_window_mask
+        # Coerce BitVector → plain Vector{Bool} so HDF5 readers (e.g.
+        # h5py from the Python comparison script) can read it directly
+        # without JLD2-specific compound-type handling.
+        f["posterior_window_mask"]  = collect(Bool, posterior_window_mask)
         f["param_names"]          = String.(PARAM_NAMES)
         f["truth_params_dict"]    = Dict{String,Float64}(string(k) => v
                                                           for (k, v) in DEFAULT_PARAMS)
@@ -603,6 +627,22 @@ function main(args::Dict{String,Any})
         f["wall_seconds"]         = t_total
     end
     @info "wrote $data_path"
+
+    # ── Per-stride telemetry CSV (Phase B; consumed by the comparison
+    #    script in Phase D). One row per stride. Plain manual format —
+    #    avoids depending on CSV.jl which isn't a current dep.
+    csv_path = joinpath(out_dir, "per_stride.csv")
+    open(csv_path, "w") do io
+        println(io, "stride,t_wall_s,n_temp_filter,n_temp_ctrl,daily_phi,",
+                     "A_mean_so_far,B_end,F_end,A_end")
+        for r in final.per_stride_log
+            println(io,
+                "$(r.stride),$(r.t_wall_s),$(r.n_temp_filter),",
+                "$(r.n_temp_ctrl),$(r.daily_phi),$(r.A_mean_so_far),",
+                "$(r.B_end),$(r.F_end),$(r.A_end)")
+        end
+    end
+    @info "wrote $csv_path"
 
     # ── Manifest ──
     manifest = Dict(
@@ -627,6 +667,11 @@ function main(args::Dict{String,Any})
         "device"           => string(CUDA.name(CUDA.device())),
         "pinned_dynamics"  => Dict(string(k) => v for (k, v) in PINNED_PARAMS),
         "estimated_params" => String.(PARAM_NAMES),
+        # Truth values for the 10 estimated v1.5 params; mirrored from
+        # DEFAULT_PARAMS so the Phase-D comparison script can read truth
+        # from the manifest (avoids parsing the JLD2 Dict with h5py).
+        "truth_params"     => Dict(String(k) => Float64(DEFAULT_PARAMS[k])
+                                     for k in PARAM_NAMES),
     )
     open(joinpath(out_dir, "manifest.json"), "w") do io
         JSON3.pretty(io, manifest)

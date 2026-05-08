@@ -26,6 +26,7 @@ os.environ.setdefault('JAX_ENABLE_X64', 'True')
 os.environ.setdefault('XLA_PYTHON_CLIENT_PREALLOCATE', 'false')
 
 import argparse
+import csv
 import json
 import sys
 import time
@@ -172,6 +173,11 @@ def main():
     daily_phi_per_stride = []
     replan_history = []
 
+    # Per-stride telemetry — written to per_stride.csv at end of bench so
+    # the comparison script (Phase D) can plot per-stride wall time and
+    # tempering levels alongside the Julia equivalent.
+    per_stride_log = []   # list of dicts; columns flushed to CSV at end
+
     # Per-stride posterior particle clouds (constrained space) for the
     # param-traces plot. `posterior_mask[s]=True` iff the filter
     # actually ran on stride s (i.e. we had ≥ WINDOW_BINS of obs).
@@ -190,6 +196,8 @@ def main():
 
     for s in range(n_strides):
         t0 = time.time()
+        n_temp_filter_s = 0   # 0 if filter didn't run this stride (warmup)
+        n_temp_ctrl_s   = 0   # 0 if no replan happened this stride
 
         # day_in_plan within the current planning horizon
         day_in_plan = (s - last_replan_stride) * STRIDE_BINS // BINS_PER_DAY
@@ -246,6 +254,7 @@ def main():
             ])
             posterior_particles[s, :samp_constrained.shape[0], :] = samp_constrained
             posterior_mask[s] = True
+            n_temp_filter_s = int(n_temp)
             print(f"  stride {s+1}/{n_strides}: filter {n_temp} levels, "
                   f"{elapsed_f:.1f}s")
         else:
@@ -303,15 +312,35 @@ def main():
             for di in range(min(n_plan_days, args.T_days - day_now)):
                 daily_phi_plan[day_now + di] = new_daily[di]
             last_replan_stride = s
+            n_temp_ctrl_s = int(res.get('n_temp', 0))
             replan_history.append({
                 'stride': s,
                 'plan_per_day': new_daily.tolist(),
-                'n_temp': int(res.get('n_temp', 0)),
+                'n_temp': n_temp_ctrl_s,
             })
             print(f"    replan: new mean Φ over next {n_plan_days} d = "
                   f"{new_daily.mean():.3f}")
 
         elapsed = time.time() - t0
+        # Per-stride telemetry record (rolling A-mean uses the
+        # accumulated trajectory so far, including this stride's bins).
+        if full_traj:
+            full_so_far = np.concatenate(full_traj, axis=0)
+            A_mean_so_far = float(np.mean(full_so_far[:, 2]))
+            B_end = float(full_so_far[-1, 0])
+            F_end = float(full_so_far[-1, 1])
+            A_end = float(full_so_far[-1, 2])
+        else:
+            A_mean_so_far = B_end = F_end = A_end = float('nan')
+        per_stride_log.append(dict(
+            stride=s,
+            t_wall_s=elapsed,
+            n_temp_filter=n_temp_filter_s,
+            n_temp_ctrl=n_temp_ctrl_s,
+            daily_phi=Phi_today,
+            A_mean_so_far=A_mean_so_far,
+            B_end=B_end, F_end=F_end, A_end=A_end,
+        ))
         print(f"  stride done in {elapsed:.1f}s")
 
     total_elapsed = time.time() - total_t0
@@ -394,6 +423,17 @@ def main():
         step_minutes=60 // (BINS_PER_DAY // 24),
     )
     (out_dir / 'manifest.json').write_text(json.dumps(manifest, indent=2))
+
+    # ── Per-stride telemetry CSV (Phase B; consumed by the comparison
+    #    script in Phase D). One row per stride.
+    if per_stride_log:
+        csv_cols = ['stride', 't_wall_s', 'n_temp_filter', 'n_temp_ctrl',
+                    'daily_phi', 'A_mean_so_far', 'B_end', 'F_end', 'A_end']
+        with open(out_dir / 'per_stride.csv', 'w', newline='') as fh:
+            w = csv.DictWriter(fh, fieldnames=csv_cols)
+            w.writeheader()
+            for row in per_stride_log:
+                w.writerow(row)
 
     # ── 4-panel state-trajectory plot (mirrors version_2_Julia/tools/
     #    plot_state_traces.jl exactly: same panels, colours, labels) ──
