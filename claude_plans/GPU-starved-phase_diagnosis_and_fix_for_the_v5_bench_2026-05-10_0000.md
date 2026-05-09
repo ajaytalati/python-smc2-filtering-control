@@ -1,6 +1,7 @@
 # GPU-starved-phase diagnosis and fix for the v5 bench
 
 > Archived from plan mode: 2026-05-10 00:00.
+> Updated: 2026-05-10 00:15 — user corrected nvtop observation from ~1–2 s dip to ~40 s up + 40 s down on ~80 s cycle; this matches replan-stride cadence and the BOTE for ~2,600 controller-HMC log-density calls per replan, so candidate ranking collapses to controller cost-density transfer + sync as the only viable suspect; plant rollout and filter bookkeeping moved out of scope; Phase D's plant-rollout branch removed.
 
 ## Overview
 
@@ -92,20 +93,55 @@ replan. **This mirrors the v1.5 PF starvation bug 1:1, just on a
 different GPU surface — and unlike the PF version, neither v1.5
 nor v5 has fixed it yet.**
 
-## Code-level smell observed in `_plant_v5.jl::plant_rollout_v5` (deprioritised)
+## User's corrected nvtop observation (2026-05-10)
+
+User flagged that the starved phase isn't 1–2 s as the original plan
+said — it's **about 40 s up + 40 s down on a ~80 s cycle**. Cross-
+referenced against the live bench log of the in-progress T=42 run
+(`compare_v15_julia_vs_python/example_run/julia_v5_T42d_2026-05-09/T42d_seed42/bench.log`):
+
+- non-replan stride: ~25 s wall (filter only)
+- replan stride: 26 s filter + 58 s replan = **~84 s wall**
+- Replan cadence: every K=2 strides ⇒ matches the 80 s starved/
+  saturated period 1:1.
+
+**Conclusion: the 40 s of starvation lives inside the 58 s replan
+phase**, not in the filter or plant. This categorically rules out:
+
+- **Plant rollout** (BOTE: ≈ 1 ms / stride; three orders of
+  magnitude off the observed dip)
+- **Filter inter-λ-level CPU bookkeeping** (a few hundred ms; runs
+  every stride, but the dip is ONLY on replan strides per the
+  per-stride wall pattern)
+
+Only the controller-side suspect has the right time budget. BOTE for
+the controller HMC call count per replan, at saturated config
+(`ctrl_n_smc=256`, `ctrl_n_anchors=8`, `n_inner=64`,
+`ctrl_num_mcmc=8`, ChEES HMC with `L=64` typical from the bench log,
+5–6 tempering levels per replan):
+
+- 1 energy eval + L gradient evals per HMC move ≈ 65 calls / move
+- 5–6 levels × 8 moves / level ≈ 40–48 moves per replan
+- **≈ 2,600 calls to `gpu_cost_log_density_batched_v5` per replan**
+- Each call: forced `synchronize` + `Array(view(cost_per_thread, 1:Ntot))`
+  of M·n_inner Float32. At gradient-batch size `Ntot = 4352·64 = 278K`
+  Float32 ≈ 1.1 MiB per call.
+- At ~10–15 ms per call (a forced PCIe sync plus the transfer) →
+  **26–39 s of stalls per replan**.
+
+That fits the user's 40 s starvation observation almost exactly. The
+controller cost-density transfer + sync is the only candidate
+consistent with the measured time-budget.
+
+## Plant rollout (deprioritised — categorically ruled out)
 
 Reading [_plant_v5.jl:75-107](/home/ajay/Repos/python-smc2-filtering-control/version_1_5_Julia/models/fsa_v5/_plant_v5.jl#L75-L107)
-the visible CPU smell is per-bin `StableRNG` allocation: each bin
-spawns two fresh `StableRNG` objects (one for SDE, one for obs);
-that's 96 RNG inits per stride. BOTE estimate is ≈ 1 ms/stride,
-**too small to be the dominant 20% phase on its own**. v1.5's
-`_plant.jl` uses the *same* `StableRNG`-per-bin pattern and was
-NOT fixed during the v1.5 starvation work — strong evidence that
-plant rollout was not the bottleneck in v1.5 either.
-
-Net effect: my prior on plant rollout drops; the controller cost
-transfer + sync rises to suspect #1 by direct pattern-match with
-the v1.5 fix template.
+the visible CPU smell is per-bin `StableRNG` allocation (96 fresh
+RNG inits per stride). BOTE puts the rollout at ≈ 1 ms / stride —
+**~40,000× too small** to be the 40 s starvation phase. v1.5's
+`_plant.jl` uses the same pattern and was never fixed for
+performance reasons. Plant rollout is not the bottleneck on this
+bench at this config and is not in scope for Phase D.
 
 ## Suspect inventory (what could be starving the GPU)
 
@@ -123,34 +159,29 @@ The per-stride flow in
 | 7. Controller plan (every K=2 strides) | [bench_controller.jl::controller_plan_v5](/home/ajay/Repos/python-smc2-filtering-control/version_1_5_Julia/tools_v5/bench/bench_controller.jl) | GPU + CPU | builds `FSAv5ControlGPUTarget` (CPU + memcpy), runs framework `run_tempered_smc_gpu` (GPU + CPU bookkeeping per level), decodes Φ schedule (CPU) |
 | 8. Per-stride log row | [bench_loop.jl::compose_per_stride_log_row_v5](/home/ajay/Repos/python-smc2-filtering-control/version_1_5_Julia/tools_v5/bench/bench_loop.jl#L117) | CPU | tiny |
 
-**Updated candidate ranking for the ~20% phase**, in priority order:
+**Candidate ranking after the corrected 40 s observation** —
+collapses to essentially one candidate:
 
-1. **Controller cost-density `Array(view(cost_per_thread))` + sync**
-   (newly identified by reading v1.5's prior-art commits). Mirrors
-   the v1.5 PF bug from `da847d9` 1:1, just on the controller surface
-   instead of the filter surface. Runs every HMC log-density call;
-   M·n_inner Float32 transferred to CPU + a forced sync per call;
-   at gradient-batch size that's ~1.1 MiB / call. The v1.5 fix
-   template applies cleanly: do the n_inner reduction on GPU, return
-   only M Float32 to CPU.
-2. **Filter inter-λ-level CPU bookkeeping** — between each
-   `gpu_log_density_v5` call inside `run_outer_smc`, the bench does
-   ESS bisection, systematic resample, then either Liu-West (cheap
-   per-dim) or smooth_resample (Silverman-bandwidth KDE on M×M
-   matrix). Few hundred ms is plausible at M=32 small-filter, but
-   could be more at saturated-filter configs.
-3. **Controller-target reconstruction** — every replan, the bench
-   builds a fresh `FSAv5ControlGPUTarget`, which allocates CRN noise
-   (CPU `randn` of `n_inner × n_steps × 6` Float32) and copies it to
-   GPU. At T=42, n_inner=64, n_steps=4032: ~6 MiB per replan via
-   Julia's RNG. ~1 s per replan plausible.
-4. **Plant rollout** — fully CPU; per-bin `StableRNG`-per-bin smell
-   visible but BOTE puts it at ≈ 1 ms / stride. v1.5 had the same
-   pattern and never bothered fixing it — strong evidence it's not
-   the dominant bottleneck. Demoted from suspect #1 to #4.
+1. **Controller cost-density `Array(view(cost_per_thread))` + sync
+   on every HMC log-density call** (~2,600 calls per replan, at
+   ~10–15 ms each ⇒ 26–39 s of stalls per replan, vs the observed
+   40 s starvation). Mirrors the v1.5 `da847d9` PF bug 1:1, just on
+   the controller surface. Fix template: GPU-resident accumulator +
+   reduction kernel; return only M Float64 to CPU.
+2. **Controller-target reconstruction at the start of each replan**
+   — fresh `FSAv5ControlGPUTarget` allocation + CPU `randn` of the
+   CRN noise grid + memcpy. ~1 s per replan plausible. **Too small
+   to be the dominant 40 s phase on its own**, but worth checking
+   that it isn't an additional ~1 s of starvation at the start of
+   each replan that adds to (1).
+3. **Filter inter-λ-level CPU bookkeeping** — runs every stride;
+   the per-stride wall pattern (25 s flat vs 84 s on replan) shows
+   filter strides are NOT starved, so this is ruled out as the
+   dominant phase. Keep on the watch list only as a secondary check.
 
-Diagnosis pins down which dominates. The v1.5 prior art makes #1
-the strongest prior.
+Diagnostic still runs — but the BOTE math + per-stride-wall pattern
++ v1.5 prior art all point to suspect #1 with very high confidence.
+Phase B's purpose is now confirmation rather than disambiguation.
 
 ## Phases of the plan
 
@@ -205,18 +236,24 @@ timestamps. The new per-stride timings give relative phase walls that
 can be aligned with the absolute timestamps in the bench log. From
 that:
 
-- **If the dip occupies the bulk of `t_replan` (the controller phase)
-  and the per-stride wall is dominated by replan strides** — the
-  controller cost-density transfer + sync (#1 above, the v1.5-pattern
-  match) is the culprit.
-- If `t_plant_rollout` (~1–2 s) coincides with a 1–2 s dip in
-  `nvidia_smi.csv:gpu_util_percent`, plant rollout is the culprit.
-- If the dip is only at the *end* of a filter cycle (post-`gpu_log_density_v5`,
-  during the resample / Liu-West / HMC-prep window), the
-  filter inter-λ-level bookkeeping is the culprit.
-- If the dip aligns with `controller_plan_v5` SETUP time (before any
-  HMC kernel runs), the controller-target reconstruction is the
-  culprit.
+Expected pattern (matches the user's nvtop observation):
+
+- `t_plant_rollout`, `t_accumulate`, `t_window_grid`, `t_xhat`,
+  `t_postlog` all together < 0.5 s per stride — none of these are
+  the source.
+- `t_filter` ≈ 25 s on every stride, with the GPU **saturated**
+  throughout (no dip during filter).
+- `t_replan` ≈ 58 s **only on every K=2 strides**, with a **~40 s
+  starvation segment inside it**. This is the target.
+- Within the replan window, the dip is broken into many small stalls
+  (~10–15 ms each, ~2,600 of them per replan) caused by the per-call
+  `synchronize` + `Array(view(cost_per_thread, ...))` round-trip. The
+  1 Hz `nvidia_smi.csv` sampler will see the AGGREGATE as a low-util
+  band, not each individual stall.
+
+If Phase B contradicts any of the above (e.g. `t_filter` shows a
+dip too, or `t_replan` is fully saturated), pause and re-diagnose.
+Otherwise proceed straight to Phase D's controller-cost-density branch.
 
 A small Julia script (~30 lines) that joins the two timestamp series
 can produce a definitive correlation plot. Put it at
@@ -266,54 +303,18 @@ higher, but how much of the 20% starvation dip comes from THIS
 versus the framework's per-tempering-level CPU bookkeeping is what
 Phase B's timer settles.
 
-**If plant rollout is the culprit (low prior — see deprioritisation
-above):**
-- Plant rollout is sequential per bin (each bin depends on the
-  previous), so it's NOT embarrassingly parallel — bad GPU fit.
-- Better: stay on CPU, kill the per-bin Julia overhead. Concrete
-  steps in priority order:
-  1. **Replace per-bin `StableRNG` with `Xoshiro`** in
-     [_plant_v5.jl::plant_step_v5](/home/ajay/Repos/python-smc2-filtering-control/version_1_5_Julia/models/fsa_v5/_plant_v5.jl#L75)
-     and `_sample_obs`. The plant rollout is **NOT diff-tested
-     against Lean** (per the docstring at top of `_plant_v5.jl` —
-     "the rollout, the bin-time counter, and the keyed-RNG noise
-     are all Julia-side wrappers without a Lean counterpart"), so
-     the choice of stable-vs-fast RNG is purely a Julia-side
-     determinism call. `Xoshiro(seed)` is reproducible per-Julia-
-     version and much faster than `StableRNG`. Keep the per-bin
-     `bin_key = hash((key, t_bin))` keying contract.
-  2. Profile with `@profile` / `@btime` to see if `_sigma_diag_from_params`
-     (line 46) is allocating per call. If so, hoist out of the hot
-     loop or pass the `SVector` in.
-  3. Confirm `_sample_obs` (line 224) is type-stable; check
-     `@code_warntype` on `plant_step_v5` to spot any
-     dictionary-lookup type instability from `params[:HR_base]` etc.
-  4. Verify the rollout does NOT trigger array growth from
-     `_sample_obs` returning a heap NamedTuple — should be stack-
-     allocated since all 5 fields are `Float64` / `Bool`.
-- Likely 5-10× speedup if the smell is RNG-dominated; potentially
-  smaller if it's type instability.
-- If after that the per-stride plant wall is still > 200 ms,
-  consider running the plant on GPU as a SINGLE KA kernel with
-  ndrange=1 (one thread, just to keep the GPU warm and avoid the
-  CPU↔GPU context switch cost).
-- **Verify diff test still 424/424** before and after, even though
-  the rollout itself isn't diff-tested — the change shouldn't touch
-  any diff-tested surface, but the gate catches accidental drift.
-
-**If filter inter-λ-level CPU bookkeeping is the culprit:**
-- Move the M×M `log_kernel_matrix` and `silverman_bandwidth`
-  computations to GPU using `KernelAbstractions`. Same algorithm,
-  just GPU-resident.
-- `smooth_resample` becomes a single kernel call instead of CPU
-  matrix arithmetic.
-
-**If controller-target reconstruction is the culprit:**
+**If controller-target reconstruction shows up as a ~1 s additional
+stall at the start of each replan** (subordinate to #1):
 - Pre-allocate ONE `FSAv5ControlGPUTarget` at bench start and reuse
-  across replans. Today each replan allocates a fresh `noise_grid`
-  on CPU and copies to GPU; the GPU buffers should be reusable.
+  across replans. Each replan currently allocates a fresh
+  `noise_grid` on CPU and memcpys to GPU; the GPU buffers can be
+  reused with a `randn!` refresh in place.
 - Move `randn` for the CRN noise grid to a GPU-side `randn!` (CUDA.jl
   supports this) so no host→device copy is needed.
+
+**Plant rollout and filter inter-λ-level bookkeeping**: ruled out by
+the corrected 40 s observation + the per-stride wall pattern.
+Out of scope for Phase D.
 
 ## Files to read while executing
 
