@@ -38,7 +38,7 @@ using .GPUControlV5
 # Re-export the public surface for `using FSAv5` ergonomics.
 
 export BINS_PER_DAY, DT_BIN_DAYS
-export A_TYP, F_TYP, PHI_TYP
+export A_TYP, F_TYP
 export TRUTH_PARAMS_V4, TRUTH_PARAMS_V5
 export DEFAULT_OBS_PARAMS_V5
 export DEFAULT_INIT, TRAINED_ATHLETE_INIT

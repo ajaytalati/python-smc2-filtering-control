@@ -1,44 +1,85 @@
-# bench/bench_controller.jl  (v5)
-#
-# Controller-side wrapper used by `tools_v5/bench_smc_full_mpc_fsa_v5_gpu.jl`.
-# Builds an `FSAv5ControlGPUTarget` from the filter's posterior-mean
-# parameters, calls the framework's `run_tempered_smc_gpu` with
-# θ-dim = 2·n_anchors (bimodal schedule), and decodes the posterior-
-# mean RBF coefficient vector into per-bin (Φ_B, Φ_S) plans.
-#
-# Public function:
-#   - controller_plan_v5(params_v5, init_state, T_total_bins, n_substeps,
-#                          dt, ctrl_cfg, key; collect_diagnostics=false)
-#       -> (Phi_B_plan, Phi_S_plan, n_temp_ctrl, theta, diagnostics)
-#
-# Mirrors `tools/bench/bench_controller.jl` (v1.5) byte-for-byte except
-# for the four structural differences mandated by the v5 surface:
-#   1. `params_v5` is a Dict (28 dynamics + 22 obs-channel + frozen),
-#      not a NamedTuple in v1's basis.
-#   2. `init_state` is `SVector{6, Float64}`.
-#   3. Decoder operates on `2·n_anchors` coefficients (first half = B
-#      channel, second half = S channel) and produces TWO Φ vectors.
-#   4. Framework's `n_anchors` argument is `2 · ctrl_cfg.n_anchors`
-#      (the actual θ-dim seen by the SMC²; the n_anchors here is the
-#      per-channel count).
-#
-# Dependencies (loaded by the calling bench script before this file
-# is `include`d): `Statistics.mean`, `StableRNGs.StableRNG`,
-# `StaticArrays.SVector`, the v5 controller GPU kernel
-# (`FSAv5ControlGPUTarget`, `make_log_density_fn_v5`), and the
-# framework's `run_tempered_smc_gpu`.
+"""
+    BenchController
 
-function controller_plan_v5(params_v5::Dict{Symbol, Float64},
-                              init_state::SVector{6, Float64},
+High-level solver for the FSA-v5 Model Predictive Control (MPC) problem. 
+Uses tempered Sequential Monte Carlo (SMC²) to optimize training stimulus plans.
+
+# Mathematical Specification
+
+The controller finds the optimal bimodal stimulus schedule Φ(t) = [Φ_B(t), Φ_S(t)] 
+by optimizing the RBF coefficient vector θ ∈ ℝ^(2·n_anchors).
+
+## 1. Stimulus Decoding (RBF Basis)
+The stimulus for channel i ∈ {B, S} is decoded via a logistic transformation:
+    Φ_i(t) = Φ_max / (1 + exp(-[c_Φ + Σ θ_j · R_j(t)]))
+where R_j(t) are Gaussian Radial Basis Functions.
+
+## 2. Objective Function (Multi-Objective Reward)
+The controller minimizes the cost J(θ), which maximizes:
+    J_reward = - ∫ [A(t) + B(t) + S(t)] dt
+subject to:
+    J_effort = λ_Φ · ∫ [Φ_B² + Φ_S²] dt
+    J_safety = λ_chance · ∫ σ(β · (A_sep - A) / scale) dt
+
+Implementation Note: The solver leverages `Float32` precision and a strictly 
+stateless, pure functional architecture to ensure compatibility with GPU-accelerated 
+SMC² kernels.
+"""
+module BenchController
+
+using Statistics
+using StableRNGs
+using StaticArrays
+using CUDA
+
+# Re-import dynamics and kernel definitions
+import ..SimulationV5: A_TYP, F_TYP
+import ..GPUControlV5: FSAv5ControlGPUTarget, make_log_density_fn_v5
+import SMC2FC_functional: run_tempered_smc_gpu
+
+export controller_plan_v5
+
+
+# =============================================================================
+# 1. OPTIMAL CONTROL SOLVER (SMC²)
+# =============================================================================
+
+"""
+    controller_plan_v5(params_v5, init_state, T_total_bins, n_substeps, dt, 
+                       ctrl_cfg, key; collect_diagnostics=false) -> NamedTuple
+
+Executes a tempered SMC² optimization to find the optimal training plan.
+
+# Arguments
+- `params_v5::Dict{Symbol, Float32}`: Centered model parameters.
+- `init_state::SVector{6, Float32}`: Current 6D latent state.
+- `T_total_bins::Int`: Horizon length in discrete bins.
+- `n_substeps::Int`: Integration sub-steps for the EM solver.
+- `dt::Float32`: Bin width in days.
+- `ctrl_cfg::NamedTuple`: Optimizer settings (n_smc, lam_phi, etc.).
+- `key::UInt64`: RNG seed for reproducibility.
+
+# Returns
+- `Phi_B_plan::Vector{Float32}`: Optimized aerobic stimulus schedule.
+- `Phi_S_plan::Vector{Float32}`: Optimized strength stimulus schedule.
+- `theta::Vector{Float32}`: Posterior mean RBF coefficients.
+- `n_temp_ctrl::Int`: Number of tempering levels used.
+- `diagnostics`: HMC diagnostic traces (if requested).
+"""
+function controller_plan_v5(params_v5::Dict{Symbol, Float32},
+                              init_state::SVector{6, Float32},
                               T_total_bins::Int,
                               n_substeps::Int,
-                              dt::Float64,
+                              dt::Float32,
                               ctrl_cfg::NamedTuple,
                               key::UInt64;
                               collect_diagnostics::Bool = false)
-    n_anchors = ctrl_cfg.n_anchors
-    theta_dim = 2 * n_anchors      # bimodal schedule: B + S channels
+    
+    # ── Solver Configuration ──
+    n_anchors::Int = ctrl_cfg.n_anchors
+    theta_dim::Int = 2 * n_anchors  # Bimodal schedule: [B_anchors..., S_anchors...]
 
+    # Initialize GPU target with current posterior parameters
     ctrl_target = FSAv5ControlGPUTarget(
         n_inner    = ctrl_cfg.n_inner,
         M_max      = ctrl_cfg.M_max,
@@ -46,23 +87,25 @@ function controller_plan_v5(params_v5::Dict{Symbol, Float64},
         n_anchors  = n_anchors,
         n_substeps = n_substeps,
         dt         = dt,
-        F_max      = 0.40,
-        Phi_max    = 3.0,
+        F_max      = 0.40f0,
+        Phi_max    = 3.0f0,
         Phi_default = ctrl_cfg.phi_default,
         lam_Phi    = ctrl_cfg.lam_phi,
         lam_F      = ctrl_cfg.lam_f,
         lam_chance = ctrl_cfg.lam_chance,
-        A_thr      = 0.05,
-        beta_chance = 50.0,
-        scale_chance = 0.10,
+        A_thr      = 0.05f0,
+        beta_chance = 50.0f0,
+        scale_chance = 0.10f0,
         sigma_prior = ctrl_cfg.sigma_prior,
         params     = params_v5,
-        init_state = Float64[init_state[1], init_state[2], init_state[3],
-                              init_state[4], init_state[5], init_state[6]],
+        init_state = Vector{Float32}(init_state),
         noise_seed = Int(key & typemax(Int32)),
     )
+
     log_density_fn = make_log_density_fn_v5(ctrl_target)
     rng_ctrl = StableRNG(key)
+
+    # ── Tempered SMC² Logic ──
     smc_kwargs = (
         target_nats        = ctrl_cfg.target_nats,
         target_ess_frac    = ctrl_cfg.target_ess_frac,
@@ -72,56 +115,85 @@ function controller_plan_v5(params_v5::Dict{Symbol, Float64},
         hmc_step_size      = ctrl_cfg.hmc_step,
         hmc_num_leapfrog   = ctrl_cfg.hmc_leap,
         chees_L_candidates = ctrl_cfg.chees_L_candidates,
-        h_fd               = 1e-4,
+        h_fd               = 1.0f-4,
         calib_n            = 64,
         verbose            = false,
     )
-    diagnostics = NamedTuple[]
-    U_ctrl, n_temp_ctrl = if collect_diagnostics
+
+    U_ctrl::Matrix{Float64}, n_temp_ctrl::Int, diagnostics = if collect_diagnostics
         out = run_tempered_smc_gpu(
             log_density_fn, ctrl_cfg.M_max, ctrl_cfg.n_smc, theta_dim,
             0.0, ctrl_cfg.sigma_prior, rng_ctrl;
             smc_kwargs...,
             collect_diagnostics = true,
         )
-        diagnostics = out[4]
-        (out[1], out[2])
+        (out[1], out[2], out[4])
     else
         out = run_tempered_smc_gpu(
             log_density_fn, ctrl_cfg.M_max, ctrl_cfg.n_smc, theta_dim,
             0.0, ctrl_cfg.sigma_prior, rng_ctrl;
             smc_kwargs...,
         )
-        (out[1], out[2])
+        (out[1], out[2], NamedTuple[])
     end
-    θ_post = vec(mean(U_ctrl; dims = 1))
-    @assert length(θ_post) == theta_dim
 
-    # ── Decode RBF θ → per-bin (Φ_B, Φ_S) ─────────────────────────────
-    # Same Gaussian RBF basis the kernel uses; the design matrix is
-    # rebuilt CPU-side here so the bench can write Phi traces without
-    # an extra GPU transfer. Mirrors v1.5's decoder loop but doubles
-    # the inner work (B-channel coefs: θ[1:n_anchors];
-    # S-channel coefs: θ[n_anchors+1:2·n_anchors]).
-    T_total = T_total_bins * dt
-    t_grid  = collect(0:T_total_bins-1) .* dt
-    anchors = collect(range(0.0, T_total; length = n_anchors))
-    σ_rbf   = T_total / n_anchors
-    Phi_B_plan = zeros(Float32, T_total_bins)
-    Phi_S_plan = zeros(Float32, T_total_bins)
-    c_Phi   = Float64(ctrl_target.c_Phi)
-    for k in 1:T_total_bins
-        raw_B = c_Phi
-        raw_S = c_Phi
-        for j in 1:n_anchors
-            basis_kj = exp(-0.5 * ((t_grid[k] - anchors[j]) / σ_rbf)^2)
-            raw_B += θ_post[j]              * basis_kj
-            raw_S += θ_post[n_anchors + j]  * basis_kj
-        end
-        Phi_B_plan[k] = Float32(3.0 / (1.0 + exp(-raw_B)))
-        Phi_S_plan[k] = Float32(3.0 / (1.0 + exp(-raw_S)))
-    end
-    return (Phi_B_plan = Phi_B_plan, Phi_S_plan = Phi_S_plan,
-            n_temp_ctrl = n_temp_ctrl, theta = θ_post,
-            diagnostics = diagnostics)
+    # Extract posterior mean in Float32
+    theta::Vector{Float32} = Float32.(vec(mean(U_ctrl; dims = 1)))
+
+    # ── Plan Decoding ──
+    plan = _decode_phi_plans(theta, n_anchors, T_total_bins, dt, 
+                             Float32(ctrl_target.c_Phi))
+
+    return (
+        Phi_B_plan  = plan.Phi_B, 
+        Phi_S_plan  = plan.Phi_S,
+        n_temp_ctrl = n_temp_ctrl, 
+        theta       = theta,
+        diagnostics = diagnostics
+    )
 end
+
+
+# =============================================================================
+# 2. RBF DECODER (Internal)
+# =============================================================================
+
+"""
+    _decode_phi_plans(theta, n_anchors, n_steps, dt, c_Phi) -> NamedTuple
+
+Pure functional decoder: transforms RBF coefficients into time-resolved 
+training intensities. Uses Float32 for bit-equivalence with the GPU kernel.
+"""
+function _decode_phi_plans(theta::Vector{Float32}, n_anchors::Int, 
+                            n_steps::Int, dt::Float32, c_Phi::Float32)
+    
+    T_total::Float32 = n_steps * dt
+    t_grid::Vector{Float32}  = collect(0:(n_steps-1)) .* dt
+    anchors::Vector{Float32} = collect(range(0.0f0, T_total; length = n_anchors))
+    σ_rbf::Float32   = T_total / n_anchors
+    
+    phi_B = zeros(Float32, n_steps)
+    phi_S = zeros(Float32, n_steps)
+    
+    for k in 1:n_steps
+        raw_B::Float32 = c_Phi
+        raw_S::Float32 = c_Phi
+        
+        for j in 1:n_anchors
+            # Gaussian RBF Kernel
+            dist::Float32  = t_grid[k] - anchors[j]
+            basis::Float32 = exp(-0.5f0 * (dist / σ_rbf)^2)
+            
+            raw_B += theta[j]             * basis
+            raw_S += theta[n_anchors + j] * basis
+        end
+        
+        # Logistic saturation [0, 3.0]
+        phi_B[k] = 3.0f0 / (1.0f0 + exp(-raw_B))
+        phi_S[k] = 3.0f0 / (1.0f0 + exp(-raw_S))
+    end
+    
+    return (Phi_B = phi_B, Phi_S = phi_S)
+end
+
+end # module BenchController

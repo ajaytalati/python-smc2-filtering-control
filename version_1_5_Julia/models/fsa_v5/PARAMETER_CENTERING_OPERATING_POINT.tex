@@ -1,0 +1,49 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{hyperref}
+\usepackage{geometry}
+\geometry{margin=1in}
+
+\title{Technical Note: Parameter Centering around a Typical Operating Point}
+\author{FSA-v5 Research Engineering}
+\date{May 10, 2026}
+
+\begin{document}
+
+\maketitle
+
+\section{Introduction}
+In the FSA-v5 model, the non-linear SDE dynamics are defined using constants $A_{TYP}$ (Typical Alertness) and $F_{TYP}$ (Typical Fatigue). This technique is known in statistics and control theory as \textbf{Parameter Centering} or \textbf{Operating Point Analysis}. This note explains why this technique is used and its impact on model identifiability.
+
+\section{The Mathematical Mechanism}
+
+\subsection{Quadratic Fatigue Centering}
+The Stuart-Landau bifurcation parameter $\mu$ includes a quadratic penalty on fatigue. Without centering, the term is written as $\mu \propto - \mu_F F - \mu_{FF} F^2$. This form creates high correlation between the linear and quadratic coefficients, making Bayesian inference (SMC$^2$) unstable.
+
+In FSA-v5, we center the term on the typical operating point $F_{TYP} = 0.20$:
+\begin{equation}
+    \mu(F) \propto - \mu_{FF} (F - F_{TYP})^2
+\end{equation}
+This centering decorrelates the parameters. $\mu_{FF}$ now isolatedly controls the \textbf{curvature} of the "fatigue cliff" specifically at the intensity levels where the athlete actually operates.
+
+\subsection{Autonomic Boost Normalization}
+The model assumes that adaptation gains are modulated by the current autonomic state $A$. To ensure that the gains represent "deviations from normal," we normalize the boost factor by the typical operating point $A_{TYP} = 0.10$:
+\begin{equation}
+    a_{B}(A) = \frac{1 + \epsilon_{AB} A}{1 + \epsilon_{AB} A_{TYP}}
+\end{equation}
+By construction, when $A = A_{TYP}$, the multiplier $a_B = 1.0$, and the system behaves according to standard training expectations.
+
+\section{Advantages of Centering}
+
+\begin{itemize}
+    \item \textbf{Identifiability:} By subtracting the typical value, we reduce the multi-collinearity of the parameter space. This allows the filter to uniquely identify fitness gains vs. fatigue sensitivity from noisy data.
+    \item \textbf{Numerical Stability:} Centering avoids "catastrophic cancellation" in floating-point arithmetic, which occurs when subtracting two nearly-equal large numbers to find a small difference.
+    \item \textbf{Intuitive Prior Biasing:} Prior distributions for parameters like $\mu_0$ (baseline drive) become meaningful; they describe the state at a \textbf{healthy human baseline} rather than at a hypothetical zero-state (which is physiologically impossible).
+\end{itemize}
+
+\section{Conclusion}
+The use of $A_{TYP}$ and $F_{TYP}$ is not a specific model variant, but a robust engineering strategy to align abstract non-linear dynamics with the actual operating regime of human physiology. It transforms a mathematically difficult optimization problem into a stable, identifiable one.
+
+\end{document}

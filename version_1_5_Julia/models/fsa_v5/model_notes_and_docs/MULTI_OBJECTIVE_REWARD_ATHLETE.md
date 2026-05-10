@@ -1,6 +1,7 @@
 # Multi-Objective Reward Structure: The Athlete Mindset
 
-In `gpu_control_v5.jl`, the controller's objective was expanded from a simple reward on Alertness ($A$) to a multi-objective form:
+In `gpu_control_v5.jl`, the controller's objective was expanded from a simple reward on Autonomic health ($A$) to a multi-objective form:
+
 $$J_{reward} = - \int A \, dt - \int B \, dt - \int S \, dt$$
 
 This document explains the physiological rationale and the mathematical coupling between these variables.
@@ -12,7 +13,7 @@ The fundamental mechanism of the FSA-v5 model is the coupling of fitness and fat
 $$\mu(B, S, F) = \mu_0 + \mu_B B + \mu_S S - \mu_F F - \mu_{FF} (F - F_{TYP})^2 - \dots$$
 
 ### The Reward Logic:
-*   **$B$ and $S$ as Drive Loadings:** Aerobic Fitness ($B$) and Strength ($S$) are the primary terms that push $\mu$ into the positive, healthy regime. Maximizing $B$ and $S$ isn't just about "collecting fitness points"—it is the physical mechanism required to maintain a stable, high Alertness ($A$).
+*   **$B$ and $S$ as Drive Loadings:** Aerobic Fitness ($B$) and Strength ($S$) are the primary terms that push $\mu$ into the positive, healthy regime. Maximizing $B$ and $S$ isn't just about "collecting fitness points"—it is the physical mechanism required to maintain a stable, high Autonomic health ($A$).
 *   **$F$ as the Suppression:** Fatigue ($F$) is the term that subtracts from $\mu$, potentially forcing it negative and triggering autonomic collapse ($A \to 0$).
 
 ---
