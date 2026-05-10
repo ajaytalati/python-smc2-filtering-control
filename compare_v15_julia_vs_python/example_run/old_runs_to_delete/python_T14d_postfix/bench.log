@@ -1,0 +1,162 @@
+============================================================================
+  FSA v1.5 closed-loop SMC²-MPC  (T = 14 d, step = 60 min, BINS_PER_DAY = 24)
+  device = GPU
+  strides = 28, replan every K = 2
+============================================================================
+  stride 1/28: warmup (< window)
+  stride done in 1.3s
+W0508 23:02:55.480236  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0508 23:03:06.014847  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+  stride 2/28: filter 5 levels, 11.8s
+  stride done in 13.7s
+W0508 23:03:07.935327  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0508 23:03:08.553629  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+      SF base (annealed/q0_cov): blend=0.70, entropy_reg=0, log_det=-27.0, ||m1-m0||=0.156, n_stages=3, n_mh=5, min ESS=343.6/512, MH acc=0.65
+W0508 23:03:11.271335  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+  stride 3/28: filter 5 levels, 10.8s
+    replan: new mean Φ over next 14 d = 0.347
+  stride done in 118.9s
+W0508 23:05:06.061931  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+      SF base (annealed/q0_cov): blend=0.70, entropy_reg=0, log_det=-27.1, ||m1-m0||=0.236, n_stages=3, n_mh=5, min ESS=290.2/512, MH acc=0.69
+W0508 23:05:07.895299  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+  stride 4/28: filter 5 levels, 10.3s
+  stride done in 12.9s
+W0508 23:05:18.946505  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+      SF base (annealed/q0_cov): blend=0.70, entropy_reg=0, log_det=-26.6, ||m1-m0||=0.108, n_stages=3, n_mh=5, min ESS=372.2/512, MH acc=0.62
+W0508 23:05:20.709594  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+  stride 5/28: filter 5 levels, 10.6s
+    replan: new mean Φ over next 14 d = 0.387
+  stride done in 98.0s
+W0508 23:06:56.882579  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+      SF base (annealed/q0_cov): blend=0.70, entropy_reg=0, log_det=-26.1, ||m1-m0||=0.141, n_stages=3, n_mh=5, min ESS=372.4/512, MH acc=0.60
+W0508 23:06:58.977359  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+  stride 6/28: filter 5 levels, 10.7s
+  stride done in 13.2s
+W0508 23:07:09.973554  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+      SF base (annealed/q0_cov): blend=0.70, entropy_reg=0, log_det=-25.1, ||m1-m0||=0.195, n_stages=3, n_mh=5, min ESS=331.5/512, MH acc=0.64
+W0508 23:07:11.883926  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+  stride 7/28: filter 5 levels, 10.4s
+    replan: new mean Φ over next 14 d = 0.361
+  stride done in 97.8s
+W0508 23:08:47.816776  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+      SF base (annealed/q0_cov): blend=0.70, entropy_reg=0, log_det=-25.9, ||m1-m0||=0.131, n_stages=3, n_mh=5, min ESS=345.3/512, MH acc=0.60
+W0508 23:08:49.562378  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+  stride 8/28: filter 5 levels, 10.3s
+  stride done in 12.8s
+W0508 23:09:00.478859  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+      SF base (annealed/q0_cov): blend=0.70, entropy_reg=0, log_det=-26.5, ||m1-m0||=0.093, n_stages=3, n_mh=5, min ESS=369.8/512, MH acc=0.62
+W0508 23:09:02.352446  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+  stride 9/28: filter 5 levels, 10.3s
+    replan: new mean Φ over next 14 d = 0.430
+  stride done in 97.7s
+W0508 23:10:38.297818  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+      SF base (annealed/q0_cov): blend=0.70, entropy_reg=0, log_det=-25.5, ||m1-m0||=0.248, n_stages=3, n_mh=5, min ESS=294.7/512, MH acc=0.68
+W0508 23:10:40.259690  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+  stride 10/28: filter 5 levels, 10.7s
+  stride done in 13.3s
+W0508 23:10:51.484862  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+      SF base (annealed/q0_cov): blend=0.70, entropy_reg=0, log_det=-26.3, ||m1-m0||=0.121, n_stages=3, n_mh=5, min ESS=369.3/512, MH acc=0.62
+W0508 23:10:53.320256  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+  stride 11/28: filter 5 levels, 10.3s
+    replan: new mean Φ over next 14 d = 0.398
+  stride done in 97.5s
+W0508 23:12:28.870886  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+      SF base (annealed/q0_cov): blend=0.70, entropy_reg=0, log_det=-25.6, ||m1-m0||=0.125, n_stages=3, n_mh=5, min ESS=364.1/512, MH acc=0.58
+W0508 23:12:30.985583  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+  stride 12/28: filter 5 levels, 10.9s
+  stride done in 13.2s
+W0508 23:12:42.241621  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+      SF base (annealed/q0_cov): blend=0.70, entropy_reg=0, log_det=-26.1, ||m1-m0||=0.237, n_stages=3, n_mh=5, min ESS=328.3/512, MH acc=0.64
+W0508 23:12:44.282535  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+  stride 13/28: filter 5 levels, 10.5s
+    replan: new mean Φ over next 14 d = 0.405
+  stride done in 97.8s
+W0508 23:14:20.048650  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+      SF base (annealed/q0_cov): blend=0.70, entropy_reg=0, log_det=-26.3, ||m1-m0||=0.088, n_stages=3, n_mh=5, min ESS=366.2/512, MH acc=0.60
+W0508 23:14:21.913477  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+  stride 14/28: filter 5 levels, 10.8s
+  stride done in 13.2s
+W0508 23:14:33.337907  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+      SF base (annealed/q0_cov): blend=0.70, entropy_reg=0, log_det=-25.6, ||m1-m0||=0.227, n_stages=3, n_mh=5, min ESS=312.7/512, MH acc=0.69
+W0508 23:14:35.544477  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+  stride 15/28: filter 5 levels, 10.8s
+    replan: new mean Φ over next 14 d = 0.344
+  stride done in 99.9s
+W0508 23:16:13.313481  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+      SF base (annealed/q0_cov): blend=0.70, entropy_reg=0, log_det=-26.1, ||m1-m0||=0.124, n_stages=3, n_mh=5, min ESS=381.7/512, MH acc=0.60
+W0508 23:16:15.540513  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+  stride 16/28: filter 5 levels, 10.8s
+  stride done in 13.5s
+W0508 23:16:26.897812  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+      SF base (annealed/q0_cov): blend=0.70, entropy_reg=0, log_det=-25.3, ||m1-m0||=0.149, n_stages=3, n_mh=5, min ESS=336.0/512, MH acc=0.65
+W0508 23:16:28.845666  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+  stride 17/28: filter 5 levels, 10.5s
+    replan: new mean Φ over next 14 d = 0.382
+  stride done in 99.4s
+W0508 23:18:05.996272  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+      SF base (annealed/q0_cov): blend=0.70, entropy_reg=0, log_det=-25.8, ||m1-m0||=0.241, n_stages=3, n_mh=5, min ESS=311.6/512, MH acc=0.66
+W0508 23:18:07.852906  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+  stride 18/28: filter 5 levels, 10.5s
+  stride done in 12.9s
+W0508 23:18:19.008505  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+      SF base (annealed/q0_cov): blend=0.70, entropy_reg=0, log_det=-26.1, ||m1-m0||=0.198, n_stages=3, n_mh=5, min ESS=329.8/512, MH acc=0.64
+W0508 23:18:21.062544  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+  stride 19/28: filter 5 levels, 10.8s
+    replan: new mean Φ over next 14 d = 0.448
+  stride done in 99.5s
+W0508 23:19:58.550879  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+      SF base (annealed/q0_cov): blend=0.70, entropy_reg=0, log_det=-26.1, ||m1-m0||=0.121, n_stages=3, n_mh=5, min ESS=359.1/512, MH acc=0.63
+W0508 23:20:00.803966  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+  stride 20/28: filter 5 levels, 10.9s
+  stride done in 13.5s
+W0508 23:20:12.039806  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+      SF base (annealed/q0_cov): blend=0.70, entropy_reg=0, log_det=-25.3, ||m1-m0||=0.087, n_stages=3, n_mh=5, min ESS=354.1/512, MH acc=0.60
+W0508 23:20:14.160296  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+  stride 21/28: filter 5 levels, 11.0s
+    replan: new mean Φ over next 14 d = 0.794
+  stride done in 115.8s
+W0508 23:22:07.916918  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+      SF base (annealed/q0_cov): blend=0.70, entropy_reg=0, log_det=-25.8, ||m1-m0||=0.276, n_stages=3, n_mh=5, min ESS=213.4/512, MH acc=0.75
+W0508 23:22:10.149655  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+  stride 22/28: filter 5 levels, 10.9s
+  stride done in 13.6s
+W0508 23:22:21.361734  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+      SF base (annealed/q0_cov): blend=0.70, entropy_reg=0, log_det=-27.7, ||m1-m0||=0.094, n_stages=3, n_mh=5, min ESS=315.8/512, MH acc=0.65
+W0508 23:22:23.581078  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+  stride 23/28: filter 5 levels, 10.8s
+    replan: new mean Φ over next 14 d = 0.355
+  stride done in 100.1s
+W0508 23:24:01.558491  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+      SF base (annealed/q0_cov): blend=0.70, entropy_reg=0, log_det=-28.9, ||m1-m0||=0.085, n_stages=3, n_mh=5, min ESS=376.0/512, MH acc=0.59
+W0508 23:24:03.984573  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+  stride 24/28: filter 5 levels, 10.9s
+  stride done in 13.6s
+W0508 23:24:15.036571  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+      SF base (annealed/q0_cov): blend=0.70, entropy_reg=0, log_det=-28.3, ||m1-m0||=0.137, n_stages=3, n_mh=5, min ESS=362.6/512, MH acc=0.64
+W0508 23:24:16.799222  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+  stride 25/28: filter 5 levels, 10.3s
+    replan: new mean Φ over next 14 d = 0.386
+  stride done in 97.2s
+W0508 23:25:52.346051  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+      SF base (annealed/q0_cov): blend=0.70, entropy_reg=0, log_det=-26.8, ||m1-m0||=0.105, n_stages=3, n_mh=5, min ESS=380.0/512, MH acc=0.61
+W0508 23:25:54.544692  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+  stride 26/28: filter 5 levels, 10.6s
+  stride done in 13.3s
+W0508 23:26:05.428946  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+      SF base (annealed/q0_cov): blend=0.70, entropy_reg=0, log_det=-25.5, ||m1-m0||=0.091, n_stages=3, n_mh=5, min ESS=359.1/512, MH acc=0.59
+W0508 23:26:07.156976  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+  stride 27/28: filter 5 levels, 10.3s
+    replan: new mean Φ over next 14 d = 0.335
+  stride done in 114.0s
+W0508 23:27:59.635889  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+      SF base (annealed/q0_cov): blend=0.70, entropy_reg=0, log_det=-25.2, ||m1-m0||=0.159, n_stages=3, n_mh=5, min ESS=341.6/512, MH acc=0.61
+W0508 23:28:01.719011  673497 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+  stride 28/28: filter 5 levels, 10.6s
+  stride done in 13.1s
+
+  total: 25.3 min (1521s) for 28 strides
+  building baseline (constant Φ = 1.0) reference …
+  wrote /home/ajay/Repos/python-smc2-filtering-control/compare_v15_julia_vs_python/example_run/python_T14d_postfix/v15_T14d_traces.png
+  wrote /home/ajay/Repos/python-smc2-filtering-control/compare_v15_julia_vs_python/example_run/python_T14d_postfix/v15_T14d_param_traces.png
+  artefacts written to /home/ajay/Repos/python-smc2-filtering-control/compare_v15_julia_vs_python/example_run/python_T14d_postfix/
+============================================================================

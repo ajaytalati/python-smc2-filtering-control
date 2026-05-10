@@ -1,0 +1,44 @@
+\relax 
+\providecommand\hyper@newdestlabel[2]{}
+\providecommand\HyField@AuxAddToFields[1]{}
+\providecommand\HyField@AuxAddToCoFields[2]{}
+\@writefile{toc}{\contentsline {section}{\numberline {1}The framework: \texttt  {SMC2FC\_functional}}{2}{section.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {2}Filter-side config (the inner PF + outer SMC$^2$)}{2}{section.2}\protected@file@percent }
+\newlabel{sec:filter_cfg}{{2}{2}{Filter-side config (the inner PF + outer SMC$^2$)}{section.2}{}}
+\@writefile{toc}{\contentsline {paragraph}{Why $\varepsilon = 0.005$?}{2}{section*.4}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Filter-side defaults. Bold-equivalent changes from v1: \texttt  {--hmc-step-size} 0.05 $\to $ 0.005, and the new flags \texttt  {--h-fd}, \texttt  {--filter-chees-min}, \texttt  {--filter-chees-max}.}}{3}{table.1}\protected@file@percent }
+\newlabel{tab:filter_cfg}{{1}{3}{Filter-side defaults. Bold-equivalent changes from v1: \texttt {--hmc-step-size} 0.05 $\to $ 0.005, and the new flags \texttt {--h-fd}, \texttt {--filter-chees-min}, \texttt {--filter-chees-max}}{table.1}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Selected rows from \texttt  {diag\_hmc\_accept\_sweep.csv}.}}{3}{table.2}\protected@file@percent }
+\newlabel{tab:hmc_sweep}{{2}{3}{Selected rows from \texttt {diag\_hmc\_accept\_sweep.csv}}{table.2}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {3}Filter-side rejuvenation knobs}{3}{section.3}\protected@file@percent }
+\newlabel{sec:rejuv}{{3}{3}{Filter-side rejuvenation knobs}{section.3}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces New filter-side rejuvenation defaults. All three are ON by default in v2.}}{3}{table.3}\protected@file@percent }
+\newlabel{tab:rejuv}{{3}{3}{New filter-side rejuvenation defaults. All three are ON by default in v2}{table.3}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {4}Filter HMC = framework ChEES path}{4}{section.4}\protected@file@percent }
+\newlabel{sec:filter_hmc_unified}{{4}{4}{Filter HMC = framework ChEES path}{section.4}{}}
+\@writefile{toc}{\contentsline {paragraph}{Measured filter HMC behaviour at the new defaults.}{4}{section*.5}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces Measured filter HMC behaviour. Compare with the v1 configuration's \textbf  {0\,\% accept across 2880 levels}.}}{4}{table.4}\protected@file@percent }
+\newlabel{tab:filter_hmc_meas}{{4}{4}{Measured filter HMC behaviour. Compare with the v1 configuration's \textbf {0\,\% accept across 2880 levels}}{table.4}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {5}Controller-side config (the SMC$^2$-MPC plan finder)}{4}{section.5}\protected@file@percent }
+\newlabel{sec:ctrl_cfg}{{5}{4}{Controller-side config (the SMC$^2$-MPC plan finder)}{section.5}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {5}{\ignorespaces Controller-side defaults. Changes from v1: \texttt  {--ctrl-n-smc} 2048 $\to $ 1024, \texttt  {--ctrl-num-mcmc} 16 $\to $ 8, plus the new \texttt  {--collect-ctrl-diagnostics} flag (default \texttt  {true}). To recover v1's saturated config, pass \texttt  {--ctrl-n-smc 2048 --ctrl-num-mcmc 16}.}}{4}{table.5}\protected@file@percent }
+\newlabel{tab:ctrl_cfg}{{5}{4}{Controller-side defaults. Changes from v1: \texttt {--ctrl-n-smc} 2048 $\to $ 1024, \texttt {--ctrl-num-mcmc} 16 $\to $ 8, plus the new \texttt {--collect-ctrl-diagnostics} flag (default \texttt {true}). To recover v1's saturated config, pass \texttt {--ctrl-n-smc 2048 --ctrl-num-mcmc 16}}{table.5}{}}
+\@writefile{toc}{\contentsline {paragraph}{Controller-HMC measured behaviour at the new defaults}{4}{section*.6}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {6}{\ignorespaces Controller HMC was already correct in v1 (the $\beta $ keyword in \texttt  {parallel\_hmc\_one\_move\_generic!} has always been respected on the controller side). v2's instrumentation just makes this measurable per stride.}}{5}{table.6}\protected@file@percent }
+\newlabel{tab:ctrl_hmc_meas}{{6}{5}{Controller HMC was already correct in v1 (the $\beta $ keyword in \texttt {parallel\_hmc\_one\_move\_generic!} has always been respected on the controller side). v2's instrumentation just makes this measurable per stride}{table.6}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {6}Why this config (not bigger, not smaller)}{5}{section.6}\protected@file@percent }
+\newlabel{sec:why}{{6}{5}{Why this config (not bigger, not smaller)}{section.6}{}}
+\@writefile{toc}{\contentsline {paragraph}{The filter-HMC tier is now correct, not just larger.}{5}{section*.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{The fast controller is the new default}{5}{section*.8}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Smaller still leaves the GPU empty.}{5}{section*.9}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Bigger is still wall-time-infeasible}{5}{section*.10}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {7}Headline scientific result at the new defaults}{5}{section.7}\protected@file@percent }
+\newlabel{sec:headline}{{7}{5}{Headline scientific result at the new defaults}{section.7}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {7}{\ignorespaces Comparison of v1's saturated baseline with the new v2 default. Sources: v1's quoted numbers from \texttt  {compare\_v15\_julia\_vs\_python/example\_run/}\\ \texttt  {julia\_saturation/FINDINGS\_T28d\_julia\_saturated.md}; v2 numbers from \texttt  {julia\_horizon\_sweep\_2026-05-09\_filter\_hmc\_unified/}\\ \texttt  {horizons\_results.csv} + \texttt  {docs/filter\_hmc\_accept\_summary.csv} + \texttt  {docs/controller\_hmc\_summary.csv}.}}{5}{table.7}\protected@file@percent }
+\newlabel{tab:headline}{{7}{5}{Comparison of v1's saturated baseline with the new v2 default. Sources: v1's quoted numbers from \texttt {compare\_v15\_julia\_vs\_python/example\_run/}\\ \texttt {julia\_saturation/FINDINGS\_T28d\_julia\_saturated.md}; v2 numbers from \texttt {julia\_horizon\_sweep\_2026-05-09\_filter\_hmc\_unified/}\\ \texttt {horizons\_results.csv} + \texttt {docs/filter\_hmc\_accept\_summary.csv} + \texttt {docs/controller\_hmc\_summary.csv}}{table.7}{}}
+\@writefile{toc}{\contentsline {paragraph}{What the table is saying.}{5}{section*.11}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {8}When to deviate from these defaults}{6}{section.8}\protected@file@percent }
+\newlabel{sec:deviate}{{8}{6}{When to deviate from these defaults}{section.8}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {9}Where artefacts live}{6}{section.9}\protected@file@percent }
+\newlabel{sec:artefacts}{{9}{6}{Where artefacts live}{section.9}{}}
+\gdef \@abspage@last{6}

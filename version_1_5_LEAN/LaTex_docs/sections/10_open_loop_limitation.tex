@@ -1,0 +1,29 @@
+\section{Structural Limitation: Open-Loop Gradient Descent} \label{sec:open_loop_limitation}
+
+The optimal plans presented in Section \ref{sec:fsa-v4} are produced by \texttt{tools/optimize\_dynamic\_plan\_v4.py}, which solves the planning problem via \emph{open-loop direct trajectory optimisation} --- not Model-Predictive Control. The script parameterises the stimulus profile $\Phi(t)$ as a time-only function $\Phi(t;\theta)$ through a fixed RBF basis (see \texttt{models/fsa\_high\_res/control.py}, \texttt{schedule\_from\_theta}), and minimises the expected cost over $\theta \in \mathbb{R}^{2 n_{\text{anchors}}}$ by 2000 iterations of plain gradient descent. The optimised $\theta^\star$ is then forward-rolled \emph{once} through the SDE to produce the trajectory shown.
+
+Crucially, $\Phi$ depends only on $\theta$ and on time $t$. It is committed before any state realisation $y(t)$ is observed. There is no observation step, no feedback law $\Phi = \pi(y)$, no re-planning at later decision points, and no rolling horizon. The decision rule is structurally open-loop.
+
+\subsection{Why this is fundamentally limiting for FSA-v4}
+
+The variable-dose dynamics introduce two state-dependent failure modes that an open-loop schedule cannot react to:
+
+\begin{enumerate}
+    \item \textbf{Stochastic excursions in $F$.} The fatigue pool is driven by a CIR-type SDE with state-dependent diffusion. On a single realisation, a transient noise excursion that pushes $F$ near or past $F_{\max}$ should trigger an immediate reduction in stimulus. An open-loop schedule, having committed $\Phi(t)$ in advance, cannot respond --- the same nominal $\Phi$ is applied regardless of how the realisation unfolds.
+    \item \textbf{Coupled collapse of the autonomic state $A$.} The Stuart--Landau drift $\dot A = \mu A - \eta A^3$ has $\mu = \mu_0 + \mu_B B + \mu_S S - \mu_F F - \mu_{FF}(F - F_{\text{TYP}})^2$. Once $F$ overshoots $F_{\text{TYP}}$, the quadratic term drives $\mu$ negative, and the only stable equilibrium becomes $A = 0$. Because the diffusion term $\sigma_A \sqrt{A}$ vanishes at zero, $A = 0$ is effectively absorbing: noise cannot recover it. A closed-loop controller observing $A$ in decline could pre-emptively reduce $\Phi$ to keep $\mu > 0$; an open-loop schedule cannot.
+\end{enumerate}
+
+More generally, the optimiser is solving the wrong problem. Open-loop direct optimisation finds the best deterministic $\Phi(t)$ \emph{averaged} over noise via Common Random Numbers. This is appropriate for offline schedule design when state is unobserved, but it cannot exhibit the periodization-on-demand behaviour the FSA-v4 narrative attributes to the controller --- because that behaviour is, by definition, a feedback response.
+
+\subsection{What true MPC would require}
+
+A genuine receding-horizon MPC implementation would need to:
+\begin{itemize}
+    \item Discretise time into control epochs $t_0 < t_1 < \ldots < t_K$.
+    \item At each $t_k$, observe (or estimate from data) the current state $\hat y(t_k)$.
+    \item Solve a finite-horizon optimal control problem $\min_\theta \mathbb{E}[ J(t_k, t_k + T_h \mid \hat y(t_k), \theta) ]$.
+    \item Apply only $\Phi(t_k; \theta^\star_k)$ over $[t_k, t_{k+1}]$.
+    \item Discard the rest of the plan, advance, re-observe, re-solve.
+\end{itemize}
+
+None of these steps are present in \texttt{optimize\_dynamic\_plan\_v4.py}. The figures in Section \ref{sec:fsa-v4} should therefore be read as ``the best fixed open-loop schedule the optimiser found over 2000 iterations'', not as the output of a feedback controller --- and any narrative claim that ``the controller is forced to deload'' is, structurally, a property the current implementation cannot demonstrate.

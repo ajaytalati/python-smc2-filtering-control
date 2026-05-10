@@ -1,0 +1,2 @@
+T_days,n_strides,n_replans,total_wall_s,mean_stride_wall_s,max_stride_wall_s,mean_filter_n_temp,mean_ctrl_n_temp,mean_gpu_util_pct,pct_time_gpu_above_90,peak_vram_mib,mean_power_w,mean_A_mpc,final_A_mpc,mean_A_baseline,final_A_baseline,mean_B_mpc,final_B_mpc,final_F_mpc,n_F_violations,pct_F_violations,max_F_overshoot,mean_phi_per_stride,final_phi_per_stride,mean_phi_at_stride21,bench_exit_code
+14,27,13,3263.3,120.72,251.77,5.0,20.0,47.7,0.0,6928.0,324.2,0.0766,0.0842,0.1138,0.1819,0.0735,0.1124,0.1543,0,0.0,0.0,0.516,1.3033,0.7005,0

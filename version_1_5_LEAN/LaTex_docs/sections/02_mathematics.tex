@@ -1,0 +1,53 @@
+\section{Mathematical Formulation} \label{sec:math}
+
+The FSA-v2 model is defined as a system of three coupled Itô Stochastic Differential Equations (SDEs).
+
+\subsection{State Space and Drift Coefficients}
+
+The state vector is $y(t) = (B(t), F(t), A(t))^T$. The dynamics are governed by the following equations:
+
+\begin{align}
+  \dd B &= \left[\,\kappa_B \cdot \frac{1+\varepsilon_A A}{1+\varepsilon_A A_{\mathrm{typ}}}\,\Phi(t)
+                  - \frac{B}{\tau_B}\,\right]\dd t
+            + \sigma_B \sqrt{B(1-B)}\,\dd W_B \\
+  \dd F &= \left[\,\kappa_F\,\Phi(t)
+                  - \frac{1+\lambda_A A}{1+\lambda_A A_{\mathrm{typ}}}\,
+                    \frac{F}{\tau_F}\,\right]\dd t
+            + \sigma_F \sqrt{F}\,\dd W_F \\
+  \dd A &= \bigl[\,\mu(B,F)\,A - \eta\,A^3\,\bigr]\,\dd t
+            + \sigma_A \sqrt{A}\,\dd W_A
+\end{align}
+
+where $\mu(B,F)$ is the Stuart-Landau bifurcation parameter:
+\begin{equation}
+  \mu(B,F) = \mu_0 + \mu_B B - \mu_F F - \mu_{FF}\,(F - F_{\mathrm{typ}})^2
+\end{equation}
+
+\subsection{Diffusion and Boundary Conditions}
+
+The model employs state-dependent noise to maintain physiological boundaries:
+\begin{itemize}
+    \item \textbf{Jacobi Diffusion for B:} The term $\sigma_B \sqrt{B(1-B)}$ ensures $B$ stays within the unit interval $[0, 1]$. The diffusion vanishes as $B \to 0$ or $B \to 1$.
+    \item \textbf{CIR Diffusion for F and A:} The terms $\sigma_F \sqrt{F}$ and $\sigma_A \sqrt{A}$ ensure $F, A \ge 0$. The diffusion vanishes as the state approaches zero, preventing negative values (Cox-Ingersoll-Ross process).
+\end{itemize}
+
+\subsection{The G1 Reparametrization}
+
+The G1 form redefines parameters to ensure structural identifiability. By scaling the couplings by their values at the operating point $(A_{\mathrm{typ}}, F_{\mathrm{typ}})$, we create a system where:
+\begin{enumerate}
+    \item $\kappa_B$ is the \textit{effective} fitness gain at $A_{\mathrm{typ}}$.
+    \item $\tau_F$ is the \textit{effective} fatigue time constant at $A_{\mathrm{typ}}$.
+    \item $\mu_F$ is the \textit{local slope} of the growth rate with respect to fatigue at $F_{\mathrm{typ}}$.
+\end{enumerate}
+This rotation ensures that the primary parameters are strongly identified by the data, while the residuals ($\varepsilon_A, \lambda_A, \mu_{FF}$) capture higher-order non-linearities.
+
+\subsection{Observation Model}
+
+The latent states are projected onto four observable channels:
+\begin{align*}
+  \mathrm{HR}(t) &\sim \mathcal{N}(\text{HR}_{\text{base}} - \kappa_B^{HR}B + \alpha_A^{HR}A + \beta_C^{HR}C(t), \sigma_{HR}^2) \\
+  P(\text{sleep}(t)=1) &= \text{sigmoid}(k_C C(t) + k_A A - \tilde{c}) \\
+  S(t) &\sim \mathcal{N}(S_{\text{base}} + k_F F - k_A^S A + \beta_C^S C(t), \sigma_S^2) \\
+  \log(\text{steps}(t)+1) &\sim \mathcal{N}(\mu_0^{\text{step}} + \beta_B^{\text{step}}B - \beta_F^{\text{step}}F + \beta_A^{\text{step}}A + \beta_C^{\text{step}}C(t), \sigma_{\text{st}}^2)
+\end{align*}
+where $C(t)$ is a fixed 24-hour circadian cycle.

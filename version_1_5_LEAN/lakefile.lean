@@ -24,8 +24,13 @@ package FsaV15 where
 lean_lib Fsa where
   globs := #[.andSubmodules `Fsa]
 
--- CLI entry point used by the Julia differential-test bridge.
--- Accepts JSON on stdin, prints JSON on stdout.
+-- CLI entry points used by the Julia differential-test bridges.
+-- Accept JSON on stdin, print JSON on stdout. One binary per model version
+-- so the v1.5 and v5 surfaces stay decoupled (no Lean-side conditionals).
 @[default_target]
 lean_exe fsa_v15_cli where
   root := `Main
+
+@[default_target]
+lean_exe fsa_v5_cli where
+  root := `Main_v5

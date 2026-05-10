@@ -1,0 +1,31 @@
+\section{Sandbox Guide and Development Workflow}
+
+The \path{FSA_model_dev} repository is designed for iterative model development. This section outlines the workflow for developing and validating model changes.
+
+\subsection{Environment Setup}
+
+Development should be conducted within the \path{comfyenv} Conda environment, which contains the necessary JAX, Diffrax, and numerical libraries.
+\begin{lstlisting}[language=bash]
+conda activate comfyenv
+export PYTHONPATH=.
+\end{lstlisting}
+
+\subsection{Running Simulations}
+
+Forward simulations can be executed using the provided example script:
+\begin{lstlisting}[language=bash]
+python examples/run_fsa_simulation.py
+\end{lstlisting}
+This script simulates a 7-day training block followed by a recovery phase, generating a visualization of the fitness (\(B\)), fatigue (\(F\)), and autonomic (\(A\)) trajectories.
+
+\subsection{Validation Suite}
+
+Before a model is considered ready for the main SMC${}^2$ repository, it must pass two levels of validation:
+\begin{enumerate}
+    \item \textbf{Physics Check:} \path{tests/test_fsa_physics.py} verifies that the SDE integration is stable and that the state remains within physiological bounds.
+    \item \textbf{Artifact Compatibility:} \path{tests/test_artifacts.py} ensures that the \path{EstimationModel} and \path{ControlSpec} can be instantiated and that their JAX-compiled functions are error-free.
+\end{enumerate}
+
+\subsection{Modifying the Model}
+
+Researchers can modify the underlying physiology by editing \path{_dynamics.py}. Changes to the observation model or priors should be reflected in \path{estimation.py}. Once validated using the local test suite, the entire \path{models/fsa_high_res/} directory can be safely migrated to the production \path{python-smc2-filtering-control} repository.

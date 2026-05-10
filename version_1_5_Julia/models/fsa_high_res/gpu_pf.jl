@@ -544,6 +544,7 @@ end
 
 
 # ── Pure HMC move ────────────────────────────────────────────────────────
+# NOT USED NOW — CHEESE HMC IS THE DEFAULT 
 
 """
     parallel_hmc_one_move(U, target, grid_obs, ε, L,
@@ -611,7 +612,9 @@ end
 
 
 # ── Mutating HMC variant — saves per-call allocations ───────────────────
-#
+# NOT USED NOW — CHEESE HMC IS THE DEFAULT 
+
+
 # `parallel_hmc_one_move!(U, target, grid_obs, ε, L, prior_means,
 # prior_sigmas, key)` mutates `U` in place and returns just `n_acc`.
 # Mathematically equivalent to `parallel_hmc_one_move`; bit-identical

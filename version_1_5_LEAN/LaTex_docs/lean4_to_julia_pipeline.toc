@@ -1,0 +1,48 @@
+\contentsline {section}{\numberline {1}The FSA v1.5 model}{3}{section.1}%
+\contentsline {subsection}{\numberline {1.1}State variables}{3}{subsection.1.1}%
+\contentsline {subsection}{\numberline {1.2}Drift}{3}{subsection.1.2}%
+\contentsline {subsection}{\numberline {1.3}State-dependent diffusion (It\^o)}{3}{subsection.1.3}%
+\contentsline {subsection}{\numberline {1.4}Observation channels}{3}{subsection.1.4}%
+\contentsline {subsection}{\numberline {1.5}Time grid}{3}{subsection.1.5}%
+\contentsline {subsection}{\numberline {1.6}Parameters: 14 dynamics + 3 obs noise; 10 estimated, 7 pinned}{3}{subsection.1.6}%
+\contentsline {subsection}{\numberline {1.7}Initial state}{4}{subsection.1.7}%
+\contentsline {section}{\numberline {2}SMC$^2$-MPC pipeline and cost functional}{4}{section.2}%
+\contentsline {subsection}{\numberline {2.1}The three-stage pipeline}{4}{subsection.2.1}%
+\contentsline {subsection}{\numberline {2.2}Schedule parameterisation}{5}{subsection.2.2}%
+\contentsline {subsection}{\numberline {2.3}Per-tempering-level kernel}{5}{subsection.2.3}%
+\contentsline {subsection}{\numberline {2.4}Replan cadence and rolling windows}{5}{subsection.2.4}%
+\contentsline {section}{\numberline {3}Study configuration and CLI}{5}{section.3}%
+\contentsline {subsection}{\numberline {3.1}Hardware and software}{5}{subsection.3.1}%
+\contentsline {subsection}{\numberline {3.2}Minimal CLI}{5}{subsection.3.2}%
+\contentsline {subsection}{\numberline {3.3}Full-flag CLI (for reproducibility)}{6}{subsection.3.3}%
+\contentsline {subsection}{\numberline {3.4}Filter-side flags}{6}{subsection.3.4}%
+\contentsline {subsection}{\numberline {3.5}Controller-side flags}{6}{subsection.3.5}%
+\contentsline {subsection}{\numberline {3.6}Sweep launcher}{6}{subsection.3.6}%
+\contentsline {section}{\numberline {4}Functional programming paradigm in Julia}{7}{section.4}%
+\contentsline {subsection}{\numberline {4.1}Why we moved to functional}{7}{subsection.4.1}%
+\contentsline {subsection}{\numberline {4.2}The \texttt {SMC2FC\_functional} library --- now the default}{7}{subsection.4.2}%
+\contentsline {section}{\numberline {5}From LaTeX to Lean4 --- the formal specification layer}{8}{section.5}%
+\contentsline {subsection}{\numberline {5.1}LaTeX source of truth}{8}{subsection.5.1}%
+\contentsline {subsection}{\numberline {5.2}Lean4 module layout}{8}{subsection.5.2}%
+\contentsline {subsection}{\numberline {5.3}Build}{8}{subsection.5.3}%
+\contentsline {subsection}{\numberline {5.4}JSON dispatch protocol}{8}{subsection.5.4}%
+\contentsline {paragraph}{Worked example.}{9}{section*.2}%
+\contentsline {paragraph}{Note on parameter bases.}{9}{section*.3}%
+\contentsline {section}{\numberline {6}From Lean4 to Julia --- the executable port layer}{9}{section.6}%
+\contentsline {subsection}{\numberline {6.1}One-to-one function map}{9}{subsection.6.1}%
+\contentsline {subsection}{\numberline {6.2}The three high-risk transitions: \texttt {@match} sites}{9}{subsection.6.2}%
+\contentsline {subsection}{\numberline {6.3}Functions in Julia with no Lean4 twin (CPU side)}{10}{subsection.6.3}%
+\contentsline {section}{\numberline {7}The differential test harness --- verifying parity}{10}{section.7}%
+\contentsline {subsection}{\numberline {7.1}What it does, in one paragraph}{10}{subsection.7.1}%
+\contentsline {subsection}{\numberline {7.2}Subprocess setup}{11}{subsection.7.2}%
+\contentsline {subsection}{\numberline {7.3}Pre-drawn noise convention}{11}{subsection.7.3}%
+\contentsline {subsection}{\numberline {7.4}Tolerance ladder}{11}{subsection.7.4}%
+\contentsline {subsection}{\numberline {7.5}Per-testset coverage}{11}{subsection.7.5}%
+\contentsline {subsection}{\numberline {7.6}Run command}{11}{subsection.7.6}%
+\contentsline {subsection}{\numberline {7.7}Pipeline flow diagram}{12}{subsection.7.7}%
+\contentsline {section}{\numberline {8}Verification gap --- what the diff test does NOT cover}{13}{section.8}%
+\contentsline {subsection}{\numberline {8.1}Concrete gap inventory}{13}{subsection.8.1}%
+\contentsline {subsection}{\numberline {8.2}Two qualifying notes}{13}{subsection.8.2}%
+\contentsline {paragraph}{1. The per-particle SDE math \emph {inside} the GPU kernels duplicates the verified core line-by-line.}{13}{section*.4}%
+\contentsline {paragraph}{2. What the GPU code is currently trusted on.}{13}{section*.5}%
+\contentsline {paragraph}{Status.}{14}{section*.6}%

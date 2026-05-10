@@ -158,11 +158,15 @@ end
 
 """
     chees_pick_L_generic(U_subset, log_density_fn, M_max, ε, L_candidates,
-                          prior_mean, prior_sigma, rng; beta=1.0)
+                          prior_mean, prior_sigma, rng;
+                          beta=1.0, h_fd=1e-4, return_scores=false)
         -> (best_L::Int, best_score::Float64)
+        -> (best_L::Int, best_score::Float64, all_scores::Vector{Float64}) [if return_scores]
 
 Run ONE HMC move at each candidate L on a small M' × d subset and pick L
-that maximises expected squared jumped distance per ε·L.
+that maximises expected squared jumped distance per ε·L. When
+`return_scores=true`, also returns the full per-candidate score vector
+(same order as `L_candidates`) — used by diagnostic-collection callers.
 """
 function chees_pick_L_generic(U_subset::AbstractMatrix{Float64},
                                 log_density_fn::Function,
@@ -172,22 +176,29 @@ function chees_pick_L_generic(U_subset::AbstractMatrix{Float64},
                                 prior_mean, prior_sigma,
                                 rng::AbstractRNG;
                                 beta::Float64 = 1.0,
-                                h_fd::Float64 = 1e-4)
+                                h_fd::Float64 = 1e-4,
+                                return_scores::Bool = false)
     best_L = first(L_candidates)
     best_score = -Inf
     M_sub, _ = size(U_subset)
-    for L in L_candidates
+    all_scores = return_scores ? Vector{Float64}(undef, length(L_candidates)) :
+                                  Vector{Float64}()
+    for (i, L) in enumerate(L_candidates)
         U_try = copy(U_subset)
         parallel_hmc_one_move_generic!(U_try, log_density_fn, M_max,
                                          ε, L, prior_mean, prior_sigma, rng;
                                          beta=beta, h_fd=h_fd)
         sqd = sum(abs2, U_try .- U_subset)
         score = sqd / (M_sub * L * ε)
+        if return_scores
+            all_scores[i] = score
+        end
         if score > best_score
             best_score = score; best_L = L
         end
     end
-    return best_L, best_score
+    return return_scores ? (best_L, best_score, all_scores) :
+                            (best_L, best_score)
 end
 
 
@@ -206,12 +217,18 @@ end
                           chees_L_candidates=[16, 32, 64, 128, 256],
                           h_fd=1e-4,
                           calib_n=64,
-                          verbose=true)
+                          verbose=true,
+                          collect_diagnostics=false)
         -> (U_post::Matrix, n_temp::Int, β_max::Float64)
+        -> (U_post, n_temp, β_max, diagnostics::Vector{NamedTuple}) [if collect_diagnostics]
 
 Run the parallel-chains tempered SMC² controller. `log_density_fn` is the
 model's batched log-density (e.g. -cost(θ)). Mirrors the bistable B3 GPU
 SMC² pattern.
+
+When `collect_diagnostics=true`, also returns a `Vector{NamedTuple}` of
+per-tempering-level diagnostics (β-ladder progression, ChEES picker
+output, HMC acceptance, ESJD mixing metric, ΔlogD, wall time).
 """
 function run_tempered_smc_gpu(log_density_fn::Function,
                                 M_max::Int,
@@ -232,7 +249,8 @@ function run_tempered_smc_gpu(log_density_fn::Function,
                                 calib_n::Int = 64,
                                 init_particles::Union{Nothing,AbstractArray{<:Real}} = nothing,
                                 init_jitter::Real = 0.0,
-                                verbose::Bool = true)
+                                verbose::Bool = true,
+                                collect_diagnostics::Bool = false)
     pmu = prior_mean isa Number ? fill(Float64(prior_mean), theta_dim) : Float64.(prior_mean)
     psg = prior_sigma isa Number ? fill(Float64(prior_sigma), theta_dim) : Float64.(prior_sigma)
 
@@ -263,8 +281,13 @@ function run_tempered_smc_gpu(log_density_fn::Function,
     β_curr = 0.0
     n_temp = 0
     L_used = hmc_num_leapfrog
+    # Per-level diagnostics accumulator (only populated when
+    # `collect_diagnostics=true`). One NamedTuple per tempering level.
+    diagnostics = Vector{NamedTuple}()
     while β_curr < β_max - 1e-6
+        t_level_start = time()
         ll = log_density_fn(U)
+        log_density_pre_mean = mean(ll)
         δβ_max = min(β_max - β_curr, β_max * max_lambda_inc)
         target_ess = target_ess_frac * n_smc
         function ess_at(δ)
@@ -284,6 +307,7 @@ function run_tempered_smc_gpu(log_density_fn::Function,
         end
         next_β = (β_curr + δβ < β_max - 1e-6) ? β_curr + δβ : β_max
         Δβ = next_β - β_curr
+        ess_at_dbeta_chosen = ess_at(δβ)
 
         # Reweight + systematic resample.
         log_w = Δβ .* ll
@@ -297,15 +321,33 @@ function run_tempered_smc_gpu(log_density_fn::Function,
         end
         U = U[indices, :]
 
-        # ChEES-L adapt on a small subset.
+        # ChEES-L adapt on a small subset. When collecting diagnostics,
+        # also retain the per-candidate ESJD scores.
         chees_n = min(8, n_smc)
         chees_subset = U[1:chees_n, :]
-        L_used, _ = chees_pick_L_generic(chees_subset, log_density_fn, M_max,
-                                           Float64(hmc_step_size),
-                                           chees_L_candidates,
-                                           pmu, psg,
-                                           MersenneTwister(rand(rng, UInt32));
-                                           beta=next_β, h_fd=Float64(h_fd))
+        chees_scores_vec = Float64[]
+        chees_score_best = NaN
+        if collect_diagnostics
+            L_used, chees_score_best, chees_scores_vec = chees_pick_L_generic(
+                chees_subset, log_density_fn, M_max,
+                Float64(hmc_step_size),
+                chees_L_candidates,
+                pmu, psg,
+                MersenneTwister(rand(rng, UInt32));
+                beta=next_β, h_fd=Float64(h_fd),
+                return_scores=true,
+            )
+        else
+            L_used, _ = chees_pick_L_generic(chees_subset, log_density_fn, M_max,
+                                               Float64(hmc_step_size),
+                                               chees_L_candidates,
+                                               pmu, psg,
+                                               MersenneTwister(rand(rng, UInt32));
+                                               beta=next_β, h_fd=Float64(h_fd))
+        end
+
+        # Snapshot U just before HMC moves so we can compute ESJD.
+        U_pre_hmc = collect_diagnostics ? copy(U) : U
 
         # HMC moves at temperature next_β.
         n_acc = 0
@@ -318,13 +360,46 @@ function run_tempered_smc_gpu(log_density_fn::Function,
         end
         β_curr = next_β
         n_temp += 1
+        accept_frac = n_acc / (num_mcmc_steps * n_smc)
         if verbose
-            accept_frac = n_acc / (num_mcmc_steps * n_smc)
             @info "  [ctrl-tempering $n_temp] β=$(round(β_curr, digits=3))/$(round(β_max, digits=3))  L=$L_used  accept=$(round(100*accept_frac, digits=0))%"
+        end
+        if collect_diagnostics
+            # ESJD: mean over chains of squared L2 jump from start to end of HMC.
+            # Divide by ε·L for the standard "per-leapfrog-time" normalisation.
+            esjd_total = mean(vec(sum(abs2, U .- U_pre_hmc; dims=2)))
+            ll_post = log_density_fn(U)
+            log_density_post_mean = mean(ll_post)
+            t_level = time() - t_level_start
+            push!(diagnostics, (
+                level                  = n_temp,
+                beta_pre               = β_curr - Δβ,
+                beta_post              = β_curr,
+                delta_beta             = Δβ,
+                beta_max               = β_max,
+                ess_at_dbeta_chosen    = ess_at_dbeta_chosen,
+                n_smc                  = n_smc,
+                theta_dim              = theta_dim,
+                chees_L_chosen         = L_used,
+                chees_score_best       = chees_score_best,
+                chees_L_candidates     = collect(Int, chees_L_candidates),
+                chees_scores           = chees_scores_vec,
+                eps_step_size          = Float64(hmc_step_size),
+                n_mcmc_moves           = num_mcmc_steps,
+                total_accepts          = n_acc,
+                accept_frac            = accept_frac,
+                log_density_pre_mean   = log_density_pre_mean,
+                log_density_post_mean  = log_density_post_mean,
+                delta_log_density      = log_density_post_mean - log_density_pre_mean,
+                esjd_total             = esjd_total,
+                esjd_per_eps_L         = esjd_total / (Float64(hmc_step_size) * L_used),
+                wall_seconds_level     = t_level,
+            ))
         end
         n_temp >= max_temp_levels && break
     end
-    return U, n_temp, β_max
+    return collect_diagnostics ? (U, n_temp, β_max, diagnostics) :
+                                  (U, n_temp, β_max)
 end
 
 

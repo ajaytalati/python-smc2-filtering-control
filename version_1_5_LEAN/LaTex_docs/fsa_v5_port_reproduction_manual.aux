@@ -1,0 +1,94 @@
+\relax 
+\providecommand\hyper@newdestlabel[2]{}
+\providecommand\HyField@AuxAddToFields[1]{}
+\providecommand\HyField@AuxAddToCoFields[2]{}
+\@writefile{toc}{\contentsline {section}{\numberline {1}Goal and overview}{3}{section.1}\protected@file@percent }
+\newlabel{sec:overview}{{1}{3}{Goal and overview}{section.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.1}One-sentence goal}{3}{subsection.1.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.2}Why this manual exists}{3}{subsection.1.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.3}Where this manual sits in the doc set}{3}{subsection.1.3}\protected@file@percent }
+\newlabel{sec:doc-ecosystem}{{1.3}{3}{Where this manual sits in the doc set}{subsection.1.3}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Where this manual fits in the doc set. The two \emph  {HOW} docs are complementary: the pipeline doc explains what the components are and why they exist; this manual explains how to build them step by step.}}{3}{figure.1}\protected@file@percent }
+\newlabel{fig:doc-ecosystem}{{1}{3}{Where this manual fits in the doc set. The two \emph {HOW} docs are complementary: the pipeline doc explains what the components are and why they exist; this manual explains how to build them step by step}{figure.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.4}The seven port phases}{3}{subsection.1.4}\protected@file@percent }
+\newlabel{sec:seven-phases}{{1.4}{3}{The seven port phases}{subsection.1.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.5}How to read this manual}{3}{subsection.1.5}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces Seven-phase port flow. Phase 0 is the on-disk inputs the reader starts with. Phases 1 and 2 are independent and run in parallel; both feed Phase 3 (the differential test, which gates correctness). Phase 4--6 are sequential. Each phase has a verification gate listed in \S  \ref {sec:gates}.}}{4}{figure.2}\protected@file@percent }
+\newlabel{fig:seven-phases}{{2}{4}{Seven-phase port flow. Phase 0 is the on-disk inputs the reader starts with. Phases 1 and 2 are independent and run in parallel; both feed Phase 3 (the differential test, which gates correctness). Phase 4--6 are sequential. Each phase has a verification gate listed in \S \ref {sec:gates}}{figure.2}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {2}Prerequisites}{4}{section.2}\protected@file@percent }
+\newlabel{sec:prereqs}{{2}{4}{Prerequisites}{section.2}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {3}Phase 0 --- Inputs}{4}{section.3}\protected@file@percent }
+\newlabel{sec:inputs}{{3}{4}{Phase 0 --- Inputs}{section.3}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {4}Phase 1 --- Build the v5 Lean4 CLI}{4}{section.4}\protected@file@percent }
+\newlabel{sec:phase1}{{4}{4}{Phase 1 --- Build the v5 Lean4 CLI}{section.4}{}}
+\@writefile{toc}{\contentsline {paragraph}{Goal.}{4}{section*.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Inputs.}{5}{section*.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Files to create / modify.}{5}{section*.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{JSON wire conventions.}{5}{section*.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Dispatch tags exposed (15).}{5}{section*.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Procedure.}{5}{section*.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {5}Phase 2 --- Write the Julia CPU port}{6}{section.5}\protected@file@percent }
+\newlabel{sec:phase2}{{5}{6}{Phase 2 --- Write the Julia CPU port}{section.5}{}}
+\@writefile{toc}{\contentsline {paragraph}{Goal.}{6}{section*.9}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Files to create.}{6}{section*.10}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Lean $\to $ Julia idiom conversions.}{6}{section*.11}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Boundary handling --- a deliberate v5 deviation from v1.5.}{7}{section*.12}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {6}Phase 3 --- Differential test}{7}{section.6}\protected@file@percent }
+\newlabel{sec:phase3}{{6}{7}{Phase 3 --- Differential test}{section.6}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.1}Background: what is a differential test, and why use one here?}{7}{subsection.6.1}\protected@file@percent }
+\newlabel{sec:diff-test-explained}{{6.1}{7}{Background: what is a differential test, and why use one here?}{subsection.6.1}{}}
+\@writefile{toc}{\contentsline {paragraph}{Why a differential test is the right tool here.}{7}{section*.14}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Who plays which role?}{7}{section*.15}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{How the two sides talk to each other.}{8}{section*.16}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{The pre-drawn-noise trick (and why it matters).}{8}{section*.17}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Why a tolerance, not strict equality.}{8}{section*.18}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{What ``green'' means.}{8}{section*.19}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.2}Implementation in this manual}{9}{subsection.6.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Goal.}{9}{section*.20}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{File to create.}{9}{section*.21}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Pre-drawn noise convention.}{9}{section*.22}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Tolerance ladder.}{9}{section*.23}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {7}Phase 4 --- GPU port (SOFT cost only)}{9}{section.7}\protected@file@percent }
+\newlabel{sec:phase4}{{7}{9}{Phase 4 --- GPU port (SOFT cost only)}{section.7}{}}
+\@writefile{toc}{\contentsline {paragraph}{Goal.}{9}{section*.25}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Architectural rule (cite the LEAN4-First Charter).}{9}{section*.26}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Dimension bumps (the only changes inside the kernel plumbing).}{10}{section*.27}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{SOFT cost only.}{10}{section*.28}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Single-thread debug entry points.}{10}{section*.29}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{HMC clarification --- both filter and controller HMC live in the framework, not in the model.}{10}{section*.30}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Files to create / modify.}{10}{section*.31}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {8}Phase 5 --- Bench driver}{11}{section.8}\protected@file@percent }
+\newlabel{sec:phase5}{{8}{11}{Phase 5 --- Bench driver}{section.8}{}}
+\@writefile{toc}{\contentsline {paragraph}{Goal.}{11}{section*.33}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Honest flag about ``model-agnostic''.}{11}{section*.34}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Files to create.}{11}{section*.35}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Plant-rollout shape change in \texttt  {\_plant\_v5.jl} (ripple edit).}{11}{section*.36}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {9}Phase 6 --- Plotters, production gating, and launchers}{12}{section.9}\protected@file@percent }
+\newlabel{sec:phase6}{{9}{12}{Phase 6 --- Plotters, production gating, and launchers}{section.9}{}}
+\@writefile{toc}{\contentsline {paragraph}{Files to create.}{12}{section*.38}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Production sleep / wake gating}{12}{section*.39}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{\texttt  {bench\_postproc.jl} additions.}{12}{section*.40}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {10}Verification gates --- final checklist}{13}{section.10}\protected@file@percent }
+\newlabel{sec:gates}{{10}{13}{Verification gates --- final checklist}{section.10}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {11}Troubleshooting and known gotchas}{13}{section.11}\protected@file@percent }
+\newlabel{sec:trouble}{{11}{13}{Troubleshooting and known gotchas}{section.11}{}}
+\@writefile{toc}{\contentsline {paragraph}{Lean's \texttt  {Float.toString} floor at 6 significant digits.}{13}{section*.42}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{GPU plumbing reuse.}{13}{section*.43}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{fp32 inner loops, fp64 outer state.}{13}{section*.44}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{\texttt  {FSA\_STEP\_MINUTES} env var must be set before model import.}{14}{section*.45}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{\texttt  {FSA\_V5\_DRY\_RUN=1} for dry-run smoke testing.}{14}{section*.46}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{\texttt  {ot-max-weight = 0.0} default.}{14}{section*.47}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{HARD chance-constraint deliberately out of scope.}{14}{section*.48}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{\texttt  {@match} site numbering.}{14}{section*.49}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{If a phase gate fails.}{14}{section*.50}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {A}Complete file tree (post-port)}{14}{appendix.A}\protected@file@percent }
+\newlabel{app:files}{{A}{14}{Complete file tree (post-port)}{appendix.A}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {B}Command index}{15}{appendix.B}\protected@file@percent }
+\newlabel{app:commands}{{B}{15}{Command index}{appendix.B}{}}
+\bibcite{charter}{1}
+\bibcite{techguide}{2}
+\bibcite{pipeline}{3}
+\bibcite{portlog}{4}
+\@writefile{toc}{\contentsline {section}{\numberline {C}Differential-test coverage table}{16}{appendix.C}\protected@file@percent }
+\newlabel{app:diff-coverage}{{C}{16}{Differential-test coverage table}{appendix.C}{}}
+\gdef \@abspage@last{17}

@@ -1,0 +1,17 @@
+\contentsline {section}{\numberline {1}The framework: \texttt {SMC2FC\_functional}}{2}{section.1}%
+\contentsline {section}{\numberline {2}Filter-side config (the inner PF + outer SMC$^2$)}{2}{section.2}%
+\contentsline {paragraph}{Why $\varepsilon = 0.005$?}{2}{section*.4}%
+\contentsline {section}{\numberline {3}Filter-side rejuvenation knobs}{3}{section.3}%
+\contentsline {section}{\numberline {4}Filter HMC = framework ChEES path}{4}{section.4}%
+\contentsline {paragraph}{Measured filter HMC behaviour at the new defaults.}{4}{section*.5}%
+\contentsline {section}{\numberline {5}Controller-side config (the SMC$^2$-MPC plan finder)}{4}{section.5}%
+\contentsline {paragraph}{Controller-HMC measured behaviour at the new defaults}{4}{section*.6}%
+\contentsline {section}{\numberline {6}Why this config (not bigger, not smaller)}{5}{section.6}%
+\contentsline {paragraph}{The filter-HMC tier is now correct, not just larger.}{5}{section*.7}%
+\contentsline {paragraph}{The fast controller is the new default}{5}{section*.8}%
+\contentsline {paragraph}{Smaller still leaves the GPU empty.}{5}{section*.9}%
+\contentsline {paragraph}{Bigger is still wall-time-infeasible}{5}{section*.10}%
+\contentsline {section}{\numberline {7}Headline scientific result at the new defaults}{5}{section.7}%
+\contentsline {paragraph}{What the table is saying.}{5}{section*.11}%
+\contentsline {section}{\numberline {8}When to deviate from these defaults}{6}{section.8}%
+\contentsline {section}{\numberline {9}Where artefacts live}{6}{section.9}%

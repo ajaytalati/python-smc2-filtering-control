@@ -20,7 +20,7 @@ Give me your reasoning what are the pros and cons of this plan - and how you wil
 
 ---
 
-NO !!! Remove the phi_burst
+
 
 
  

@@ -1,0 +1,85 @@
+\relax 
+\providecommand\hyper@newdestlabel[2]{}
+\providecommand\HyField@AuxAddToFields[1]{}
+\providecommand\HyField@AuxAddToCoFields[2]{}
+\@writefile{toc}{\contentsline {section}{\numberline {1}The FSA v1.5 model}{3}{section.1}\protected@file@percent }
+\newlabel{sec:model}{{1}{3}{The FSA v1.5 model}{section.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.1}State variables}{3}{subsection.1.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.2}Drift}{3}{subsection.1.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.3}State-dependent diffusion (It\^o)}{3}{subsection.1.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.4}Observation channels}{3}{subsection.1.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.5}Time grid}{3}{subsection.1.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.6}Parameters: 14 dynamics + 3 obs noise; 10 estimated, 7 pinned}{3}{subsection.1.6}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces All 17 v1.5 parameters. 10 are estimated by the filter (LogNormal priors centred on $\log (\text  {truth})$ with scale $0.30$); 7 are pinned at truth (per the FIM-rank decision: option B + pin $\{\tau _B, \eta , \varepsilon _A, \mu _{FF}\}$, plus the 3 obs-noise scales). Truth values read from \texttt  {T28d\_seed42/manifest.json} fields \texttt  {truth\_params} and \texttt  {pinned\_dynamics}; the prior specification is at \texttt  {version\_1\_5\_Julia/models/fsa\_high\_res/estimation.jl}, \texttt  {PARAM\_PRIOR\_CONFIG}.}}{4}{table.1}\protected@file@percent }
+\newlabel{tab:params}{{1}{4}{All 17 v1.5 parameters. 10 are estimated by the filter (LogNormal priors centred on $\log (\text {truth})$ with scale $0.30$); 7 are pinned at truth (per the FIM-rank decision: option B + pin $\{\tau _B, \eta , \varepsilon _A, \mu _{FF}\}$, plus the 3 obs-noise scales). Truth values read from \texttt {T28d\_seed42/manifest.json} fields \texttt {truth\_params} and \texttt {pinned\_dynamics}; the prior specification is at \texttt {version\_1\_5\_Julia/models/fsa\_high\_res/estimation.jl}, \texttt {PARAM\_PRIOR\_CONFIG}}{table.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.7}Initial state}{4}{subsection.1.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {2}SMC$^2$-MPC pipeline and cost functional}{4}{section.2}\protected@file@percent }
+\newlabel{sec:smc2}{{2}{4}{SMC$^2$-MPC pipeline and cost functional}{section.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.1}The three-stage pipeline}{4}{subsection.2.1}\protected@file@percent }
+\newlabel{eq:cost}{{9}{4}{The three-stage pipeline}{equation.9}{}}
+\citation{techguide}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.2}Schedule parameterisation}{5}{subsection.2.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.3}Per-tempering-level kernel}{5}{subsection.2.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.4}Replan cadence and rolling windows}{5}{subsection.2.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {3}Study configuration and CLI}{5}{section.3}\protected@file@percent }
+\newlabel{sec:cli}{{3}{5}{Study configuration and CLI}{section.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.1}Hardware and software}{5}{subsection.3.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.2}Minimal CLI}{5}{subsection.3.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.3}Full-flag CLI (for reproducibility)}{6}{subsection.3.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.4}Filter-side flags}{6}{subsection.3.4}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Filter-side configuration. All values are bench defaults.}}{6}{table.2}\protected@file@percent }
+\newlabel{tab:filter_cfg}{{2}{6}{Filter-side configuration. All values are bench defaults}{table.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.5}Controller-side flags}{6}{subsection.3.5}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Controller-side configuration. All values are bench defaults.}}{6}{table.3}\protected@file@percent }
+\newlabel{tab:ctrl_cfg}{{3}{6}{Controller-side configuration. All values are bench defaults}{table.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.6}Sweep launcher}{6}{subsection.3.6}\protected@file@percent }
+\newlabel{sec:launcher}{{3.6}{6}{Sweep launcher}{subsection.3.6}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {4}Functional programming paradigm in Julia}{7}{section.4}\protected@file@percent }
+\newlabel{sec:functional}{{4}{7}{Functional programming paradigm in Julia}{section.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}Why we moved to functional}{7}{subsection.4.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.2}The \texttt  {SMC2FC\_functional} library --- now the default}{7}{subsection.4.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {5}From LaTeX to Lean4 --- the formal specification layer}{8}{section.5}\protected@file@percent }
+\newlabel{sec:lean4}{{5}{8}{From LaTeX to Lean4 --- the formal specification layer}{section.5}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.1}LaTeX source of truth}{8}{subsection.5.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.2}Lean4 module layout}{8}{subsection.5.2}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces Lean4 modules and the LaTeX they correspond to. Each module is a straight transcription, no novel mathematics. Full path is \texttt  {version\_1\_5\_LEAN/Fsa/V15/}.}}{8}{table.4}\protected@file@percent }
+\newlabel{tab:lean4_modules}{{4}{8}{Lean4 modules and the LaTeX they correspond to. Each module is a straight transcription, no novel mathematics. Full path is \texttt {version\_1\_5\_LEAN/Fsa/V15/}}{table.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3}Build}{8}{subsection.5.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.4}JSON dispatch protocol}{8}{subsection.5.4}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {5}{\ignorespaces The eight JSON dispatch tags accepted by \texttt  {fsa\_v15\_cli}. Handlers are wired in \texttt  {Main.lean:166--218}; each delegates to a single function in the corresponding module.}}{9}{table.5}\protected@file@percent }
+\newlabel{tab:dispatch}{{5}{9}{The eight JSON dispatch tags accepted by \texttt {fsa\_v15\_cli}. Handlers are wired in \texttt {Main.lean:166--218}; each delegates to a single function in the corresponding module}{table.5}{}}
+\@writefile{toc}{\contentsline {paragraph}{Worked example.}{9}{section*.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Note on parameter bases.}{9}{section*.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {6}From Lean4 to Julia --- the executable port layer}{9}{section.6}\protected@file@percent }
+\newlabel{sec:julia-port}{{6}{9}{From Lean4 to Julia --- the executable port layer}{section.6}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.1}One-to-one function map}{9}{subsection.6.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.2}The three high-risk transitions: \texttt  {@match} sites}{9}{subsection.6.2}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {6}{\ignorespaces Lean4 $\leftrightarrow $ Julia function map. The $10^{-4}$-tolerance row is the only one that integrates noise (4-substep Euler--Maruyama); the rest are single-step deterministic operations. File:line references are tracked in the diff-test source (\texttt  {version\_1\_5\_Julia/diff\_test/test\_lean\_diff\_v15.jl}).}}{10}{table.6}\protected@file@percent }
+\newlabel{tab:lean_julia_map}{{6}{10}{Lean4 $\leftrightarrow $ Julia function map. The $10^{-4}$-tolerance row is the only one that integrates noise (4-substep Euler--Maruyama); the rest are single-step deterministic operations. File:line references are tracked in the diff-test source (\texttt {version\_1\_5\_Julia/diff\_test/test\_lean\_diff\_v15.jl})}{table.6}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.3}Functions in Julia with no Lean4 twin (CPU side)}{10}{subsection.6.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {7}The differential test harness --- verifying parity}{10}{section.7}\protected@file@percent }
+\newlabel{sec:diff-test}{{7}{10}{The differential test harness --- verifying parity}{section.7}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.1}What it does, in one paragraph}{10}{subsection.7.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.2}Subprocess setup}{11}{subsection.7.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.3}Pre-drawn noise convention}{11}{subsection.7.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.4}Tolerance ladder}{11}{subsection.7.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.5}Per-testset coverage}{11}{subsection.7.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.6}Run command}{11}{subsection.7.6}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {7}{\ignorespaces Coverage of the eight testsets in \texttt  {test\_lean\_diff\_v15.jl}. ``Random'' inputs are drawn uniformly from the physiological-bound box $B \in [0,1]$, $F \in [0,1]$, $A \in [0,1]$.}}{12}{table.7}\protected@file@percent }
+\newlabel{tab:diff_test_coverage}{{7}{12}{Coverage of the eight testsets in \texttt {test\_lean\_diff\_v15.jl}. ``Random'' inputs are drawn uniformly from the physiological-bound box $B \in [0,1]$, $F \in [0,1]$, $A \in [0,1]$}{table.7}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.7}Pipeline flow diagram}{12}{subsection.7.7}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces LaTeX $\to $ Lean4 $\to $ Julia pipeline for FSA v1.5. Solid arrows are tested data-flow; the dashed arrow into the GPU layer marks an unverified handoff (per \S  \ref {sec:gap}). Every box names the on-disk file path needed to reproduce that stage.}}{12}{figure.1}\protected@file@percent }
+\newlabel{fig:pipeline}{{1}{12}{LaTeX $\to $ Lean4 $\to $ Julia pipeline for FSA v1.5. Solid arrows are tested data-flow; the dashed arrow into the GPU layer marks an unverified handoff (per \S \ref {sec:gap}). Every box names the on-disk file path needed to reproduce that stage}{figure.1}{}}
+\citation{writeup}
+\@writefile{toc}{\contentsline {section}{\numberline {8}Verification gap --- what the diff test does NOT cover}{13}{section.8}\protected@file@percent }
+\newlabel{sec:gap}{{8}{13}{Verification gap --- what the diff test does NOT cover}{section.8}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.1}Concrete gap inventory}{13}{subsection.8.1}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {8}{\ignorespaces What's in the GPU layer that the differential test doesn't exercise. Line ranges are approximate (rounded to the nearest 10); re-grep at audit time if the files have moved.}}{13}{table.8}\protected@file@percent }
+\newlabel{tab:gap}{{8}{13}{What's in the GPU layer that the differential test doesn't exercise. Line ranges are approximate (rounded to the nearest 10); re-grep at audit time if the files have moved}{table.8}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.2}Two qualifying notes}{13}{subsection.8.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{1. The per-particle SDE math \emph  {inside} the GPU kernels duplicates the verified core line-by-line.}{13}{section*.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{2. What the GPU code is currently trusted on.}{13}{section*.5}\protected@file@percent }
+\bibcite{writeup}{1}
+\bibcite{techguide}{2}
+\@writefile{toc}{\contentsline {paragraph}{Status.}{14}{section*.6}\protected@file@percent }
+\gdef \@abspage@last{14}

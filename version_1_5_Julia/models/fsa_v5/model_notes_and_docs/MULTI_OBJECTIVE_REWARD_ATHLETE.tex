@@ -1,0 +1,66 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{geometry}
+\geometry{margin=1in}
+
+\title{Technical Note: Multi-Objective Reward and the Athlete Mindset}
+\author{FSA-v5 Research Engineering}
+\date{May 10, 2026}
+
+\begin{document}
+
+\maketitle
+
+\section{Introduction}
+In the FSA-v5 control framework, the objective function has been expanded from a narrow focus on Alertness ($A$) to a multi-objective reward structure that includes base aerobic fitness ($B$) and strength adaptation capacity ($S$). This note documents the mathematical coupling of these terms and the resulting optimizer behavior under a rolling-horizon framework.
+
+\section{Mathematical Formulation}
+The total reward component of the cost functional $J$ is defined as the negative integral of the three primary chronic state variables:
+\begin{equation}
+    J_{reward} = - \int_{t}^{t+T} \left[ A(\tau) + B(\tau) + S(\tau) \right] d\tau
+\end{equation}
+where $T = 100$ days is the fixed-length rolling optimization window.
+
+\section{Physiological Coupling (Equation 7)}
+The inclusion of $B$ and $S$ as direct rewards is justified by their roles as the endogenous drivers of the autonomic system. Per the mathematical specification of the bifurcation parameter $\mu$:
+\begin{equation}
+    \mu(B, S, F) = \mu_0 + \mu_B B + \mu_S S - \mu_F F - \mu_{FF} (F - F_{TYP})^2 - \dots
+\end{equation}
+In this formulation:
+\begin{itemize}
+    \item \textbf{$B$ and $S$ as Positive Loadings:} Fitness and Strength are the terms that push $\mu$ into the positive regime, enabling a stable, high-amplitude attractor for Alertness ($A$).
+    \item \textbf{Endogenous Generation:} Maximizing the integrals of $B$ and $S$ is the physical requirement for sustaining $A$. The agent learns that "wealth" in $B$ and $S$ provides the necessary buffer to resist the suppressive effects of fatigue ($F$).
+\end{itemize}
+
+\section{Temporal Dynamics and Search Hierarchy}
+The system exhibits a clear temporal hierarchy based on the state half-lives ($\tau$). This hierarchy dictates how the 100-day rolling optimizer prioritizes its "investments":
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lll}
+\toprule
+\textbf{Variable} & \textbf{Turnover ($\tau$)} & \textbf{Strategic Role} \\
+\midrule
+Alertness ($A$)   & $\sim$ 5--10 days & \textbf{Fast Performance:} Real-time tactical indicator. \\
+Aerobic ($B$)     & 42 days          & \textbf{Medium Capacity:} Stable drive loading. \\
+Strength ($S$)    & 60 days          & \textbf{Slow Capacity:} Long-term infrastructure. \\
+\bottomrule
+\end{tabular}
+\caption{Temporal hierarchy of reward variables.}
+\end{table}
+
+\section{Optimizer Behavior: The Rolling Equilibrium}
+Because the optimization window is a fixed $100$-day window that is recalculated at every stride (rather than a terminal-date problem), the controller avoids pathological "end-of-world" behaviors. Instead, it converges toward a \textbf{Sustainable Cruising Altitude}:
+\begin{enumerate}
+    \item \textbf{Persistence Priority:} The agent prioritizes $S$ and $B$ because their slow decay rates mean they contribute more "area under the curve" for a given unit of training stimulus.
+    \item \textbf{Tactical Governor:} $A$ acts as a high-frequency governor. While the agent wants to build $S/B$ wealth, it will tacticaly reduce load if $A$ shows signs of dipping toward the separatrix, as an autonomic collapse ruins the reward integral for the entire 100-day future.
+\end{enumerate}
+
+\section{Conclusion}
+The multi-objective reward structure aligns the controller with the goals of long-term athletic development. It treats $A$ as the fast performance signal and $B/S$ as the slow-moving capacity assets that endogenously power that signal. The 100-day rolling window ensures the agent finds the maximum sustainable equilibrium between fitness gain and autonomic safety.
+
+\end{document}

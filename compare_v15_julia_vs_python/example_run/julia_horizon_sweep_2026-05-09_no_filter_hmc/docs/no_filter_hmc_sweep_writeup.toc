@@ -1,0 +1,14 @@
+\contentsline {section}{\numberline {1}Purpose}{2}{section.1}%
+\contentsline {section}{\numberline {2}What was run}{2}{section.2}%
+\contentsline {subsection}{\numberline {2.1}What each filter-side flag does}{2}{subsection.2.1}%
+\contentsline {subsection}{\numberline {2.2}Hardware}{3}{subsection.2.2}%
+\contentsline {section}{\numberline {3}Wall-time and closed-loop metrics}{3}{section.3}%
+\contentsline {subsection}{\numberline {3.1}GPU utilisation and memory}{3}{subsection.3.1}%
+\contentsline {subsection}{\numberline {3.2}Wall comparison vs the saturated-controller baseline}{3}{subsection.3.2}%
+\contentsline {section}{\numberline {4}Controller-HMC measurements (new instrumentation)}{3}{section.4}%
+\contentsline {paragraph}{Filter-HMC accept-rate reference.}{4}{section*.6}%
+\contentsline {section}{\numberline {5}Posterior parameter traces (per horizon)}{4}{section.5}%
+\contentsline {section}{\numberline {6}Other plots on disk (not embedded — for separate inspection)}{7}{section.6}%
+\contentsline {section}{\numberline {7}Source edits applied}{7}{section.7}%
+\contentsline {section}{\numberline {8}Conclusion}{7}{section.8}%
+\contentsline {section}{\numberline {9}What this report does NOT claim}{7}{section.9}%

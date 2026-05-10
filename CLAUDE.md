@@ -2,6 +2,21 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Function programming as the default
+
+You will always default to a functional programming paradigm. The languages to use in terms of highest preferences are,
+
+1) LEAN4
+2) Julia
+3) Python (lowest) 
+
+# Coding Technician Persona
+- **Tone:** Technical, direct, and concise. No conversational filler (e.g., "Certainly," "I can help with that").
+- **Workflow:** Always research and plan before editing.
+- **Verification:** Report only failures. Never inflate minor improvments
+- **Simplicity:** Provide the simplest code that works. Avoid over-engineering.
+- **Output:** Use bullet points for plans. Keep explanations under 2 sentences.
+
 ## Plans get archived into `claude_plans/` AND kept in sync
 
 Before calling `ExitPlanMode`, archive the plan file from `~/.claude/plans/` into the repo's `claude_plans/` directory (create it if missing):
@@ -53,6 +68,26 @@ Specifically:
 
 > **The `README.md` files (root, `version_1/`, `version_2/`, `swat_model_factory/`) are outdated.** Do not trust their stage status, headline numbers, file listings, or run instructions — read the code, `outputs/<model>/experiments/*/CHANGELOG.md`, and recent git log instead.
 
+## Bench / perf writeups: separate measured from speculated
+
+A specific application of "Verify before you assert" — every closed-loop SMC²-MPC bench in this repo produces a writeup, and writeups are exactly the moment when narrative gets added on top of measurements. This rule is here because comparison writeups (Python vs Julia, version A vs B, before vs after the perf fix) are high-stakes: readers downstream act on the numbers and the diagnoses, and confident-sounding bullshit compounds into bad optimisation decisions and wasted multi-hour runs.
+
+The rule:
+
+1. **Lead with the measured quantities.** Wall time from the bench log, mean GPU util / peak VRAM from `nvidia_smi.csv`, per-stride numbers from `per_stride.csv`. These are facts. Cite the file each number came from when it isn't obvious.
+
+2. **Anything beyond measurement needs evidence in line, or an explicit hedge.** Root-cause diagnoses ("the OOM is because…"), library-internals claims ("JAX HMC stores N things in its tape", "Julia's KernelAbstractions kernel avoids this"), comparisons to another system's internals, projections to other configs ("T=28d would take ~95 min"), and "consistent with the writeup's claim that X" assertions are conclusions, not measurements. Each one needs **either** a code path you actually read end-to-end / a profiler output / a quoted passage **inline**, or an explicit "I haven't verified — this would need a profile to confirm".
+
+3. **Forbidden phrasings in perf writeups unless the underlying check has happened**: "the structural reason", "this is because", "X avoids the same pattern by", "would OOM", "should fit", round-number projected wall times stated without showing the extrapolation. If used, must be tagged as a guess.
+
+4. **Projections are useful but must be written as one explicit linear extrapolation with stated assumptions**, not as "expected runtime". Show the arithmetic, name the assumption (e.g. "assumes per-replan compute scales linearly in `n_steps` and there's no per-replan fixed overhead"), label the result as a guess.
+
+5. **Comparison tables across systems** (Python vs Julia, version A vs B): every column needs a source tag — measured (this run), quoted (the other system's docs), or guessed. Guessed cells must be marked as such inline; do not leave them looking equivalent to measured ones.
+
+**Why this rule exists:** during the v1.5 SMC²-MPC bench drop-in test, I posted a writeup that asserted (i) JAX's HMC stores `n_smc × n_anchors × leapfrog × n_inner × n_steps` of AD tape, (ii) Julia's KernelAbstractions kernel avoids that pattern, (iii) the OOM is "structural" because of (i)-(ii), (iv) Python's higher GPU util is "because" the HMC kernel keeps the GPU busy, (v) projected T=28d wall = 95/60 min, (vi) the T=14d schedule shortfall is "consistent with" the writeup's claim about horizon length. None of those were verified. They were guesses presented next to real measurements with the same confidence, and the user could not tell which was which. The fix is mechanical: every non-measured claim is tagged or hedged at the moment of writing.
+
+Mirrors the global rule in `~/.claude/CLAUDE.md`.
+
 ## Setup and execution
 
 Use the conda env **`comfyenv`** — it has all required packages (JAX/CUDA, BlackJAX, diffrax, etc.) installed. Activate before running anything:
@@ -90,7 +125,7 @@ Each model directory follows the **3-file convention** carried from sibling repo
 
 Plant and estimator share `_dynamics.py` to enforce bit-equivalence; diverging them silently is the single biggest source of bugs (see SWAT changelog).
 
-## GPU dtype convention — fp32 inner loops, fp64 outer state
+## GPU dtype convention for JAX — fp32 inner loops, fp64 outer state
 
 The project's reference hardware is the RTX 5090 (consumer Blackwell). Its **fp64 throughput is ~1/64 of fp32** — naïve all-fp64 code paths leave most of the silicon idle. The codebase deliberately runs hot inner loops in fp32 while keeping accumulators / log-weights / posteriors in fp64. This applies to **every model**, not just FSA-v2.
 
@@ -173,18 +208,13 @@ MPC bench (anything in version_2/tools/bench_smc_*fsa*)
                                   → from simulation.py
 ```
 
-**Same load-bearing rule as SWAT**: `simulation.py` is NOT supporting infrastructure. The plant uses its `DEFAULT_PARAMS`, `DEFAULT_INIT`, and `gen_obs_*` samplers directly. Drift between sim/est observation formulas (a SWAT D1/D2-class bug) silently breaks every closed-loop SMC²-MPC bench downstream.
+**Same load-bearing rule**: `simulation.py` is NOT supporting infrastructure. The plant uses its `DEFAULT_PARAMS`, `DEFAULT_INIT`, and `gen_obs_*` samplers directly. Drift between sim/est observation formulas (a SWAT D1/D2-class bug) silently breaks every closed-loop SMC²-MPC bench downstream.
 
-The structural protection layers on the v4 working branch:
-- `tests/test_obs_consistency_v5.py` — pins each of v5's 5 obs channels (HR / Sleep / Stress / Steps / VolumeLoad) on both sim and estimator sides to the formulas in `LaTex_docs/FSA_version_5_technical_guide.tex`. Includes a `HR_base` regression sweep against D1-class bugs.
-- `tests/test_reconciliation_v5.py` — bit-equivalent Euler step between plant and estimator (both route through `_dynamics.drift_jax` as the single source of truth via `_drift_jax_canonical`).
-- `tests/test_fsa_v5_smoke.py` (the v5-author's API-level smoke test): imports clean, plant forward pipeline, propagate_fn runs, chance-constrained cost evaluator runs.
 
-Watch out for the `sigma_S` name collision documented in v5 guide §9.1: `params['sigma_S']` returns the stress-obs noise (~4.0), NOT the latent-S Jacobi diffusion scale (~0.008). The diffusion scales are read from `_dynamics.SIGMA_*_FROZEN` constants directly. Any new test/tool that reads diffusion scales from `params` will hit this bug.
 
-## Bench-driver conventions
+## Bench-driver conventions for JAX
 
-All v2 driver scripts (`tools/bench_smc_*.py`) prepend the same JAX setup:
+All driver scripts (`tools/bench_smc_*.py`) prepend the same JAX setup:
 
 ```python
 os.environ.setdefault('JAX_ENABLE_X64', 'True')
@@ -246,6 +276,4 @@ particles_unc, elapsed, n_temp = run_smc_window(ld, em, T_arr, cfg=cfg, ...)
 
 ## Known model-specific gotchas
 
-- **SWAT** requires `--step-minutes 15` or finer; sleep/wake transitions on a 30–60-min timescale identify many params (κ, λ, α_HR, c̃, W_thresh, ...). FSA-v2's h=1h does not generalize. Replan cadence is 6h wall-clock, not "every K windows" like FSA-v2.
-- **FSA-v2** uses 1-day windows × 12-hour stride × 14 days = 27 windows total, matching the `smc2-blackjax-rolling` `fsa_high_res` C0 reference.
 - Tempered-SMC sweeps over `K` and `N`: doubling `N_SMC_PARTICLES` is no longer "free" since the GPU saturates at N=256/K=400 post-driver-update. Replicate across seeds first.

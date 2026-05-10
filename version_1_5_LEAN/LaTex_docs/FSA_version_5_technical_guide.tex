@@ -1,0 +1,1227 @@
+\documentclass[11pt,a4paper]{article}
+
+% ── Self-contained preamble (does not depend on main.tex's preamble.tex) ────
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{geometry}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{bm}
+
+\geometry{margin=1in}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,
+    urlcolor=cyan,
+}
+
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}[section]
+\newtheorem{theorem}{Theorem}[section]
+
+\newcommand{\dd}{\mathrm{d}}
+\newcommand{\Ncal}{\mathcal{N}}
+\newcommand{\Ecal}{\mathbb{E}}
+\newcommand{\Pcal}{\mathbb{P}}
+\newcommand{\Reals}{\mathbb{R}}
+
+% Code listing style
+\definecolor{codegreen}{rgb}{0,0.6,0}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+\definecolor{backcolour}{rgb}{0.97,0.97,0.95}
+\lstdefinestyle{code}{
+    backgroundcolor=\color{backcolour},
+    commentstyle=\color{codegreen},
+    keywordstyle=\color{magenta},
+    numberstyle=\tiny\color{codegray},
+    stringstyle=\color{codepurple},
+    basicstyle=\ttfamily\footnotesize,
+    breakatwhitespace=false,
+    breaklines=true,
+    captionpos=b,
+    keepspaces=true,
+    numbers=left,
+    numbersep=5pt,
+    showspaces=false,
+    showstringspaces=false,
+    showtabs=false,
+    tabsize=2,
+    language=Python,
+}
+\lstset{style=code}
+
+\title{FSA-v5 Technical Implementation Guide \\
+\large A Reference for Engineers Porting the Model into \texttt{smc2fc}}
+\author{FSA Model Development Team}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+\noindent
+This document is the definitive technical reference for the FSA-v5
+physiological model as implemented in \path{models/fsa_high_res/}. Its
+audience is the research engineer who must integrate the model into the
+\texttt{smc2fc} inference and control framework. It covers the full
+mathematical specification (latent SDE + observation likelihood), the
+v5 deconditioning extension that produces the closed-island basin
+topology, the chance-constrained probabilistic cost functional, the
+numerical integration protocol, the parameter freeze policy and its
+Fisher-information justification, end-to-end test scenarios on
+synthetic data, and a list of bugs and gotchas surfaced during the v5
+implementation pass. A complete parameter reference is included as an
+appendix.
+
+This document deliberately omits the historical narrative arcs of v2,
+v3, and v4 that appear in the longer modelling notes (\path{main.tex}).
+For background motivation, that document is the reference; for
+implementation, this document is the reference.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% =============================================================================
+\section{Overview} \label{sec:overview}
+% =============================================================================
+
+\subsection{What this guide covers}
+
+The FSA-v5 model is a 6-dimensional stochastic differential equation
+(SDE) with five observation channels. Forward simulation, Bayesian
+inference, and closed-loop control of this model are all supported by
+the code in \path{models/fsa_high_res/}. This guide explains:
+
+\begin{itemize}
+  \item The mathematical specification --- every latent equation,
+        every observation channel, every parameter.
+  \item The closed-island basin topology of v5 --- the model's
+        prediction that there are three physiologically meaningful
+        steady states (mono-stable healthy, sedentary collapse,
+        over-training collapse).
+  \item The chance-constrained probabilistic cost functional that
+        defines what ``optimal training'' means under v5.
+  \item The numerical integration protocol (15-minute bin grid, no
+        sub-stepping, state-clipping) and its identifiability
+        consequences.
+  \item Which parameters are estimated and which are frozen, and the
+        Fisher-information argument behind that choice.
+  \item Three constant-$\Phi$ deterministic test scenarios that an
+        engineer can run during the port to verify the implementation
+        works as expected.
+  \item Common bugs and gotchas surfaced during the v5 implementation
+        pass --- read this section before you start porting.
+\end{itemize}
+
+\subsection{What this guide deliberately omits}
+
+This guide does not cover the historical evolution from v2 through v4,
+the FSA-v3 bimodal extension, the v4 Variable-Dose extension, or the
+gradient-OT control formulation. Those are in \path{main.tex} for
+background. This document treats v5 as the canonical model.
+
+\subsection{Files and the integration boundary} \label{sec:files}
+
+The complete v5 implementation lives in
+\path{models/fsa_high_res/}. The integration boundary --- everything
+\texttt{smc2fc} should import from --- is the package's
+\texttt{\_\_init\_\_.py}, which re-exports the following symbols:
+
+\begin{center}\small
+\begin{tabular}{lll}
+\toprule
+Symbol & Source file & Role \\
+\midrule
+\texttt{HIGH\_RES\_FSA\_V5\_MODEL}      & \path{simulation.py} & Forward-sim \texttt{SDEModel} \\
+\texttt{HIGH\_RES\_FSA\_V5\_ESTIMATION} & \path{estimation.py} & Inference \texttt{EstimationModel} \\
+\texttt{StepwisePlant}                  & \path{_plant.py}     & Closed-loop synthetic plant \\
+\texttt{evaluate\_chance\_constrained\_cost} & \path{control_v5.py} & v5 cost (eqs.\ \ref{eq:chance-constraint}, \ref{eq:v5-min-effort}) \\
+\texttt{find\_A\_sep\_v5}               & \path{control_v5.py} & Separatrix root-finder \\
+\texttt{TRUTH\_PARAMS\_V5}              & \path{_dynamics.py}  & v5 truth parameter dict \\
+\texttt{DEFAULT\_PARAMS\_V5}            & \path{simulation.py} & v5 truth + observation coefficients \\
+\texttt{DEFAULT\_INIT}                  & \path{simulation.py} & 6D initial state defaults \\
+\texttt{drift\_jax}                     & \path{_dynamics.py}  & Canonical drift (single source of truth) \\
+\texttt{diffusion\_state\_dep}          & \path{_dynamics.py}  & State-dependent diffusion \\
+\texttt{BINS\_PER\_DAY, DT\_BIN\_DAYS}  & \path{simulation.py} & Time-grid constants \\
+\texttt{circadian, circadian\_jax}      & \path{simulation.py} & Cosine circadian regressor \\
+\texttt{build\_control\_spec\_v5}       & \path{control.py}    & Gradient-OT spec (legacy/comparison) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+A v4 alias (\texttt{HIGH\_RES\_FSA\_V4\_*}) is kept for back-compat with
+existing tests; it is numerically identical to v5 with the Hill
+deconditioning amplitudes pinned at zero.
+
+\subsection{How to read this guide}
+
+Sections 2--3 are the model specification: read them top to bottom in
+order. Sections 4--5 give the v5 contributions (basin geometry +
+probabilistic cost) that distinguish v5 from prior versions. Sections
+6--7 are operational --- how to integrate and what to estimate.
+Sections 8--9 are practical --- test scenarios and bugs to anticipate.
+The appendix is a parameter reference. Code snippets throughout cite
+specific files in the package.
+
+
+% =============================================================================
+\section{Latent dynamics: the FSA-v5 SDE} \label{sec:latent}
+% =============================================================================
+
+\subsection{State vector}
+
+The latent state at time $t$ is the 6-vector
+\begin{equation}
+y(t) \;=\; \big( B(t),\; S(t),\; F(t),\; A(t),\; K_{FB}(t),\; K_{FS}(t)\big)^T,
+\end{equation}
+with the components defined as follows.
+
+\begin{center}\small
+\begin{tabular}{llll}
+\toprule
+Symbol & Range & Physiological role & Diffusion family \\
+\midrule
+$B$    & $[0, 1]$        & Aerobic fitness (Banister chronic capacity)         & Jacobi, $\sqrt{B(1-B)}$ \\
+$S$    & $[0, 1]$        & Strength capacity (Banister chronic capacity)        & Jacobi, $\sqrt{S(1-S)}$ \\
+$F$    & $[0, \infty)$   & Unified fatigue pool                                 & CIR, $\sqrt{F}$ \\
+$A$    & $[0, \infty)$   & Autonomic amplitude (HRV / autonomic resilience)     & CIR, $\sqrt{A + \varepsilon}$ \\
+$K_{FB}$ & $[0, \infty)$ & Aerobic fatigue gain (Busso variable-dose)           & CIR, $\sqrt{K_{FB}}$ \\
+$K_{FS}$ & $[0, \infty)$ & Strength fatigue gain (Busso variable-dose)          & CIR, $\sqrt{K_{FS}}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Two operating-point reference constants are baked into the
+G1-reparametrised drift: $A_{\rm TYP} = 0.10$ (typical autonomic
+amplitude) and $F_{\rm TYP} = 0.20$ (typical fatigue). They calibrate
+the model around a physiologically representative state.
+
+\subsection{Drift equations} \label{sec:drift}
+
+The deterministic part of the SDE is implemented in
+\path{models/fsa_high_res/_dynamics.py:drift_jax} as the canonical
+single source of truth. The six equations are:
+
+\begin{align}
+\dot B    &= \kappa_B \, a_B(A) \, \Phi_B - \frac{B}{\tau_B},
+   \quad &
+   a_B(A) &= \frac{1 + \epsilon_{AB} A}{1 + \epsilon_{AB} A_{\rm TYP}}, \\[3pt]
+\dot S    &= \kappa_S \, a_S(A) \, \Phi_S - \frac{S}{\tau_S},
+   \quad &
+   a_S(A) &= \frac{1 + \epsilon_{AS} A}{1 + \epsilon_{AS} A_{\rm TYP}}, \\[3pt]
+\dot F    &= K_{FB}\, \Phi_B + K_{FS}\, \Phi_S - \frac{a_F(A)}{\tau_F}\, F,
+   \quad &
+   a_F(A) &= \frac{1 + \lambda_A A}{1 + \lambda_A A_{\rm TYP}}, \\[3pt]
+\dot A    &= \mu(B, S, F)\,A - \eta\, A^3, \label{eq:dotA}\\[3pt]
+\dot K_{FB} &= \frac{K_{FB}^0 - K_{FB}}{\tau_K} + \mu_K\, \Phi_B,
+   \quad &
+   \dot K_{FS} &= \frac{K_{FS}^0 - K_{FS}}{\tau_K} + \mu_K\, \Phi_S.
+\end{align}
+
+The exogenous control input is the bimodal stimulus rate
+$\Phi(t) = (\Phi_B(t), \Phi_S(t))^T$ --- aerobic and strength training
+loads respectively, both dimensionless.
+
+\paragraph{Stuart--Landau bifurcation parameter (the v5 form).}
+The autonomic equation \eqref{eq:dotA} contains the multiplicative
+parameter $\mu(B, S, F)$, which is the locus of the v5 deconditioning
+extension. Its full v5 form is:
+\begin{equation}
+\boxed{\;
+\mu(B, S, F) \;=\; \mu_0 + \mu_B B + \mu_S S - \mu_F F - \mu_{FF}(F - F_{\rm TYP})^2
+   \;-\; \mu_{B-} h_n(B; B_{\rm dec})
+   \;-\; \mu_{S-} h_n(S; S_{\rm dec}),
+\;}
+\label{eq:mu-v5}
+\end{equation}
+where the v5 Hill-deconditioning weight is
+\begin{equation}
+h_n(x;\, x_{\rm dec}) \;=\; \frac{x_{\rm dec}^n}{x^n + x_{\rm dec}^n} \;\in\; [0, 1].
+\label{eq:hill}
+\end{equation}
+Setting $\mu_{B-} = \mu_{S-} = 0$ recovers the FSA-v4 form exactly,
+which is why $\mu_{\rm dec_*} = 0$ are the v4-recovering defaults in
+\texttt{TRUTH\_PARAMS}; \texttt{TRUTH\_PARAMS\_V5} sets them to non-zero
+values that activate the closed-island topology of Section
+\ref{sec:basins}.
+
+\subsection{What each parameter controls --- physiological intuition}
+
+\begin{center}\small
+\begin{tabular}{lp{12cm}}
+\toprule
+Symbol & Meaning \\
+\midrule
+$\tau_B, \tau_S$ & Exponential decay time-scales of aerobic and strength capacities under zero stimulus. $\tau_B = 42$d, $\tau_S = 60$d --- so strength is slower to detrain than aerobic fitness. \\
+$\kappa_B, \kappa_S$ & Per-unit-stimulus accrual rates for $B$ and $S$, respectively. \\
+$\epsilon_{AB}, \epsilon_{AS}$ & Autonomic boost: when $A$ is high, training builds capacity faster ($a_*(A) > 1$). \\
+$\tau_F$ & Fatigue clearance time-scale ($\sim 7$d after autonomic correction). \\
+$\lambda_A$ & Autonomic acceleration of fatigue clearance: high $A$ clears fatigue faster. \\
+$K_{FB}^0, K_{FS}^0$ & Baseline fatigue gains (untrained athlete). $K_{Fi}$ rises above baseline under sustained training. \\
+$\tau_K$ & Recovery time-scale of the fatigue sensitivity ($\sim 21$d, three weeks). \\
+$\mu_K$ & ``Damage'' rate: how fast training pushes $K$ above baseline. \\
+$\mu_0$ & Baseline autonomic drive at zero load. \\
+$\mu_B, \mu_S$ & Coupling of fitness and strength to autonomic drive. \\
+$\mu_F$ & Fatigue's linear suppression of autonomic drive. \\
+$\mu_{FF}$ & Quadratic penalty around $F_{\rm TYP}$ --- captures the cliff where overtraining suppresses HRV. \\
+$\eta$ & Cubic damping of $A$ --- prevents runaway autonomic amplitude. \\
+\midrule
+$B_{\rm dec}, S_{\rm dec}$ & Chronic-fitness thresholds below which deconditioning kicks in. \\
+$\mu_{B-}, \mu_{S-}$ & Maximum autonomic-drive penalty when $B$ (resp.\ $S$) is far below threshold. \\
+$n_{\rm dec}$ & Hill exponent --- steepness of the deconditioning transition (default 4). \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Diffusion: state-dependent diagonal} \label{sec:diffusion}
+
+The stochastic part of the SDE is diagonal with state-dependent scales,
+implemented in \path{_dynamics.py:diffusion_state_dep}. Each component
+has a physically-motivated form:
+\begin{equation}
+\sigma(y) = \mathrm{diag}\!\Big(
+  \sigma_B \sqrt{B(1-B)},\;
+  \sigma_S \sqrt{S(1-S)},\;
+  \sigma_F \sqrt{F},\;
+  \sigma_A \sqrt{A + \varepsilon_A},\;
+  \sigma_K \sqrt{K_{FB}},\;
+  \sigma_K \sqrt{K_{FS}}
+\Big).
+\label{eq:diffusion}
+\end{equation}
+The Jacobi-form $\sqrt{x(1-x)}$ scales for $B, S$ keep them strictly in
+$[0, 1]$; the CIR-form $\sqrt{x}$ scales for $F, A, K_{*}$ keep them
+strictly non-negative. The five $\sigma_*$ scalars and the floor
+$\varepsilon_A$ are \emph{frozen} in production --- diffusion-side
+identifiability is weak and standard practice is not to estimate
+diffusion scales jointly with drift parameters.
+
+\subsection{Cascade structure} \label{sec:cascade}
+
+The drift has a feed-forward cascade structure under \emph{constant}
+$\Phi$: $K \to (B, S) \to F \to A$, with the only back-coupling being
+the autonomic state $A$ entering the $a_*(A)$ multipliers. This
+structure is what makes the v5 stability analysis tractable: at the
+slow-manifold equilibrium each forward block has a closed-form
+solution given $A$, and the entire 6D fixed-point reduces to a single
+scalar self-consistency equation in $A$ (see Section
+\ref{sec:basins}).
+
+
+% =============================================================================
+\section{Observation model} \label{sec:obs}
+% =============================================================================
+
+The observation likelihood is implemented in
+\path{models/fsa_high_res/estimation.py} (functions
+\texttt{\_gaussian\_obs\_ll} and \texttt{obs\_log\_weight\_fn}) and the
+synthetic-data samplers in \path{simulation.py}
+(\texttt{gen\_obs\_sleep, gen\_obs\_hr}, etc.).
+
+\subsection{Five observation channels}
+
+At each observation time $t_k$, with the latent state evaluated at that
+bin and a circadian regressor $C_k$, the model emits up to five
+observations:
+
+\begin{align}
+\mu^{\rm HR}_k  &= {\rm HR}_{\rm base} \;-\; \kappa_B^{\rm HR} B_k \;+\; \alpha_A^{\rm HR} A_k \;+\; \beta_C^{\rm HR} C_k,
+   & y^{\rm HR}_k  &\sim \Ncal(\mu^{\rm HR}_k, \sigma_{\rm HR}^2), \label{eq:obs-HR} \\[2pt]
+\mu^{\rm S}_k   &= S_{\rm base} \;+\; k_F F_k \;-\; k_{A,S} A_k \;+\; \beta_C^{\rm S} C_k,
+   & y^{\rm S}_k   &\sim \Ncal(\mu^{\rm S}_k,  \sigma_S^2), \label{eq:obs-S} \\[2pt]
+\mu^{\rm st}_k  &= \mu_{\rm step,0} \;+\; \beta_B^{\rm st} B_k \;-\; \beta_F^{\rm st} F_k \;+\; \beta_A^{\rm st} A_k \;+\; \beta_C^{\rm st} C_k,
+   & y^{\rm st}_k  &\sim \Ncal(\mu^{\rm st}_k, \sigma_{\rm st}^2), \label{eq:obs-st} \\[2pt]
+\mu^{\rm VL}_k  &= \beta_S^{\rm VL} S_k \;-\; \beta_F^{\rm VL} F_k,
+   & y^{\rm VL}_k  &\sim \Ncal(\mu^{\rm VL}_k, \sigma_{\rm VL}^2), \label{eq:obs-VL} \\[2pt]
+p^{\rm sleep}_k &= \sigma\!\big(k_C C_k + k_A A_k - \tilde c\big),
+   & y^{\rm sleep}_k &\sim \mathrm{Bernoulli}(p^{\rm sleep}_k). \label{eq:obs-sleep}
+\end{align}
+
+\paragraph{Linear-in-state.} The four Gaussian channels are linear
+functions of the 4-dimensional sub-state $(B, S, F, A)$ plus a circadian
+intercept; the $K$ states are not directly observed. The Bernoulli
+sleep channel is a logistic in $A$ and $C$. This makes the observation
+Jacobian $H$ a constant-coefficient $4 \times 6$ matrix at each time,
+enabling the closed-form Kalman fusion in
+\path{estimation.py:propagate_fn_v5}.
+
+\paragraph{Reading the channels physiologically.}
+\begin{itemize}
+  \item \textbf{HR} (heart rate, bpm): increases with autonomic
+        amplitude, decreases with chronic aerobic fitness, modulated by
+        circadian.
+  \item \textbf{Stress} (subjective wellness score): increases with
+        fatigue, decreases with autonomic amplitude.
+  \item \textbf{Steps} (daily activity log): increases with both
+        fitness and autonomic amplitude, decreases with fatigue.
+  \item \textbf{Volume Load} (training session volume): observed only
+        during training events --- linear in strength capacity, with
+        fatigue-driven reduction.
+  \item \textbf{Sleep} (binary good/poor): logistic in autonomic
+        amplitude and circadian.
+\end{itemize}
+
+\subsection{Channel gating: sleep-aware sampling} \label{sec:gating}
+
+Each Gaussian channel is emitted at the bin grid but is \emph{gated} by
+the subject's sleep / wake state. Production assumption: a canonical
+sleep window of 22:00--06:00 (8 hours), implementable from a single
+time-of-day flag. The gating policy is:
+
+\begin{center}\small
+\begin{tabular}{lll}
+\toprule
+Channel & Gating & Rationale \\
+\midrule
+HR     & sleep-only       & overnight resting HR is the most informative for $B$ \\
+Stress & wake-only        & subjective scoring during waking hours \\
+Steps  & wake-only        & step counter active only during wake \\
+VolumeLoad & training sessions & one entry per training session ($\le 1$/day) \\
+Sleep label & every bin    & sleep state itself is the obs \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The dense overnight HR sampling is not optional: as Section
+\ref{sec:integration} discusses, the production 15-minute bin grid
+combined with this sleep-gated HR is what makes the model
+identifiable. Replacing it with daily-summary HR observations inflates
+the FIM condition number by 20 orders of magnitude.
+
+\subsection{Circadian regressor}
+
+The circadian variable $C(t)$ is a single 24-hour cosine,
+\begin{equation}
+C(t) = \cos(2\pi t + \phi), \qquad \phi := 0,
+\end{equation}
+implemented in \path{simulation.py:circadian} (numpy) and
+\path{simulation.py:circadian_jax} (JAX). The phase $\phi$ is held at
+zero in production. The four $\beta_C^*$ coefficients in equations
+\eqref{eq:obs-HR}--\eqref{eq:obs-st} together with $k_C$ in
+\eqref{eq:obs-sleep} describe the coupling of each channel to this
+shared regressor.
+
+
+% =============================================================================
+\section{The three regimes: closed-island basin topology} \label{sec:basins}
+% =============================================================================
+
+The headline mathematical content of FSA-v5 is that, for constant
+training input $\Phi = (\Phi_B, \Phi_S)$, the long-time behaviour of the
+6D system reduces to a single scalar self-consistency equation in $A$,
+and the basins of attraction in stimulus space have a closed-island
+geometry. This section gives the engineering-level summary; the full
+analysis is in \path{main.tex} §7 and §10.
+
+\subsection{Self-consistency equation for $A$}
+
+Under the cascade structure of Section \ref{sec:cascade}, at constant
+$\Phi$ each forward block has a closed-form slow-manifold equilibrium
+parametrised by $A$:
+\begin{align}
+K_{Fi}^*(\Phi_i)   &= K_{Fi}^0 + \tau_K \mu_K \Phi_i, \\
+B^*(A; \Phi_B)     &= \tau_B \kappa_B \, a_B(A) \, \Phi_B, \\
+S^*(A; \Phi_S)     &= \tau_S \kappa_S \, a_S(A) \, \Phi_S, \\
+F^*(A; \Phi)       &= \tau_F \, \big(K_{FB}^* \Phi_B + K_{FS}^* \Phi_S\big) / a_F(A).
+\end{align}
+Substituting these into the v5 bifurcation parameter (eq.\
+\ref{eq:mu-v5}) defines the slow-manifold drive $\bar\mu(A; \Phi)$.
+The interior equilibria of $A$ then solve
+\begin{equation}
+\bar\mu(A; \Phi) \;=\; \eta\, A^2,
+\label{eq:self-consistency}
+\end{equation}
+together with the boundary equilibrium $A = 0$. Equation
+\eqref{eq:self-consistency} has 0, 1, or 2 positive roots depending on
+$\Phi$, giving rise to three qualitatively distinct regimes.
+
+\subsection{The three regimes}
+
+\paragraph{Mono-stable healthy.} $\bar\mu(0; \Phi) > 0$: one positive
+root $A^*$. The boundary $A = 0$ is unstable, the interior $A^*$ is
+stable. Healthy autonomic amplitude is the unique attractor regardless
+of initial condition.
+
+\paragraph{Bistable.} $\bar\mu(0; \Phi) < 0$ but the curve $g(A) =
+\bar\mu(A) - \eta A^2$ rises above zero somewhere: two positive roots
+$A_{\rm sep} < A^*$. Both $A = 0$ and $A^*$ are stable; $A_{\rm sep}$ is
+the unstable separatrix that partitions the basin. Initial $A_0 <
+A_{\rm sep}$ collapses to zero, $A_0 > A_{\rm sep}$ rises to $A^*$.
+
+\paragraph{Mono-stable collapsed.} $g$ stays negative on $A > 0$: no
+positive roots. $A = 0$ is the global attractor. Autonomic amplitude is
+irrecoverable.
+
+\subsection{Closed-island geometry in $(\Phi_B, \Phi_S)$ space}
+
+Figure \ref{fig:closed-island} shows the central qualitative result.
+Under the v4 model (left) the healthy region is an open quarter-disc:
+sedentary ($\Phi = 0$) is healthy. Under the v5 modification (right)
+the boundary is a closed contour strictly interior to both axes: both
+$\Phi_B = 0$ (no aerobic) and $\Phi_S = 0$ (no strength) push outside
+the healthy region, so deconditioning by either route leads to
+collapse.
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=\textwidth]{figures/v5_sedentary_collapse_island.png}
+    \caption{Transcritical bifurcation contour $\bar\mu(0;\Phi) = 0$
+    under FSA-v4 (left) and FSA-v5 (right). v4 admits a healthy regime
+    down to $\Phi = 0$ and along both axes. The v5 Hill-deconditioning
+    term ($B_{\rm dec} = S_{\rm dec} = 0.07$, $\mu_{B-} = \mu_{S-} =
+    0.10$, $n=4$) closes the contour into a small island whose boundary
+    is strictly interior to both coordinate axes. The medical
+    ``Goldilocks'' / inverse-U structure emerges as a basin-topology
+    change.}
+    \label{fig:closed-island}
+\end{figure}
+
+Figure \ref{fig:full-bifurcation} adds the saddle-node curve and the
+numerical regime classification. Inside the black transcritical
+contour: mono-stable healthy. Between black and magenta dashed: bistable
+annulus. Outside magenta: mono-stable collapsed.
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=\textwidth]{figures/v5_full_bifurcation.png}
+    \caption{FSA-v5 full bifurcation diagram. Left: analytical
+    transcritical (black) and saddle-node (magenta dashed) contours.
+    Right: numerical regime classification from forward RK4 rollouts
+    starting at $A_0 = 0.05$. Bistable annulus surrounds the healthy
+    island on all sides; both deconditioning and over-training are
+    reachable from a small initial $A$.}
+    \label{fig:full-bifurcation}
+\end{figure}
+
+\subsection{Time-domain confirmation}
+
+The static analysis is confirmed by deterministic ODE rollouts under
+three constant-$\Phi$ scenarios from a common ``trained athlete''
+initial state, shown in Figure \ref{fig:trajectories}. \textbf{Both}
+sedentary and over-training drive $A \to 0$ but via different
+mechanisms and on different time-scales:
+
+\begin{itemize}
+  \item \textbf{Sedentary} ($\Phi = 0$): $B$ and $S$ decay
+        exponentially at $\tau_B, \tau_S$. Once they cross
+        $B_{\rm dec}, S_{\rm dec}$, the Hill terms in \eqref{eq:mu-v5}
+        saturate, $\bar\mu$ goes negative, and $A$ collapses around
+        day 100--150. Mediated by detraining of chronic capacities.
+  \item \textbf{Moderate} ($\Phi = (0.30, 0.30)$, inside the v5 island):
+        all states settle to a healthy steady state, $A^* \approx
+        0.55$. Goldilocks-band homeostasis.
+  \item \textbf{Over-training} ($\Phi = (1.0, 1.0)$): $F$ runs away to
+        $\approx 2$ in $\sim 30$ days, $\bar\mu$ goes strongly negative
+        via the $-\mu_{FF}(F-F_{\rm TYP})^2$ term, $A$ collapses by day
+        $\sim 50$. Mediated by fatigue, not deconditioning.
+\end{itemize}
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=\textwidth]{figures/v5_trajectories_three_regimes.png}
+    \caption{Deterministic RK4 rollouts under the three regimes.
+    Top row: chronic states $B, S, A$. Bottom row: fatigue $F$ and
+    sensitivities $K_{FB}, K_{FS}$.}
+    \label{fig:trajectories}
+\end{figure}
+
+\subsection{Closed-island sanity check}
+
+For verification during a port, the $\bar\mu(0; \Phi)$ values at five
+representative stimuli are tabulated below. These should match exactly
+when running \texttt{TRUTH\_PARAMS\_V5} through the analytical
+$\bar\mu$ function (e.g., \path{control_v5.py:_mu_bar}).
+
+\begin{center}\small
+\begin{tabular}{lcl}
+\toprule
+Stimulus regime & $\bar\mu(0;\Phi)$ & Outcome \\
+\midrule
+Sedentary,                $\Phi = (0, 0)$    & $-0.180$ & strong collapse \\
+Aerobic-only,             $\Phi = (0.30, 0)$ & $-0.059$ & collapse \\
+Strength-only,            $\Phi = (0, 0.30)$ & $-0.093$ & collapse \\
+Balanced moderate,        $\Phi = (0.30, 0.30)$ & $+0.011$ & \textbf{healthy} ($A^* \approx 0.54$) \\
+Over-training,            $\Phi = (1.0, 1.0)$ & $-1.608$ & catastrophic collapse \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+
+% =============================================================================
+\section{The probabilistic cost functional} \label{sec:cost}
+% =============================================================================
+
+This section is the v5 main novelty. The basin geometry of Section
+\ref{sec:basins} dictates a specific form of cost functional that the
+\texttt{smc2fc} controller should optimise.
+
+\subsection{The structurally correct formulation: chance constraints}
+
+Given the bistable annulus surrounding the healthy island, the natural
+clinical question is: \emph{what minimum-effort training programme
+keeps the athlete in the healthy basin with at least probability $1 -
+\alpha$?} This is encoded as a chance constraint on basin escape:
+\begin{equation}
+\boxed{\;
+\Pcal\!\big[\, A_t < A_{\rm sep}(\Phi_t) \,\big] \;\le\; \alpha
+   \qquad \forall\, t \in [0, T].
+\;}
+\label{eq:chance-constraint}
+\end{equation}
+The cost functional pairs naturally with this constraint:
+\begin{equation}
+\boxed{\;
+\min_\theta \; \lambda_\Phi \int_0^T \|\Phi(t)\|^2 \, \dd t
+\quad \text{s.t.}\quad
+   \Ecal\!\left[ \int_0^T A_t \, \dd t \right] \;\ge\; A_{\rm target},\;
+   \Pcal\!\big[ A_t < A_{\rm sep}(\Phi_t) \big] \;\le\; \alpha.
+\;}
+\label{eq:v5-min-effort}
+\end{equation}
+This formulation directly answers the clinical question: minimise total
+effort subject to (i) achieving at least target autonomic exposure
+$A_{\rm target}$ in expectation and (ii) keeping the basin-escape
+probability below the budget $\alpha$ at every time.
+
+\subsection{Why this needs SMC$^2$, not gradient-OT}
+
+The chance constraint \eqref{eq:chance-constraint} is structurally
+non-differentiable: it involves an expectation over indicator functions
+of state events. A gradient-based open-loop optimiser cannot represent
+it; only an SMC$^2$ controller, which carries a particle population
+over both parameters and trajectories, can naturally reject or
+re-weight $\theta$-particles whose simulated trajectories violate the
+constraint at the prescribed rate.
+
+\subsection{Reference implementations: hard / soft variants}
+
+The chance-constraint cost is implemented as \emph{two interchangeable
+JIT-friendly variants} in \path{models/fsa_high_res/control_v5.py},
+plus a back-compat alias and a legacy NumPy reference. The smc2fc
+controller picks one variant based on its outer-loop architecture.
+
+\paragraph{Hard variant — for pure SMC\textsuperscript{2} architectures.}
+\texttt{evaluate\_chance\_constrained\_cost\_hard(...)} uses the
+indicator $\mathbb{1}[A_t < A_{\rm sep}(\Phi_t)]$ directly. Suitable
+when the controller's outer loop weights $\theta$-particles by their
+empirical violation rate at each tempering step. The hard indicator
+is non-differentiable in $\theta$, so this variant is NOT for HMC inner
+kernels. The full implementation is JIT-compiled and \texttt{vmap}-ed
+over particles. Per-bin separatrix root-finding is a JAX bisection over
+a 64-point grid — no \texttt{scipy.optimize.brentq}, no Python loops.
+
+\paragraph{Soft variant — for HMC architectures.}
+\texttt{evaluate\_chance\_constrained\_cost\_soft(...)} replaces the
+indicator with a sigmoid surrogate:
+\begin{equation}
+\mathbb{1}[A_t < A_{\rm sep}(\Phi_t)] \;\longrightarrow\;
+\sigma\!\left(\beta \cdot \frac{A_{\rm sep}(\Phi_t) - A_t}{\rm scale}\right),
+\label{eq:soft-surrogate}
+\end{equation}
+which is $C^\infty$ and differentiable through $\theta$ via the trajectory
+$A_t$. As $\beta \to \infty$ the surrogate converges to the hard
+indicator (the smoke test verifies this within $10^{-3}$ at $\beta =
+10^4$). Recommended use: anneal $\beta$ upward over the inference run
+— small $\beta$ early on for smooth easy gradients, large $\beta$ later
+for structural correctness. Default $\beta = 50$, $\text{scale} = 0.1$
+(units of $A$).
+
+\paragraph{Common signature.}
+
+\begin{lstlisting}
+def evaluate_chance_constrained_cost_hard(
+    theta_particles,        # list of param dicts, OR dict-of-arrays (n_particles,)
+    weights,                # (n_particles,), normalised to sum to 1
+    Phi_schedule,           # (n_steps, 2)
+    *,
+    dt: float = 1.0 / 96,   # 15-min bins (FSA_STEP_MINUTES = 15)
+    alpha: float = 0.05,    # chance-constraint budget
+    A_target: float = 2.0,  # min E[ integral A dt ]
+    truth_params_template=None,    # default TRUTH_PARAMS_V5
+    initial_state=None,            # (6,) - default = trained athlete
+) -> dict:
+    # Returns:
+    #   mean_effort                  scalar - integral ||Phi||^2 dt
+    #   mean_A_integral              scalar - weighted-mean integral A_t dt
+    #   violation_rate_per_particle  (n_particles,)
+    #   weighted_violation_rate      scalar
+    #   satisfies_chance_constraint  bool   - weighted rate <= alpha
+    #   satisfies_target             bool   - mean_A_integral >= A_target
+    #   A_sep_per_bin                (n_steps,) - analytical separatrix curve
+\end{lstlisting}
+
+The soft variant has two extra kwargs, \texttt{beta} (default 50) and
+\texttt{scale} (default 0.1); the rest of the signature is identical.
+
+\paragraph{Back-compat alias.}
+The original symbol
+\texttt{evaluate\_chance\_constrained\_cost} is preserved as an alias
+for the hard variant, so existing imports from this module continue to
+work unchanged. The slow legacy NumPy implementation lives at
+\texttt{\_evaluate\_chance\_constrained\_cost\_legacy} and is kept only
+as a debug / readability reference; production callers should use the
+hard or soft variants.
+
+\paragraph{Architecture choice for the smc2fc port.}
+The decision tree for the smc2fc controller author:
+\begin{itemize}
+  \item Outer loop is \emph{pure SMC\textsuperscript{2} with importance
+        weighting} — particles are re-weighted at each tempering step
+        by their per-particle violation rate, no inner gradient kernel.
+        Use \textbf{hard} variant.
+  \item Outer loop has \emph{HMC} (or any gradient-based optimiser)
+        inside the SMC tempering — needs $\nabla_\theta J$. Use
+        \textbf{soft} variant; anneal $\beta$ from $\sim 10$ at the
+        first temperature to $\sim 10^3$ near convergence.
+  \item Need a back-compat baseline for unit tests against the v3 cost
+        functional — use \texttt{build\_control\_spec\_v5}
+        (gradient-OT) only as a fallback.
+\end{itemize}
+
+The smc2fc controller is responsible for closing the loop:
+re-weighting, rejecting, or scoring candidate $\Phi$ schedules using
+the dict returned from either variant. This file does not own the
+controller; it provides only the cost evaluators.
+
+\subsection{Engineering note: deterministic CRN}
+
+Both variants forward-simulate each particle deterministically (no
+per-particle noise) for speed and reproducibility. The chance
+constraint then captures \emph{parameter uncertainty}, not state-noise
+uncertainty. To upgrade to full stochastic simulation, replace the
+internal helper \texttt{\_make\_forward\_rollout\_fn} with a CRN-noise
+variant — every other piece of the cost function logic is unchanged.
+
+\subsection{Bonus formulation: Lagrangian relaxation}
+
+For consumers that need a smooth scalar cost (e.g.\ for warmstart of
+the SMC$^2$ controller), the chance constraint can be relaxed to a
+soft penalty:
+\begin{equation}
+\widetilde J(\theta) \;=\; \lambda_\Phi \int \|\Phi\|^2 \, \dd t
+   \;-\; \Ecal\!\left[\int A \, \dd t\right]
+   \;+\; \lambda_{\rm chance} \, \max\!\big(0,\; \widehat p_{\rm violate} - \alpha\big)^2,
+\end{equation}
+where $\widehat p_{\rm violate}$ is the empirical violation rate from
+the particle cloud and $\lambda_{\rm chance}$ is a large penalty
+weight. This loses the chance-constraint guarantee but yields a smooth
+objective amenable to gradient methods. Equivalent to using the soft
+variant with $\beta \to 0$ (very loose surrogate) plus an explicit
+violation-rate penalty.
+
+
+% =============================================================================
+\section{Numerical integration: time step and stiffness} \label{sec:integration}
+% =============================================================================
+
+\subsection{Production grid: 15-minute bins}
+
+The model is integrated on a 15-minute bin grid:
+\begin{equation}
+\Delta t \;=\; \frac{1}{96}\;\text{day} \;\approx\; 15\;\text{minutes}, \qquad
+\text{bins per day} \;=\; 96.
+\end{equation}
+This grid is set by the environment variable \texttt{FSA\_STEP\_MINUTES}
+(default 15) in \path{models/fsa_high_res/simulation.py}. The
+computation is:
+\begin{lstlisting}
+import os as _os
+_STEP_MIN = int(_os.environ.get('FSA_STEP_MINUTES', '15'))
+BINS_PER_DAY = (60 * 24) // _STEP_MIN          # = 96 at default
+DT_BIN_DAYS  = 1.0 / BINS_PER_DAY              # = 1/96
+\end{lstlisting}
+
+Each integration step is exactly one bin --- there is no inner
+sub-stepping in the production path
+(\path{_plant.py:_plant_em_step}). The choice is justified by stiffness
+analysis below.
+
+\subsection{Why one EM step per bin is safe}
+
+The slowest characteristic time is $\tau_S = 60$d (strength capacity
+relaxation). The fastest is $\tau_F = 6.36$d (fatigue clearance, after
+the autonomic correction). The $A$-equation has a cubic damping term
+$-\eta A^3$ which can be locally fast for large $A$, but $A \in [0,
+\sim 1]$ in practice and $\eta = 0.20$, so the autonomic time constant
+is no faster than $\sim 5$d.
+
+The shortest meaningful time-scale is therefore $\sim 6$d. The
+integration step is $\Delta t = 1/96 \approx 0.01$d --- about
+$600\times$ smaller than the fastest mode. Forward Euler--Maruyama is
+unconditionally stable on this margin; no implicit or sub-stepped
+integrator is needed. (For tools that wish to use coarser dt --- e.g.\
+the basin sweep tool --- a sub-stepped helper is provided as
+\path{_dynamics.py:imex_step_substepped}.)
+
+\subsection{Why daily sampling is non-viable for inference}
+
+Sampling resolution is non-negotiable. Replacing the production
+15-minute observation grid with daily summaries inflates the FIM
+condition number from $\sim 10^{18}$ to $\sim 10^{38}$ and creates an
+artificial $(\epsilon_{AS}, \mu_S)$ confound that the production
+sampling does not have. Two specific reasons:
+
+\begin{enumerate}
+  \item Dense overnight resting-HR sampling pins down aerobic fitness
+        $B$ from passive autonomic signals --- a much more informative
+        window than sparse daytime spot-checks.
+  \item Time-resolved sleep-gated HR separates the
+        $(\epsilon_{AS}, \mu_S)$ contributions to autonomic
+        amplitude that are otherwise confounded.
+\end{enumerate}
+
+\textbf{Recommendation for the smc2fc port: keep \texttt{FSA\_STEP\_MINUTES = 15}}
+and accept the higher computational cost (8064 SDE steps over 84 days
+versus $\sim 340$ at $\Delta t = 0.25$d).
+
+\subsection{State clipping after each step}
+
+The post-Euler--Maruyama state is clipped back into the physical
+domain at each bin:
+
+\begin{itemize}
+  \item $B \in [\varepsilon_B,\; 1 - \varepsilon_B]$ (Jacobi reflection or clip)
+  \item $S \in [\varepsilon_S,\; 1 - \varepsilon_S]$ (same)
+  \item $F, A, K_{FB}, K_{FS} \in [0, \infty)$ (\texttt{max(\(\cdot\), 0)})
+\end{itemize}
+
+with $\varepsilon_B = \varepsilon_S = \varepsilon_A = 10^{-4}$. The
+reflection on $B, S$ matches the natural behaviour of the Jacobi
+diffusion process at boundaries; the half-line clipping for $F, A, K$
+is a safety net since the CIR diffusion is degenerate at zero.
+
+\subsection{Numerical convention summary}
+
+\begin{center}\small
+\begin{tabular}{ll}
+\toprule
+Quantity & Value (production) \\
+\midrule
+Time unit                 & days \\
+Bin width $\Delta t$      & $1/96$ d $\approx 15$ min \\
+Bins per day              & $96$ \\
+Sub-stepping in plant     & none (single EM step per bin) \\
+Sub-stepping in tools     & 4 sub-steps optional via \texttt{imex\_step\_substepped} \\
+Reflection: $B, S$        & $\varepsilon = 10^{-4}$ on both ends \\
+Floor: $F, A, K_*$        & $0$, with $A$ getting a $+\varepsilon_A$ floor in diffusion only \\
+Random number generator   & JAX (CRN-friendly via \texttt{jax.random.PRNGKey}) \\
+Float precision           & enable via \texttt{JAX\_ENABLE\_X64=True} (Section \ref{sec:bugs}) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+
+% =============================================================================
+\section{Parameter set: 37 estimated, 14 frozen} \label{sec:pinning}
+% =============================================================================
+
+This section explains the pinning strategy used in
+\path{HIGH_RES_FSA_V5_ESTIMATION}. Read the appendix for the full
+symbol-by-symbol table; this section gives the rationale.
+
+\subsection{The split}
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Estimated (37) & in \texttt{PARAM\_PRIOR\_CONFIG} \\
+Frozen (14)    & in \texttt{frozen\_params} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The 14 frozen parameters fall into two groups:
+
+\begin{enumerate}
+  \item \textbf{Diffusion-side (6 always frozen):}
+        $\sigma_B, \sigma_S, \sigma_F, \sigma_A, \sigma_K, \phi$.
+        Diffusion identifiability is weak under SMC$^2$ in any setting
+        and is not the right thing to learn jointly with drift.
+  \item \textbf{Dynamics-side (8 frozen by FIM analysis + first-port-test policy):}
+        $K_{FB}^0,\, K_{FS}^0,\, \tau_K,\, n_{\rm dec},\, B_{\rm dec},\,
+        S_{\rm dec},\, \mu_{B-},\, \mu_{S-}$.
+\end{enumerate}
+
+\subsection{Why each dynamics-side freeze}
+
+\paragraph{$K_{FB}^0$ and $K_{FS}^0$ (structurally non-identifiable).}
+The $K$ subsystem rapidly relaxes onto its slow manifold $K_{Fi}^* =
+K_{Fi}^0 + \tau_K \mu_K \Phi_i$. The data observes $K_{Fi}$ only
+indirectly through the $F$-equation, and only ever sees the
+\emph{combination} $K_{Fi}^0 + \tau_K \mu_K \Phi_i$ --- never $K_{Fi}^0$
+in isolation. No amount of additional data fixes this: the FIM
+eigenvector for these is structurally zero. Pin them to physiologically
+sensible values ($K_{FB}^0 = 0.030$, $K_{FS}^0 = 0.050$) and forget
+about estimating them.
+
+\paragraph{$\tau_K$ (jointly weakly identified with $\mu_K$).}
+At steady state, only the product $\tau_K \mu_K$ is observable from $K$
+relaxation. To separate them you need calibration data with sustained
+loading periods of order $\tau_K \approx 21$ days, which is rarely
+available. Pin $\tau_K$ to the Busso-standard $21$d and estimate only
+$\mu_K$.
+
+\paragraph{$n_{\rm dec}$ (structural shape).}
+The Hill exponent is a structural shape parameter, not a data-fitted
+one. The transition steepness it controls is a modelling choice. Pin
+at $n_{\rm dec} = 4$.
+
+\paragraph{$B_{\rm dec}, S_{\rm dec}, \mu_{B-}, \mu_{S-}$ (need long detraining episodes).}
+The four v5 deconditioning parameters are only informable from data
+that includes long ($\ge 6$ weeks) detraining episodes, because the
+Hill term in equation \eqref{eq:mu-v5} is silent above the threshold.
+For a first port-test on simple steady-state synthetic data, pin them
+all at the §10 Figure 7 calibration values:
+$(B_{\rm dec}, S_{\rm dec}, \mu_{B-}, \mu_{S-}) = (0.07, 0.07, 0.10, 0.10)$.
+
+\subsection{Relaxation policy: how to widen the parameter set later}
+
+When richer calibration data becomes available, freezes can be relaxed
+one at a time by moving a key from \texttt{frozen\_params} into
+\texttt{PARAM\_PRIOR\_CONFIG}. Suggested priorities, in order of
+unblockability:
+
+\begin{enumerate}
+  \item $\mu_{B-}, \mu_{S-}$ if a long detraining episode exists in the data.
+  \item $B_{\rm dec}, S_{\rm dec}$ if the detraining episode crosses the threshold smoothly.
+  \item $\tau_K$ if a $\ge 21$d sustained-load episode is available.
+  \item $K_{FB}^0, K_{FS}^0$ --- never. Structurally non-identifiable.
+\end{enumerate}
+
+\subsection{Quick reference: what's in the parameter vector}
+
+The \texttt{HIGH\_RES\_FSA\_V5\_ESTIMATION} parameter vector is 37 long.
+Component-wise view:
+
+\begin{center}\small
+\begin{tabular}{lll}
+\toprule
+Group & Count & Members (briefly) \\
+\midrule
+Aerobic-capacity dynamics  & 3  & $\tau_B, \kappa_B, \epsilon_{AB}$ \\
+Strength-capacity dynamics & 3  & $\tau_S, \kappa_S, \epsilon_{AS}$ \\
+Fatigue dynamics           & 2  & $\tau_F, \lambda_A$ \\
+Variable-dose K dynamics   & 1  & $\mu_K$ ($\tau_K$ frozen, $K^0_{Fi}$ frozen) \\
+Stuart--Landau drive       & 6  & $\mu_0, \mu_B, \mu_S, \mu_F, \mu_{FF}, \eta$ \\
+HR observation             & 5  & ${\rm HR}_{\rm base}, \kappa_B^{\rm HR}, \alpha_A^{\rm HR}, \beta_C^{\rm HR}, \sigma_{\rm HR}$ \\
+Sleep Bernoulli            & 3  & $k_C, k_A, \tilde c$ \\
+Stress observation         & 5  & $S_{\rm base}, k_F, k_{A,S}, \beta_C^{\rm S}, \sigma_S$ \\
+Steps observation          & 6  & $\mu_{\rm step,0}, \beta_B^{\rm st}, \beta_F^{\rm st}, \beta_A^{\rm st}, \beta_C^{\rm st}, \sigma_{\rm st}$ \\
+Volume Load observation    & 3  & $\beta_S^{\rm VL}, \beta_F^{\rm VL}, \sigma_{\rm VL}$ \\
+\midrule
+\textbf{Total estimated}   & \textbf{37} & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+
+% =============================================================================
+\section{Test scenarios for synthetic data} \label{sec:tests}
+% =============================================================================
+
+This section gives concrete test scenarios that exercise the v5
+implementation end-to-end. Each one is a constant-$\Phi$ rollout from a
+defined initial state, with a predicted qualitative outcome that the
+engineer can verify against. The test infrastructure is in
+\path{tests/test_fsa_v5_smoke.py}.
+
+\subsection{Test 1: Sedentary collapse}
+
+\textbf{Setup:} Trained-athlete initial state $(B, S, F, A, K_{FB},
+K_{FS}) = (0.50, 0.45, 0.20, 0.45, 0.06, 0.07)$. Constant
+$\Phi = (0, 0)$. Run for 200 days.
+
+\textbf{Expected:} $B$ and $S$ decay exponentially at $\tau_B = 42$d
+and $\tau_S = 60$d. Around day 60--100, both fall below the
+deconditioning threshold $B_{\rm dec} = S_{\rm dec} = 0.07$ and the
+Hill terms in $\mu$ saturate. With $\bar\mu$ now strongly negative,
+$A$ collapses to near zero by day $\sim 150$. Fatigue $F$ also decays
+(no input). $K$ states relax back to baseline.
+
+\textbf{Pass criterion:} $A(t = 200\text{d}) < 0.01$, but $A(t =
+30\text{d}) > 0.3$ (not collapsed yet) --- demonstrates the
+slow-detraining time-course.
+
+\textbf{Code:}
+\begin{lstlisting}
+from models.fsa_high_res import StepwisePlant, DEFAULT_PARAMS_V5
+import numpy as np
+
+plant = StepwisePlant(truth_params=dict(DEFAULT_PARAMS_V5))
+plant.state = np.array([0.50, 0.45, 0.20, 0.45, 0.06, 0.07])
+out = plant.advance(stride_bins=200 * 96,
+                     Phi_daily=np.zeros((200, 2)))
+A_traj = out['trajectory'][:, 3]
+assert A_traj[-1] < 0.01,    f"A did not collapse: {A_traj[-1]}"
+assert A_traj[30 * 96] > 0.3, f"A collapsed too early"
+\end{lstlisting}
+
+\subsection{Test 2: Moderate (healthy) attractor}
+
+\textbf{Setup:} Same trained-athlete initial state. Constant
+$\Phi = (0.30, 0.30)$ (inside the v5 healthy island). Run for 100 days.
+
+\textbf{Expected:} $B$ and $S$ relax to slow-manifold values near
+$0.18$ each. $\bar\mu$ stays positive ($\sim +0.011$). $A$ relaxes to
+its healthy attractor $A^* \approx 0.55$ over the first $\sim 50$ days.
+$F$ stabilises near $F_{\rm TYP} = 0.20$. $K$ states rise modestly.
+
+\textbf{Pass criterion:} $A(100\text{d}) > 0.4$, $|F(100\text{d}) - 0.20| < 0.10$, no
+NaN.
+
+\subsection{Test 3: Over-training collapse}
+
+\textbf{Setup:} Same trained-athlete initial state. Constant $\Phi =
+(1.0, 1.0)$ (well outside the v5 island). Run for 60 days.
+
+\textbf{Expected:} $F$ runs away to $\approx 2$ within 30 days. The
+$-\mu_{FF}(F-F_{\rm TYP})^2$ term in $\mu$ dominates, $\bar\mu$ goes
+strongly negative ($\sim -1.6$), and $A$ collapses to zero by day
+$\sim 50$. $B, S$ saturate at their upper bounds.
+
+\textbf{Pass criterion:} $A(60\text{d}) < 0.01$, but $F(60\text{d}) >
+1.5$ (the collapse mechanism is fatigue-driven, not deconditioning).
+
+\subsection{Test 4: Bistability sensitivity (separatrix crossing)}
+
+\textbf{Setup:} Constant $\Phi$ chosen inside the bistable annulus
+(e.g.\ $\Phi = (0.50, 0.30)$ from §7 of \path{main.tex}). Run from two
+different initial states differing only in $A_0$:
+\begin{itemize}
+  \item Trial A: $A_0 = 0.10$ (above separatrix)
+  \item Trial B: $A_0 = 0.02$ (below separatrix)
+\end{itemize}
+
+\textbf{Expected:} Trial A converges to the healthy interior
+attractor; Trial B collapses to $A = 0$. Same training, different
+outcomes --- this is the bistability test.
+
+\textbf{Pass criterion:} $|A_{\rm trial A}(150\text{d}) - 0.5| < 0.2$ and
+$A_{\rm trial B}(150\text{d}) < 0.01$.
+
+\subsection{Test 5: Closed-loop with the chance-constrained cost}
+
+\textbf{Setup:} Build a 10-particle cloud of parameters all at the v5
+truth (no inference yet). Build a 14-day moderate $\Phi = (0.30, 0.30)$
+schedule. Call \texttt{evaluate\_chance\_constrained\_cost} with
+$\alpha = 0.05$, $A_{\rm target} = 2.0$.
+
+\textbf{Expected:} \texttt{satisfies\_chance\_constraint = True},
+\texttt{satisfies\_target = True}, \texttt{weighted\_violation\_rate}
+$\approx 0$, \texttt{mean\_A\_integral} $\approx 11$ ($\approx
+A^* \cdot 14\text{d} \cdot 96$ bins$\cdot$ dt).
+
+This test exercises the entire v5 cost-evaluation path end-to-end.
+
+\subsection{Recommended order to run during the port}
+
+\begin{enumerate}
+  \item Test 2 (moderate, healthy) --- confirms the implementation can produce a stable trajectory.
+  \item Test 1 (sedentary collapse) --- confirms the Hill term fires correctly under low $\Phi$.
+  \item Test 3 (over-training) --- confirms the v4-inherited fatigue mechanism is intact.
+  \item Test 4 (bistability) --- confirms the closed-island geometry actually exists at runtime.
+  \item Test 5 (cost evaluator) --- confirms the cost evaluator wires up correctly.
+\end{enumerate}
+
+If any of these fails, the port has an issue; consult Section
+\ref{sec:bugs}.
+
+
+% =============================================================================
+\section{Common bugs and gotchas} \label{sec:bugs}
+% =============================================================================
+
+This section documents specific issues encountered during the v5
+implementation pass. Read it before you port; each item below is a
+real bug that took non-trivial effort to surface.
+
+\subsection{The \texttt{sigma\_S} name collision}
+
+\textbf{Symptom:} The strength state $S$ in the latent SDE develops
+500$\times$ larger noise than expected; trajectory shows wild swings of
+order $\pm 0.5$ over a single day.
+
+\textbf{Cause:} The \texttt{DEFAULT\_PARAMS} dictionary in
+\path{simulation.py} contains \emph{two} keys named \texttt{sigma\_S} ---
+one for the latent-S Jacobi diffusion scale ($\sim 0.008$) and another
+for the stress-channel observation noise ($\sim 4.0$). Python's dict
+keeps only the last assignment, which is the observation one. Reading
+\texttt{truth\_params['sigma\_S']} therefore returns $4.0$ (the obs
+noise) where the SDE integrator expects the diffusion scale.
+
+\textbf{Fix:} The plant in \path{_plant.py} hard-codes the diffusion
+scales as constants matching \texttt{SIGMA\_*\_FROZEN} in
+\path{estimation.py}, bypassing the params dict entirely. The
+\path{estimation.py} \texttt{propagate\_fn} also hard-codes them. If
+you write new code that needs the diffusion scales, follow this
+convention --- do not read them from the params dict.
+
+\subsection{\texttt{JAX\_ENABLE\_X64} required}
+
+\textbf{Symptom:} ``Explicitly requested dtype float64 ... is not
+available, and will be truncated to dtype float32'' warnings spam the
+console; numerical results subtly disagree with reference values.
+
+\textbf{Cause:} JAX defaults to float32 unless either the environment
+variable \texttt{JAX\_ENABLE\_X64=True} is set or
+\texttt{jax.config.update("jax\_enable\_x64", True)} is called before
+JAX is imported.
+
+\textbf{Fix:} Set the environment variable, or do
+\begin{lstlisting}
+import os
+os.environ['JAX_ENABLE_X64'] = 'True'
+from jax import config
+config.update('jax_enable_x64', True)
+\end{lstlisting}
+at the top of any tool/test that runs the model. The smoke test
+(\path{tests/test_fsa_v5_smoke.py}) does this.
+
+\subsection{\texttt{EstimationModel} requires \texttt{init\_state\_prior\_config}}
+
+\textbf{Symptom:} \texttt{TypeError: EstimationModel.\_\_init\_\_() missing
+1 required positional argument: 'init\_state\_prior\_config'}.
+
+\textbf{Cause:} The \texttt{EstimationModel} dataclass in
+\texttt{smc2fc/estimation\_model.py} has
+\texttt{init\_state\_prior\_config} as a required (not optional)
+constructor argument.
+
+\textbf{Fix:} Pass an empty \texttt{OrderedDict()} for it if no
+init-state prior is desired. The v5 \texttt{HIGH\_RES\_FSA\_V5\_ESTIMATION}
+in \path{estimation.py} does exactly this.
+
+\subsection{Drift duplication --- single source of truth}
+
+\textbf{Symptom:} Subtle drift differences between the JAX path and
+the numpy path that only manifest at certain parameter regimes.
+
+\textbf{Cause:} The drift function appears in three places:
+\path{_dynamics.py:drift_jax} (canonical), \path{simulation.py:drift}
+(numpy mirror), and \path{simulation.py:drift_jax} (JAX wrapper for
+SDEModel API). All three must be kept in sync. The v5 implementation
+delegates from \path{estimation.py} to the canonical
+\path{_dynamics.drift_jax} via factory pattern, but the
+\path{simulation.py} copies are still inlined (because they have a
+different calling convention).
+
+\textbf{Fix:} If you modify the drift, modify all three places. There
+is a comment block at the top of \path{simulation.py:drift} that says
+``KEEP IN SYNC with \texttt{\_dynamics.drift\_jax}''. Read that. The
+chance-constraint cost in \path{control_v5.py} also re-derives
+$\bar\mu$ in a fourth place --- keep that one in sync too.
+
+\subsection{Plant truth\_params must include observation coefficients}
+
+\textbf{Symptom:} \texttt{KeyError: 'k\_C'} (or any obs coefficient)
+when running \texttt{StepwisePlant.advance()}.
+
+\textbf{Cause:} The plant calls the obs samplers
+(\texttt{gen\_obs\_sleep, gen\_obs\_hr, ...}), which read observation
+coefficients from \texttt{self.truth\_params}. If you initialise the
+plant with \texttt{truth\_params=TRUTH\_PARAMS\_V5} (from
+\path{_dynamics.py}), it has only the dynamics + diffusion keys ---
+not the obs coefficients.
+
+\textbf{Fix:} Initialise the plant with
+\texttt{truth\_params=DEFAULT\_PARAMS\_V5} (from \path{simulation.py}),
+which has both. Or merge: \texttt{dict(\{**DEFAULT\_PARAMS\_V5,
+**TRUTH\_PARAMS\_V5\})}.
+
+\subsection{$K_{FB}^0$ and $K_{FS}^0$ are structurally non-identifiable}
+
+\textbf{Symptom:} The posterior on $K_{FB}^0$ and $K_{FS}^0$ looks
+identical to the prior; condition number of the FIM blows up.
+
+\textbf{Cause:} As Section \ref{sec:pinning} explains, the data only
+ever sees the combination $K_{Fi}^0 + \tau_K \mu_K \Phi_i$. The
+constants $K_{Fi}^0$ are formally non-identifiable.
+
+\textbf{Fix:} Pin them. The default v5 \texttt{frozen\_params} dict
+already does this (see \path{estimation.py}). Do not be tempted to add
+them to \texttt{PARAM\_PRIOR\_CONFIG} no matter how rich the data is.
+
+\subsection{Don't collapse observations to daily summaries during inference}
+
+\textbf{Symptom:} Suspiciously bad posterior identifiability;
+$(\epsilon_{AS}, \mu_S)$ pair always shows up in the FIM smallest
+eigenvectors.
+
+\textbf{Cause:} Switching from the production 15-minute bin grid to
+daily summary observations destroys the dense overnight HR signal that
+pins $B$ and the time-resolved sleep-gated HR that separates
+$\epsilon_{AS}$ from $\mu_S$ (Section \ref{sec:integration}).
+
+\textbf{Fix:} Keep \texttt{FSA\_STEP\_MINUTES = 15}. Pay the
+$\sim 24\times$ extra computational cost. The FIM analysis (§11 of
+\path{main.tex}) shows this changes the condition number by 20 orders
+of magnitude.
+
+\subsection{Particle parameter dicts must include v5 Hill keys}
+
+\textbf{Symptom:} \texttt{KeyError: 'B\_dec'} (or any v5 Hill key) when
+forward-simulating particles.
+
+\textbf{Cause:} The canonical \texttt{drift\_jax} in
+\path{_dynamics.py} expects all v5 Hill keys present (\texttt{B\_dec,
+S\_dec, mu\_dec\_B, mu\_dec\_S, n\_dec}). If the SMC$^2$ engine carries
+$\theta$-particles whose dicts only contain the estimated parameters
+(37 of them, Section \ref{sec:pinning}), the four v5 Hill keys are
+missing and the drift call fails.
+
+\textbf{Fix:} Always merge with the frozen-params dict before calling
+\texttt{drift\_jax}. The cost evaluator
+\texttt{evaluate\_chance\_constrained\_cost} in
+\path{control_v5.py} already does this; new consumers need to follow
+suit. Pattern:
+\begin{lstlisting}
+p_full = {**FROZEN_DICT, **estimated_dict}
+y_next = y + dt * drift_jax(y, p_full, Phi_t)
+\end{lstlisting}
+
+\subsection{Observation gating must match production}
+
+\textbf{Symptom:} FIM analysis under-estimates information content;
+inference posterior is wider than expected.
+
+\textbf{Cause:} The four Gaussian observation channels are gated by
+sleep/wake state (HR sleep-only, Stress and Steps wake-only, Volume
+Load training-session-only). If your inference pipeline ingests the
+observations as if they were emitted at every bin, the Kalman fusion
+weights them all and the FIM looks fatter than it really is. The
+opposite mistake (treating them as daily averages) destroys
+identifiability as in §\ref{sec:integration}.
+
+\textbf{Fix:} Use the \texttt{align\_obs\_fn} in
+\path{estimation.py:align_obs_fn} to pack scattered observations into
+bin-resolved arrays with explicit \texttt{*\_present} masks. The
+\texttt{propagate\_fn\_v5} respects the masks correctly.
+
+\subsection{Initial state defaults: bounded but ``deconditioned''}
+
+The default initial state in \texttt{DEFAULT\_INIT}
+($B = 0.05, S = 0.10, F = 0.30, A = 0.10, K_{FB} = 0.030, K_{FS} =
+0.050$) is a ``deconditioned but otherwise healthy'' starting point,
+not a trained athlete. Do not be surprised if a forward sim from
+\texttt{DEFAULT\_INIT} under moderate $\Phi$ takes weeks to settle ---
+the system is climbing from low capacity. For testing closed-loop
+behaviour, override the initial state with a trained-athlete vector
+(Section \ref{sec:tests}).
+
+
+% =============================================================================
+\input{sections/appendix_v5_parameters.tex}
+
+\end{document}

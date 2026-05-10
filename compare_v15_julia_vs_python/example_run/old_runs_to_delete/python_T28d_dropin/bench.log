@@ -1,0 +1,42 @@
+============================================================================
+  FSA v1.5 closed-loop SMC²-MPC  (T = 28 d, step = 60 min, BINS_PER_DAY = 24)
+  device = GPU
+  strides = 56, replan every K = 2
+============================================================================
+  stride 1/56: warmup (< window)
+  stride done in 1.4s
+E0508 22:34:55.329940  644267 cuda_timer.cc:87] Delay kernel timed out: measured time has sub-optimal accuracy. There may be a missing warmup execution, please investigate in Nsight Systems.
+  stride 2/56: filter 5 levels, 21.7s
+  stride done in 26.2s
+      SF base (annealed/q0_cov): blend=0.70, entropy_reg=0, log_det=-27.0, ||m1-m0||=0.156, n_stages=3, n_mh=5, min ESS=343.6/512, MH acc=0.65
+W0508 22:35:50.575255  644160 hlo_rematerialization.cc:3233] Can't reduce memory use below 22.33GiB (23973474987 bytes) by rematerialization; only reduced to 27.97GiB (30028410692 bytes), down from 27.97GiB (30028640116 bytes) originally
+W0508 22:36:02.557009  644160 bfc_allocator.cc:502] Allocator (GPU_0_bfc) ran out of memory trying to allocate 27.96GiB (rounded to 30027750912)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+W0508 22:36:02.557351  644160 bfc_allocator.cc:513] __________________________________________________________________________________________________**
+Traceback (most recent call last):
+  File "/home/ajay/Repos/python-smc2-filtering-control/version_1_5_Python_JAX_functional/tools/bench_smc_full_mpc_fsa_v15.py", line 1382, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/home/ajay/Repos/python-smc2-filtering-control/version_1_5_Python_JAX_functional/tools/bench_smc_full_mpc_fsa_v15.py", line 1365, in main
+    final_state, final_acc, total_elapsed = run_bench(env, cfg)
+                                            ^^^^^^^^^^^^^^^^^^^
+  File "/home/ajay/Repos/python-smc2-filtering-control/version_1_5_Python_JAX_functional/tools/bench_smc_full_mpc_fsa_v15.py", line 905, in run_bench
+    final_state, final_acc = functools.reduce(
+                             ^^^^^^^^^^^^^^^^^
+  File "/home/ajay/Repos/python-smc2-filtering-control/version_1_5_Python_JAX_functional/tools/bench_smc_full_mpc_fsa_v15.py", line 906, in <lambda>
+    lambda sa, s: _stride_with_progress(env, cfg, sa, s),
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ajay/Repos/python-smc2-filtering-control/version_1_5_Python_JAX_functional/tools/bench_smc_full_mpc_fsa_v15.py", line 878, in _stride_with_progress
+    new_state, new_acc = _stride_body(env, cfg, sa, s, t0)
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ajay/Repos/python-smc2-filtering-control/version_1_5_Python_JAX_functional/tools/bench_smc_full_mpc_fsa_v15.py", line 826, in _stride_body
+    state, acc, replan_tel = _replan_one_stride(env, cfg, state, acc, s)
+                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ajay/Repos/python-smc2-filtering-control/version_1_5_Python_JAX_functional/tools/bench_smc_full_mpc_fsa_v15.py", line 725, in _replan_one_stride
+    res = run_tempered_smc_loop_native(
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ajay/Repos/python-smc2-filtering-control/smc2fc_JAX_functional/smc2fc/control/tempered_smc_loop.py", line 138, in run_tempered_smc_loop_native
+    final_particles.block_until_ready()
+jax.errors.JaxRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 27.96GiB.

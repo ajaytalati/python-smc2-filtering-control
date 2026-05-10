@@ -1,0 +1,115 @@
+\section{What the Identifiability Analysis Means in Plain Language} \label{sec:fim-intuition}
+
+This section is a companion to Section \ref{sec:fsa-v5-fim}. It is written for grad students or research engineers who are about to experiment with the FSA-v5 model and codebase, and who want the conclusions of the FIM analysis without first having to read off all the matrix algebra. If at any point you want the precise statements, the previous section is the reference; this one prioritises intuition over rigour.
+
+\subsection{What is the Fisher information matrix actually measuring?}
+
+Think of each model parameter as a knob you can turn (e.g. $\tau_B$ is one knob, $\mu_K$ is another). When you turn a knob, the model's predicted observations --- the curves it would draw for HR over the night, for stress score during the day, for daily volume load --- shift in some specific way.
+
+The Fisher information matrix asks a simple question:
+
+\begin{quote}
+\emph{If I turn this knob a little bit, how visibly does the data move?}
+\end{quote}
+
+\begin{itemize}
+  \item If turning the knob shifts the predicted observations a lot, the data ``sees'' that knob clearly. The corresponding entry of the FIM is large. When you fit the model, the data will pin down that parameter to a narrow range.
+  \item If turning the knob barely moves the predicted observations at all, the data ``can't see'' the knob. The corresponding entry of the FIM is near zero. When you fit the model, that parameter will basically just take whatever value its prior suggests --- the data adds no information.
+  \item If turning two knobs in opposite directions cancels out (so the data only sees their \emph{combination}, not either one separately), the FIM has a near-degenerate eigenvector mixing those two parameters. You cannot tell them apart from data; you can only fit the combination.
+\end{itemize}
+
+The FIM analysis of Section \ref{sec:fsa-v5-fim} is just the formal version of asking ``which knobs is the data seeing clearly, which is it not seeing at all, and which can it only see in pairs?''
+
+\subsection{Why we care --- before vs.\ after fitting}
+
+If you run the SMC$^2$ inference on the model and find that, say, the posterior for some parameter $\theta_i$ looks identical to its prior --- the data did not move it --- that is not a bug. It is the FIM saying ``this knob was invisible, the posterior is the prior''. Knowing in advance which parameters fall into that category saves a lot of debugging:
+
+\begin{itemize}
+  \item You don't waste time running diagnostics on a parameter that was never going to converge.
+  \item You don't accidentally over-interpret a posterior that is just the prior.
+  \item You can choose to \emph{freeze} structurally non-identifiable parameters at sensible defaults, simplifying the fit and stabilising the others.
+\end{itemize}
+
+This is the practical payoff of the FIM analysis: it tells you where the model is honest about what the data can teach it, and where it is hiding behind the priors.
+
+\subsection{The headline picture for FSA-v5}
+
+Out of $44$ parameters in the v5 estimation vector, the FIM analysis on a representative 84-day informative schedule with the production 15-minute observation grid says:
+
+\begin{itemize}
+  \item About \textbf{9 directions are extremely well-identified.} These include the fast time-scales ($\tau_B, \tau_F, \tau_K$), the autonomic damping coefficient $\eta$, and the strong observation links ($k_F, k_{A,S}$). The data pins these down sharply.
+  \item About \textbf{18 more directions are reasonably identified.} Mostly observation-coefficient combinations and some dynamics. They will get useful posterior shrinkage.
+  \item About \textbf{17 directions are weakly or non-identified.} These are the ones to watch out for.
+\end{itemize}
+
+The slack 17 directions are not all equally bad. Section \ref{sec:fsa-v5-fim} groups them into four physically-meaningful structural causes:
+
+\paragraph{(A) The pair $(K_{FB}^0, K_{FS}^0)$ is structurally non-identifiable.} These are the baseline fatigue gains. Because the $K$-states relax very quickly onto a slow manifold, the data only ever sees the combination $K_{Fi}^0 + \tau_K \mu_K \Phi_i$, never the baseline alone. \textbf{Recommendation: freeze them at v4 defaults} ($K_{FB}^0 = 0.030$, $K_{FS}^0 = 0.050$). Don't try to fit them; the data has nothing to say.
+
+\paragraph{(B) The deconditioning amplitudes $\mu_{B-}, \mu_{S-}$ are weakly identified on a typical schedule.} The reason is simple: if the calibration data does not include long detraining episodes, the system rarely visits the regime where the deconditioning Hill term is non-zero, so there is no signal to constrain its size. \textbf{Recommendation: include $\ge 6$ weeks of complete inactivity in the calibration period.}
+
+\paragraph{(C) The deconditioning thresholds $B_{\rm dec}, S_{\rm dec}$ are weakly identified for the same reason as (B).} Same fix.
+
+\paragraph{(D) Single-parameter weak identifiability of $\epsilon_{AS}$.} This one used to be much worse: in the daily-sampling version of the analysis, $\epsilon_{AS}$ was fully confounded with $\mu_S$ and you would have needed a reparameterisation to make them estimable. With the production 15-minute grid and dense overnight HR sampling, the confound resolves, but $\epsilon_{AS}$ alone still has a wide posterior. \textbf{Recommendation: leave it as-is, expect a wide posterior, don't worry.}
+
+\subsection{What changes when you change the sampling resolution}
+
+The most surprising result is how dramatically the conclusions depend on the observation density.
+
+\begin{itemize}
+  \item \textbf{Daily sampling} (one observation per channel per day): The FIM's condition number is around $10^{38}$, and the model has additional ``fake'' identifiability problems --- specifically the $(\epsilon_{AS}, \mu_S)$ confound mentioned above.
+  \item \textbf{15-minute bin sampling} (the production default): The condition number drops to around $10^{18}$, and the $(\epsilon_{AS}, \mu_S)$ confound disappears.
+\end{itemize}
+
+A factor of $10^{20}$ in conditioning between the two regimes is striking but has a simple explanation. The dense overnight HR sampling is doing two crucial things:
+\begin{enumerate}
+  \item It pins down aerobic fitness $B$ from resting heart-rate dynamics during sleep --- an extremely informative window when the autonomic nervous system isn't being driven by exogenous stress.
+  \item It separates the Stuart--Landau autonomic-amplitude contributions of $\epsilon_{AS}$ and $\mu_S$ because they enter at slightly different time-scales, which only the bin-resolution observations can see.
+\end{enumerate}
+
+If you collapse observations to daily summaries during inference, you throw both of these away and the model looks much worse-conditioned than it really is. \textbf{Don't do this.} Keep \texttt{FSA\_STEP\_MINUTES = 15} and pay the modest extra computational cost (about 24$\times$ more SDE steps per day).
+
+\subsection{Hands-on experiments grad students can run}
+
+If you are setting up an experiment with the codebase, here are concrete tests that will build intuition for the FIM picture without requiring you to compute it yourself.
+
+\paragraph{Experiment 1: ``which knob does the data see?'' Bayesian sweep test.}
+Pick any parameter and run inference (or even just maximum-likelihood fitting) on synthetic data generated from the model. Compare the posterior (or fitted value distribution across noise realisations) to the prior. If they are essentially the same, that parameter is in the unidentifiable subspace --- the data did not constrain it.
+
+Concrete suggestion: try this with $K_{FB}^0$ first --- you should see basically zero posterior shrinkage, confirming the structural non-identifiability of result (A) above.
+
+\paragraph{Experiment 2: ``the detraining matters'' calibration-coverage test.}
+Fit the model twice on the same subject: once with calibration data that includes a detraining period, once without. Compare the marginal posteriors for $\mu_{B-}, \mu_{S-}, B_{\rm dec}, S_{\rm dec}$. Without the detraining period, the marginals will be wide (essentially the prior). With it, they should shrink substantially. This is the practical payoff of result (B) and (C).
+
+\paragraph{Experiment 3: ``the 15-minute grid matters'' sampling-resolution test.}
+Run \texttt{tools/fim\_analysis\_v5.py} with the default $\Delta t = 1/96$ d. Then change one line --- set $\Delta t = 1.0$ (daily) and \texttt{T\_OBS\_IDX} to one obs per day --- and re-run. Compare the eigenvalue spectra and the condition numbers. You should see:
+\begin{itemize}
+  \item Condition number jumps from $\sim 10^{18}$ to $\sim 10^{38}$.
+  \item A new near-zero eigenvector appears that mixes $\epsilon_{AS}$ and $\mu_S$.
+\end{itemize}
+This is the direct demonstration of the sampling-resolution caveat.
+
+\paragraph{Experiment 4: ``where is the FIM eigenvalue spectrum coming from?'' channel-ablation test.}
+Modify \texttt{compute\_fim} in \texttt{tools/fim\_analysis\_v5.py} to skip one observation channel at a time (set the corresponding gating mask to zero). Re-run and report:
+\begin{itemize}
+  \item Condition number with each channel removed.
+  \item Which slack directions get worse without each channel.
+\end{itemize}
+You will discover, e.g., that removing the sleep label is catastrophic for autonomic-amplitude identifiability (the $k_A, k_C, \tilde c$ parameters lose their direct constraint), while removing volume load mostly hurts $\beta_S^{\rm VL}$ alone --- since VL is the only channel that observes $S$ linearly.
+
+\paragraph{Experiment 5: ``can we be smarter about scheduling?'' D-optimal design test.}
+The Phi schedule used in \texttt{tools/fim\_analysis\_v5.py} is hand-designed (4 phases). Replace it with a randomised piecewise-constant schedule of the same total duration. Re-run the FIM. Compare $\det(F)$ or $\lambda_{\min}(F)$. Does the hand-designed schedule actually do better than random? If so, by how much?
+
+This is the entry point to optimal experimental design --- a substantial line of work in its own right, but the FIM machinery you have built is the foundation. A serious version of this would search over $\Phi(t)$ to maximise $\lambda_{\min}(F)$, and would tell you the most informative training schedule a subject could deliberately follow during a model-calibration period.
+
+\subsection{What to take away}
+
+\begin{enumerate}
+  \item Most v5 parameters are identifiable from production-resolution N=1 data. The big rank-deficiency you see in the FIM eigenvalue plot is mostly weak-rather-than-zero, and shrinks as more informative regimes (detraining, overload) appear in the data.
+  \item Two parameters ($K_{FB}^0, K_{FS}^0$) are structurally non-identifiable and should be frozen, full stop.
+  \item Four parameters ($B_{\rm dec}, S_{\rm dec}, \mu_{B-}, \mu_{S-}$) are the v5 deconditioning extension and need detraining episodes in the data.
+  \item Sampling resolution is non-negotiable: keep the 15-minute bin grid, do not collapse to daily summaries.
+  \item The FIM is not just diagnostic --- it is also a tool. Use it to compare alternative experimental designs, ablate channels, decide what to freeze, and calibrate expectations before running expensive inference.
+\end{enumerate}
+
+In short: the FIM is the model's honest answer to the question ``what could you possibly learn from this data?'', and the answer for FSA-v5 at production resolution is ``most of it, with a few well-understood caveats that map to specific recommendations.''

@@ -1,0 +1,35 @@
+\section{Numerical Implementation}
+
+The FSA-v2 model is implemented in a JAX-native architecture to ensure high-performance numerical simulation and compatibility with gradient-based optimization and Sequential Monte Carlo methods.
+
+\subsection{Software Architecture}
+
+The sandbox repository is organized to decouple the physiological model from the simulation framework:
+\begin{itemize}
+    \item \path{simulator/}: A generic, model-agnostic SDE solver suite. It provides a JAX-compatible Euler-Maruyama integrator and observation synthesis logic.
+    \item \path{models/fsa_high_res/}: Contains the FSA-specific dynamics (\path{_dynamics.py}), simulation parameters (\path{simulation.py}), and SMC${}^2$ artifacts (\path{estimation.py}, \path{control.py}).
+    \item \path{smc2fc/}: A stubbed interface that provides the necessary data structures (e.g., \path{EstimationModel}, \path{ControlSpec}) without requiring the full \path{smc2fc} library.
+\end{itemize}
+
+\subsection{The JAX-Native Simulator}
+
+The core simulation loop uses \path{jax.lax.scan} for efficient time-stepping. The solver, located in \path{simulator/sde_solver_diffrax.py}, supports:
+\begin{enumerate}
+    \item \textbf{Deterministic Integration:} For MAP trajectory analysis.
+    \item \textbf{Stochastic Integration:} Using Euler-Maruyama with sub-stepping for handling stiff dynamics and state-dependent diffusion.
+\end{enumerate}
+
+\subsection{Model Artifacts}
+
+To bridge the gap between simulation and inference, the model exposes several artifacts:
+
+\subsubsection{EstimationModel}
+The \path{EstimationModel} (defined in \path{estimation.py}) encapsulates everything needed for Bayesian parameter estimation:
+\begin{enumerate}
+    \item \path{propagate_fn}: Euler-Maruyama step with state-dependent diffusion.
+    \item \path{obs_log_weight_fn}: Sum of 4-channel log-likelihoods.
+\end{enumerate}
+
+\subsubsection{ControlSpec}
+The \path{ControlSpec} (defined in \path{control.py}) defines the control task, including the cost function \(J(\theta)\) and the RBF schedule basis.
+The controller uses a set of Gaussian RBF anchors to parameterize the training schedule \(\Phi(t)\) over the planning horizon.

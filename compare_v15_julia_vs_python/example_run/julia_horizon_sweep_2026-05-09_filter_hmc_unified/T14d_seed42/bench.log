@@ -1,0 +1,191 @@
+[ Info: loading model + framework (FSA_STEP_MINUTES=60)...
+[ Info: config: T=14d step=60min BINS_PER_DAY=24 WINDOW=24 STRIDE=12 n_strides=27  open_loop=false
+[ Info: GPU device: NVIDIA GeForce RTX 5090
+[ Info: filter target: N_SMC=512 K_per_chain=1000 d=10 M_max=10752
+[ Info: filter target: OT rescue DISABLED (ot-max-weight = 0.0, fast path)
+[ Info: controller cfg: n_smc=1024 n_inner=64 num_mcmc=8 hmc_leap=16 chees=[16, 32, 64, 128, 256, 512] max_levels=40
+[ Info: [stride  1/27] 0.0s  warming up (hist=12/24) Φ̄=1.000 x̂=(0.055, 0.296, 0.095)
+[ Info:     [ 1] λ 0.000 → 0.200 (Δλ=0.200) L=64 accept=76%
+[ Info:     [ 2] λ 0.200 → 0.400 (Δλ=0.200) L=64 accept=57%
+[ Info:     [ 3] λ 0.400 → 0.600 (Δλ=0.200) L=32 accept=62%
+[ Info:     [ 4] λ 0.600 → 0.800 (Δλ=0.200) L=32 accept=57%
+[ Info:     [ 5] λ 0.800 → 1.000 (Δλ=0.200) L=32 accept=49%
+[ Info: [stride  2/27] 19.6s  5 filter levels  Φ̄=1.000 x̂=(0.059, 0.294, 0.090)
+[ Info:   [replan @ stride  2] 10.8s  Φ̄_plan=0.320  shape=[0.22→0.21→0.91]  ctrl_n_temp=6
+[ Info:     [ 1] λ 0.000 → 0.200 (Δλ=0.200) L=64 accept=91%
+[ Info:     [ 2] λ 0.200 → 0.400 (Δλ=0.200) L=64 accept=81%
+[ Info:     [ 3] λ 0.400 → 0.600 (Δλ=0.200) L=64 accept=75%
+[ Info:     [ 4] λ 0.600 → 0.800 (Δλ=0.200) L=64 accept=66%
+[ Info:     [ 5] λ 0.800 → 1.000 (Δλ=0.200) L=64 accept=61%
+[ Info: [stride  3/27] 16.6s  5 filter levels  Φ̄=0.183 x̂=(0.060, 0.273, 0.087)
+[ Info:     [ 1] λ 0.000 → 0.200 (Δλ=0.200) L=64 accept=89%
+[ Info:     [ 2] λ 0.200 → 0.400 (Δλ=0.200) L=32 accept=88%
+[ Info:     [ 3] λ 0.400 → 0.600 (Δλ=0.200) L=64 accept=75%
+[ Info:     [ 4] λ 0.600 → 0.800 (Δλ=0.200) L=64 accept=70%
+[ Info:     [ 5] λ 0.800 → 1.000 (Δλ=0.200) L=64 accept=65%
+[ Info: [stride  4/27] 15.3s  5 filter levels  Φ̄=0.131 x̂=(0.060, 0.250, 0.086)
+[ Info:   [replan @ stride  4] 7.4s  Φ̄_plan=0.345  shape=[0.29→0.22→0.94]  ctrl_n_temp=5
+[ Info:     [ 1] λ 0.000 → 0.200 (Δλ=0.200) L=64 accept=87%
+[ Info:     [ 2] λ 0.200 → 0.400 (Δλ=0.200) L=64 accept=73%
+[ Info:     [ 3] λ 0.400 → 0.600 (Δλ=0.200) L=64 accept=67%
+[ Info:     [ 4] λ 0.600 → 0.800 (Δλ=0.200) L=32 accept=66%
+[ Info:     [ 5] λ 0.800 → 1.000 (Δλ=0.200) L=64 accept=45%
+[ Info: [stride  5/27] 14.9s  5 filter levels  Φ̄=0.246 x̂=(0.062, 0.236, 0.084)
+[ Info:     [ 1] λ 0.000 → 0.200 (Δλ=0.200) L=64 accept=81%
+[ Info:     [ 2] λ 0.200 → 0.400 (Δλ=0.200) L=64 accept=69%
+[ Info:     [ 3] λ 0.400 → 0.600 (Δλ=0.200) L=32 accept=72%
+[ Info:     [ 4] λ 0.600 → 0.800 (Δλ=0.200) L=64 accept=48%
+[ Info:     [ 5] λ 0.800 → 1.000 (Δλ=0.200) L=64 accept=41%
+[ Info: [stride  6/27] 15.2s  5 filter levels  Φ̄=0.185 x̂=(0.062, 0.223, 0.076)
+[ Info:   [replan @ stride  6] 8.4s  Φ̄_plan=0.347  shape=[0.34→0.25→0.88]  ctrl_n_temp=5
+[ Info:     [ 1] λ 0.000 → 0.200 (Δλ=0.200) L=64 accept=92%
+[ Info:     [ 2] λ 0.200 → 0.400 (Δλ=0.200) L=64 accept=82%
+[ Info:     [ 3] λ 0.400 → 0.600 (Δλ=0.200) L=64 accept=76%
+[ Info:     [ 4] λ 0.600 → 0.800 (Δλ=0.200) L=64 accept=70%
+[ Info:     [ 5] λ 0.800 → 1.000 (Δλ=0.200) L=32 accept=75%
+[ Info: [stride  7/27] 15.3s  5 filter levels  Φ̄=0.293 x̂=(0.064, 0.213, 0.080)
+[ Info:     [ 1] λ 0.000 → 0.200 (Δλ=0.200) L=64 accept=92%
+[ Info:     [ 2] λ 0.200 → 0.400 (Δλ=0.200) L=64 accept=84%
+[ Info:     [ 3] λ 0.400 → 0.600 (Δλ=0.200) L=64 accept=78%
+[ Info:     [ 4] λ 0.600 → 0.800 (Δλ=0.200) L=64 accept=72%
+[ Info:     [ 5] λ 0.800 → 1.000 (Δλ=0.200) L=64 accept=67%
+[ Info: [stride  8/27] 16.4s  5 filter levels  Φ̄=0.221 x̂=(0.063, 0.197, 0.076)
+[ Info:   [replan @ stride  8] 8.7s  Φ̄_plan=0.413  shape=[0.46→0.30→0.91]  ctrl_n_temp=5
+[ Info:     [ 1] λ 0.000 → 0.200 (Δλ=0.200) L=64 accept=87%
+[ Info:     [ 2] λ 0.200 → 0.400 (Δλ=0.200) L=64 accept=76%
+[ Info:     [ 3] λ 0.400 → 0.600 (Δλ=0.200) L=32 accept=77%
+[ Info:     [ 4] λ 0.600 → 0.800 (Δλ=0.200) L=32 accept=70%
+[ Info:     [ 5] λ 0.800 → 1.000 (Δλ=0.200) L=32 accept=67%
+[ Info: [stride  9/27] 12.4s  5 filter levels  Φ̄=0.418 x̂=(0.065, 0.184, 0.075)
+[ Info:     [ 1] λ 0.000 → 0.200 (Δλ=0.200) L=64 accept=77%
+[ Info:     [ 2] λ 0.200 → 0.400 (Δλ=0.200) L=64 accept=62%
+[ Info:     [ 3] λ 0.400 → 0.600 (Δλ=0.200) L=64 accept=47%
+[ Info:     [ 4] λ 0.600 → 0.800 (Δλ=0.200) L=64 accept=38%
+[ Info:     [ 5] λ 0.800 → 1.000 (Δλ=0.200) L=32 accept=46%
+[ Info: [stride 10/27] 15.2s  5 filter levels  Φ̄=0.344 x̂=(0.071, 0.181, 0.076)
+[ Info:   [replan @ stride 10] 8.7s  Φ̄_plan=0.638  shape=[1.48→0.34→0.91]  ctrl_n_temp=5
+[ Info:     [ 1] λ 0.000 → 0.200 (Δλ=0.200) L=64 accept=91%
+[ Info:     [ 2] λ 0.200 → 0.400 (Δλ=0.200) L=64 accept=86%
+[ Info:     [ 3] λ 0.400 → 0.600 (Δλ=0.200) L=64 accept=83%
+[ Info:     [ 4] λ 0.600 → 0.800 (Δλ=0.200) L=64 accept=75%
+[ Info:     [ 5] λ 0.800 → 1.000 (Δλ=0.200) L=64 accept=73%
+[ Info: [stride 11/27] 16.6s  5 filter levels  Φ̄=1.504 x̂=(0.079, 0.189, 0.077)
+[ Info:     [ 1] λ 0.000 → 0.200 (Δλ=0.200) L=64 accept=78%
+[ Info:     [ 2] λ 0.200 → 0.400 (Δλ=0.200) L=32 accept=78%
+[ Info:     [ 3] λ 0.400 → 0.600 (Δλ=0.200) L=64 accept=61%
+[ Info:     [ 4] λ 0.600 → 0.800 (Δλ=0.200) L=64 accept=54%
+[ Info:     [ 5] λ 0.800 → 1.000 (Δλ=0.200) L=64 accept=45%
+[ Info: [stride 12/27] 15.1s  5 filter levels  Φ̄=1.498 x̂=(0.083, 0.199, 0.073)
+[ Info:   [replan @ stride 12] 10.3s  Φ̄_plan=0.318  shape=[0.27→0.20→0.89]  ctrl_n_temp=6
+[ Info:     [ 1] λ 0.000 → 0.200 (Δλ=0.200) L=64 accept=84%
+[ Info:     [ 2] λ 0.200 → 0.400 (Δλ=0.200) L=64 accept=70%
+[ Info:     [ 3] λ 0.400 → 0.600 (Δλ=0.200) L=32 accept=73%
+[ Info:     [ 4] λ 0.600 → 0.800 (Δλ=0.200) L=64 accept=53%
+[ Info:     [ 5] λ 0.800 → 1.000 (Δλ=0.200) L=64 accept=45%
+[ Info: [stride 13/27] 15.2s  5 filter levels  Φ̄=0.228 x̂=(0.084, 0.192, 0.066)
+[ Info:     [ 1] λ 0.000 → 0.200 (Δλ=0.200) L=64 accept=94%
+[ Info:     [ 2] λ 0.200 → 0.400 (Δλ=0.200) L=64 accept=86%
+[ Info:     [ 3] λ 0.400 → 0.600 (Δλ=0.200) L=64 accept=83%
+[ Info:     [ 4] λ 0.600 → 0.800 (Δλ=0.200) L=64 accept=77%
+[ Info:     [ 5] λ 0.800 → 1.000 (Δλ=0.200) L=64 accept=74%
+[ Info: [stride 14/27] 16.5s  5 filter levels  Φ̄=0.168 x̂=(0.084, 0.181, 0.065)
+[ Info:   [replan @ stride 14] 7.8s  Φ̄_plan=0.347  shape=[0.31→0.23→0.87]  ctrl_n_temp=5
+[ Info:     [ 1] λ 0.000 → 0.200 (Δλ=0.200) L=64 accept=94%
+[ Info:     [ 2] λ 0.200 → 0.400 (Δλ=0.200) L=64 accept=87%
+[ Info:     [ 3] λ 0.400 → 0.600 (Δλ=0.200) L=64 accept=83%
+[ Info:     [ 4] λ 0.600 → 0.800 (Δλ=0.200) L=64 accept=76%
+[ Info:     [ 5] λ 0.800 → 1.000 (Δλ=0.200) L=64 accept=72%
+[ Info: [stride 15/27] 16.5s  5 filter levels  Φ̄=0.271 x̂=(0.084, 0.174, 0.064)
+[ Info:     [ 1] λ 0.000 → 0.200 (Δλ=0.200) L=64 accept=91%
+[ Info:     [ 2] λ 0.200 → 0.400 (Δλ=0.200) L=64 accept=85%
+[ Info:     [ 3] λ 0.400 → 0.600 (Δλ=0.200) L=64 accept=76%
+[ Info:     [ 4] λ 0.600 → 0.800 (Δλ=0.200) L=64 accept=71%
+[ Info:     [ 5] λ 0.800 → 1.000 (Δλ=0.200) L=64 accept=61%
+[ Info: [stride 16/27] 16.5s  5 filter levels  Φ̄=0.206 x̂=(0.085, 0.163, 0.066)
+[ Info:   [replan @ stride 16] 8.2s  Φ̄_plan=0.374  shape=[0.54→0.26→0.81]  ctrl_n_temp=5
+[ Info:     [ 1] λ 0.000 → 0.200 (Δλ=0.200) L=64 accept=91%
+[ Info:     [ 2] λ 0.200 → 0.400 (Δλ=0.200) L=64 accept=83%
+[ Info:     [ 3] λ 0.400 → 0.600 (Δλ=0.200) L=64 accept=76%
+[ Info:     [ 4] λ 0.600 → 0.800 (Δλ=0.200) L=32 accept=79%
+[ Info:     [ 5] λ 0.800 → 1.000 (Δλ=0.200) L=64 accept=62%
+[ Info: [stride 17/27] 15.1s  5 filter levels  Φ̄=0.496 x̂=(0.087, 0.162, 0.071)
+[ Info:     [ 1] λ 0.000 → 0.200 (Δλ=0.200) L=64 accept=89%
+[ Info:     [ 2] λ 0.200 → 0.400 (Δλ=0.200) L=64 accept=81%
+[ Info:     [ 3] λ 0.400 → 0.600 (Δλ=0.200) L=64 accept=73%
+[ Info:     [ 4] λ 0.600 → 0.800 (Δλ=0.200) L=64 accept=63%
+[ Info:     [ 5] λ 0.800 → 1.000 (Δλ=0.200) L=64 accept=55%
+[ Info: [stride 18/27] 16.4s  5 filter levels  Φ̄=0.415 x̂=(0.088, 0.159, 0.074)
+[ Info:   [replan @ stride 18] 7.7s  Φ̄_plan=0.373  shape=[0.42→0.23→0.96]  ctrl_n_temp=5
+[ Info:     [ 1] λ 0.000 → 0.200 (Δλ=0.200) L=64 accept=83%
+[ Info:     [ 2] λ 0.200 → 0.400 (Δλ=0.200) L=64 accept=65%
+[ Info:     [ 3] λ 0.400 → 0.600 (Δλ=0.200) L=64 accept=52%
+[ Info:     [ 4] λ 0.600 → 0.800 (Δλ=0.200) L=16 accept=70%
+[ Info:     [ 5] λ 0.800 → 1.000 (Δλ=0.200) L=32 accept=51%
+[ Info: [stride 19/27] 12.9s  5 filter levels  Φ̄=0.372 x̂=(0.092, 0.152, 0.079)
+[ Info:     [ 1] λ 0.000 → 0.200 (Δλ=0.200) L=64 accept=93%
+[ Info:     [ 2] λ 0.200 → 0.400 (Δλ=0.200) L=64 accept=87%
+[ Info:     [ 3] λ 0.400 → 0.600 (Δλ=0.200) L=64 accept=83%
+[ Info:     [ 4] λ 0.600 → 0.800 (Δλ=0.200) L=64 accept=77%
+[ Info:     [ 5] λ 0.800 → 1.000 (Δλ=0.200) L=64 accept=73%
+[ Info: [stride 20/27] 16.5s  5 filter levels  Φ̄=0.291 x̂=(0.092, 0.144, 0.076)
+[ Info:   [replan @ stride 20] 7.2s  Φ̄_plan=0.512  shape=[1.15→0.30→0.84]  ctrl_n_temp=5
+[ Info:     [ 1] λ 0.000 → 0.200 (Δλ=0.200) L=64 accept=74%
+[ Info:     [ 2] λ 0.200 → 0.400 (Δλ=0.200) L=64 accept=58%
+[ Info:     [ 3] λ 0.400 → 0.600 (Δλ=0.200) L=32 accept=62%
+[ Info:     [ 4] λ 0.600 → 0.800 (Δλ=0.200) L=64 accept=37%
+[ Info:     [ 5] λ 0.800 → 1.000 (Δλ=0.200) L=64 accept=32%
+[ Info: [stride 21/27] 15.1s  5 filter levels  Φ̄=1.128 x̂=(0.100, 0.153, 0.067)
+[ Info:     [ 1] λ 0.000 → 0.200 (Δλ=0.200) L=64 accept=91%
+[ Info:     [ 2] λ 0.200 → 0.400 (Δλ=0.200) L=64 accept=82%
+[ Info:     [ 3] λ 0.400 → 0.600 (Δλ=0.200) L=64 accept=77%
+[ Info:     [ 4] λ 0.600 → 0.800 (Δλ=0.200) L=64 accept=71%
+[ Info:     [ 5] λ 0.800 → 1.000 (Δλ=0.200) L=64 accept=65%
+[ Info: [stride 22/27] 16.1s  5 filter levels  Φ̄=1.048 x̂=(0.101, 0.156, 0.065)
+[ Info:   [replan @ stride 22] 10.3s  Φ̄_plan=0.304  shape=[0.33→0.22→0.81]  ctrl_n_temp=6
+[ Info:     [ 1] λ 0.000 → 0.200 (Δλ=0.200) L=64 accept=92%
+[ Info:     [ 2] λ 0.200 → 0.400 (Δλ=0.200) L=32 accept=90%
+[ Info:     [ 3] λ 0.400 → 0.600 (Δλ=0.200) L=64 accept=81%
+[ Info:     [ 4] λ 0.600 → 0.800 (Δλ=0.200) L=64 accept=73%
+[ Info:     [ 5] λ 0.800 → 1.000 (Δλ=0.200) L=64 accept=71%
+[ Info: [stride 23/27] 14.7s  5 filter levels  Φ̄=0.286 x̂=(0.103, 0.145, 0.068)
+[ Info:     [ 1] λ 0.000 → 0.200 (Δλ=0.200) L=64 accept=82%
+[ Info:     [ 2] λ 0.200 → 0.400 (Δλ=0.200) L=64 accept=68%
+[ Info:     [ 3] λ 0.400 → 0.600 (Δλ=0.200) L=64 accept=56%
+[ Info:     [ 4] λ 0.600 → 0.800 (Δλ=0.200) L=32 accept=57%
+[ Info:     [ 5] λ 0.800 → 1.000 (Δλ=0.200) L=64 accept=36%
+[ Info: [stride 24/27] 15.1s  5 filter levels  Φ̄=0.214 x̂=(0.105, 0.139, 0.079)
+[ Info:   [replan @ stride 24] 9.6s  Φ̄_plan=0.621  shape=[1.88→0.25→0.87]  ctrl_n_temp=6
+[ Info:     [ 1] λ 0.000 → 0.200 (Δλ=0.200) L=64 accept=73%
+[ Info:     [ 2] λ 0.200 → 0.400 (Δλ=0.200) L=32 accept=69%
+[ Info:     [ 3] λ 0.400 → 0.600 (Δλ=0.200) L=32 accept=56%
+[ Info:     [ 4] λ 0.600 → 0.800 (Δλ=0.200) L=32 accept=49%
+[ Info:     [ 5] λ 0.800 → 1.000 (Δλ=0.200) L=64 accept=24%
+[ Info: [stride 25/27] 12.5s  5 filter levels  Φ̄=1.911 x̂=(0.115, 0.154, 0.075)
+[ Info:     [ 1] λ 0.000 → 0.200 (Δλ=0.200) L=64 accept=86%
+[ Info:     [ 2] λ 0.200 → 0.400 (Δλ=0.200) L=64 accept=80%
+[ Info:     [ 3] λ 0.400 → 0.600 (Δλ=0.200) L=64 accept=75%
+[ Info:     [ 4] λ 0.600 → 0.800 (Δλ=0.200) L=64 accept=67%
+[ Info:     [ 5] λ 0.800 → 1.000 (Δλ=0.200) L=32 accept=73%
+[ Info: [stride 26/27] 15.1s  5 filter levels  Φ̄=1.882 x̂=(0.122, 0.168, 0.078)
+[ Info:   [replan @ stride 26] 7.2s  Φ̄_plan=0.440  shape=[0.68→0.28→0.92]  ctrl_n_temp=5
+[ Info:     [ 1] λ 0.000 → 0.200 (Δλ=0.200) L=64 accept=90%
+[ Info:     [ 2] λ 0.200 → 0.400 (Δλ=0.200) L=64 accept=83%
+[ Info:     [ 3] λ 0.400 → 0.600 (Δλ=0.200) L=64 accept=73%
+[ Info:     [ 4] λ 0.600 → 0.800 (Δλ=0.200) L=64 accept=71%
+[ Info:     [ 5] λ 0.800 → 1.000 (Δλ=0.200) L=64 accept=61%
+[ Info: [stride 27/27] 16.6s  5 filter levels  Φ̄=0.638 x̂=(0.125, 0.167, 0.083)
+[ Info: Total wall time: 520.2 s
+[ Info: wrote /home/ajay/Repos/python-smc2-filtering-control/compare_v15_julia_vs_python/example_run/julia_horizon_sweep_2026-05-09_filter_hmc_unified/T14d_seed42/data.jld2
+[ Info: wrote /home/ajay/Repos/python-smc2-filtering-control/compare_v15_julia_vs_python/example_run/julia_horizon_sweep_2026-05-09_filter_hmc_unified/T14d_seed42/per_stride.csv
+[ Info: wrote /home/ajay/Repos/python-smc2-filtering-control/compare_v15_julia_vs_python/example_run/julia_horizon_sweep_2026-05-09_filter_hmc_unified/T14d_seed42/controller_diagnostics.csv
+[ Info: wrote manifest.json + experiment_run.md
+┌ Warning: plot_state_traces.jl not found at /home/ajay/Repos/python-smc2-filtering-control/version_1_5_Julia/../version_2_Julia/tools/plot_state_traces.jl; skipping auto-plot
+└ @ Main ~/Repos/python-smc2-filtering-control/version_1_5_Julia/tools/bench_smc_full_mpc_fsa_gpu.jl:1059
+[ Info: wrote /home/ajay/Repos/python-smc2-filtering-control/compare_v15_julia_vs_python/example_run/julia_horizon_sweep_2026-05-09_filter_hmc_unified/T14d_seed42/v15_T14d_param_traces.png
+Could not create decoration from factory! Running with no decorations.
+Could not create decoration from factory! Running with no decorations.
+[ Info: wrote /home/ajay/Repos/python-smc2-filtering-control/compare_v15_julia_vs_python/example_run/julia_horizon_sweep_2026-05-09_filter_hmc_unified/T14d_seed42/v15_T14d_traces.png
+Traceback (most recent call last):
+  File "/home/ajay/Repos/python-smc2-filtering-control/compare_v15_julia_vs_python/src/extract_horizon_results.py", line 32, in <module>
+    import h5py
+ModuleNotFoundError: No module named 'h5py'

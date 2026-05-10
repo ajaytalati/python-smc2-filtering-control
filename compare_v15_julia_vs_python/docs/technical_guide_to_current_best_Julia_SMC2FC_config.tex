@@ -19,11 +19,28 @@
 \begin{document}
 \maketitle
 
-\section*{TL;DR — copy-paste this command}
+\section*{TL;DR — these settings are the bench defaults}
+
+\textbf{The saturated config is now the bench's default.} The minimal
+invocation is:
 
 \begin{verbatim}
 cd /home/ajay/Repos/python-smc2-filtering-control/version_1_5_Julia
 
+julia --project=. tools/bench_smc_full_mpc_fsa_gpu.jl \
+    --T-days 28 --seed 42 --output-dir /tmp/v15_T28d_run
+\end{verbatim}
+
+\noindent Wall time on RTX 5090: \textbf{19.5\,min}. Mean GPU
+utilisation \textbf{$\approx 50\%$}. VRAM peak \textbf{$\approx
+6.6$\,GiB} (20\% of 32\,GiB). Output: \texttt{data.jld2},
+\texttt{manifest.json}, \texttt{per\_stride.csv},
+\texttt{v15\_T28d\_traces.png}, \texttt{v15\_T28d\_param\_traces.png}.
+
+\textbf{If you need to be explicit} about every flag (for
+reproducibility / scripts), the full command is:
+
+\begin{verbatim}
 julia --project=. tools/bench_smc_full_mpc_fsa_gpu.jl \
     --T-days 28 --replan-K 2 --seed 42 \
     --N-smc 512        --K-per-chain 1000 \
@@ -34,11 +51,7 @@ julia --project=. tools/bench_smc_full_mpc_fsa_gpu.jl \
     --output-dir /tmp/v15_T28d_run
 \end{verbatim}
 
-\noindent Wall time on RTX 5090: \textbf{19.5\,min}. Mean GPU
-utilisation \textbf{$\approx 50\%$}. VRAM peak \textbf{$\approx
-6.6$\,GiB} (20\% of 32\,GiB). Output: \texttt{data.jld2},
-\texttt{manifest.json}, \texttt{per\_stride.csv},
-\texttt{v15\_T28d\_traces.png}, \texttt{v15\_T28d\_param\_traces.png}.
+The two are equivalent at the time of writing.
 
 \section*{The framework: \texttt{SMC2FC\_functional}}
 

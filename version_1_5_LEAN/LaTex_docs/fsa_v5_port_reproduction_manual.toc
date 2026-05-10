@@ -1,0 +1,64 @@
+\contentsline {section}{\numberline {1}Goal and overview}{3}{section.1}%
+\contentsline {subsection}{\numberline {1.1}One-sentence goal}{3}{subsection.1.1}%
+\contentsline {subsection}{\numberline {1.2}Why this manual exists}{3}{subsection.1.2}%
+\contentsline {subsection}{\numberline {1.3}Where this manual sits in the doc set}{3}{subsection.1.3}%
+\contentsline {subsection}{\numberline {1.4}The seven port phases}{3}{subsection.1.4}%
+\contentsline {subsection}{\numberline {1.5}How to read this manual}{3}{subsection.1.5}%
+\contentsline {section}{\numberline {2}Prerequisites}{4}{section.2}%
+\contentsline {section}{\numberline {3}Phase 0 --- Inputs}{4}{section.3}%
+\contentsline {section}{\numberline {4}Phase 1 --- Build the v5 Lean4 CLI}{4}{section.4}%
+\contentsline {paragraph}{Goal.}{4}{section*.2}%
+\contentsline {paragraph}{Inputs.}{5}{section*.3}%
+\contentsline {paragraph}{Files to create / modify.}{5}{section*.4}%
+\contentsline {paragraph}{JSON wire conventions.}{5}{section*.5}%
+\contentsline {paragraph}{Dispatch tags exposed (15).}{5}{section*.6}%
+\contentsline {paragraph}{Procedure.}{5}{section*.7}%
+\contentsline {section}{\numberline {5}Phase 2 --- Write the Julia CPU port}{6}{section.5}%
+\contentsline {paragraph}{Goal.}{6}{section*.9}%
+\contentsline {paragraph}{Files to create.}{6}{section*.10}%
+\contentsline {paragraph}{Lean $\to $ Julia idiom conversions.}{6}{section*.11}%
+\contentsline {paragraph}{Boundary handling --- a deliberate v5 deviation from v1.5.}{7}{section*.12}%
+\contentsline {section}{\numberline {6}Phase 3 --- Differential test}{7}{section.6}%
+\contentsline {subsection}{\numberline {6.1}Background: what is a differential test, and why use one here?}{7}{subsection.6.1}%
+\contentsline {paragraph}{Why a differential test is the right tool here.}{7}{section*.14}%
+\contentsline {paragraph}{Who plays which role?}{7}{section*.15}%
+\contentsline {paragraph}{How the two sides talk to each other.}{8}{section*.16}%
+\contentsline {paragraph}{The pre-drawn-noise trick (and why it matters).}{8}{section*.17}%
+\contentsline {paragraph}{Why a tolerance, not strict equality.}{8}{section*.18}%
+\contentsline {paragraph}{What ``green'' means.}{8}{section*.19}%
+\contentsline {subsection}{\numberline {6.2}Implementation in this manual}{9}{subsection.6.2}%
+\contentsline {paragraph}{Goal.}{9}{section*.20}%
+\contentsline {paragraph}{File to create.}{9}{section*.21}%
+\contentsline {paragraph}{Pre-drawn noise convention.}{9}{section*.22}%
+\contentsline {paragraph}{Tolerance ladder.}{9}{section*.23}%
+\contentsline {section}{\numberline {7}Phase 4 --- GPU port (SOFT cost only)}{9}{section.7}%
+\contentsline {paragraph}{Goal.}{9}{section*.25}%
+\contentsline {paragraph}{Architectural rule (cite the LEAN4-First Charter).}{9}{section*.26}%
+\contentsline {paragraph}{Dimension bumps (the only changes inside the kernel plumbing).}{10}{section*.27}%
+\contentsline {paragraph}{SOFT cost only.}{10}{section*.28}%
+\contentsline {paragraph}{Single-thread debug entry points.}{10}{section*.29}%
+\contentsline {paragraph}{HMC clarification --- both filter and controller HMC live in the framework, not in the model.}{10}{section*.30}%
+\contentsline {paragraph}{Files to create / modify.}{10}{section*.31}%
+\contentsline {section}{\numberline {8}Phase 5 --- Bench driver}{11}{section.8}%
+\contentsline {paragraph}{Goal.}{11}{section*.33}%
+\contentsline {paragraph}{Honest flag about ``model-agnostic''.}{11}{section*.34}%
+\contentsline {paragraph}{Files to create.}{11}{section*.35}%
+\contentsline {paragraph}{Plant-rollout shape change in \texttt {\_plant\_v5.jl} (ripple edit).}{11}{section*.36}%
+\contentsline {section}{\numberline {9}Phase 6 --- Plotters, production gating, and launchers}{12}{section.9}%
+\contentsline {paragraph}{Files to create.}{12}{section*.38}%
+\contentsline {paragraph}{Production sleep / wake gating}{12}{section*.39}%
+\contentsline {paragraph}{\texttt {bench\_postproc.jl} additions.}{12}{section*.40}%
+\contentsline {section}{\numberline {10}Verification gates --- final checklist}{13}{section.10}%
+\contentsline {section}{\numberline {11}Troubleshooting and known gotchas}{13}{section.11}%
+\contentsline {paragraph}{Lean's \texttt {Float.toString} floor at 6 significant digits.}{13}{section*.42}%
+\contentsline {paragraph}{GPU plumbing reuse.}{13}{section*.43}%
+\contentsline {paragraph}{fp32 inner loops, fp64 outer state.}{13}{section*.44}%
+\contentsline {paragraph}{\texttt {FSA\_STEP\_MINUTES} env var must be set before model import.}{14}{section*.45}%
+\contentsline {paragraph}{\texttt {FSA\_V5\_DRY\_RUN=1} for dry-run smoke testing.}{14}{section*.46}%
+\contentsline {paragraph}{\texttt {ot-max-weight = 0.0} default.}{14}{section*.47}%
+\contentsline {paragraph}{HARD chance-constraint deliberately out of scope.}{14}{section*.48}%
+\contentsline {paragraph}{\texttt {@match} site numbering.}{14}{section*.49}%
+\contentsline {paragraph}{If a phase gate fails.}{14}{section*.50}%
+\contentsline {section}{\numberline {A}Complete file tree (post-port)}{14}{appendix.A}%
+\contentsline {section}{\numberline {B}Command index}{15}{appendix.B}%
+\contentsline {section}{\numberline {C}Differential-test coverage table}{16}{appendix.C}%

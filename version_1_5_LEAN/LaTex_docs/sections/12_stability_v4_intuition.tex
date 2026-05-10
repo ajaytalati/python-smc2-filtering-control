@@ -1,0 +1,55 @@
+\section{What the Stability Analysis Means in Plain Language} \label{sec:fsa-v4-intuition}
+
+Section \ref{sec:fsa-v4-stability} contained quite a lot of mathematics. This companion section is for sport-physicians, exercise scientists, coaches and athletes who want the take-home message without the algebra. The picture that emerges is, in our view, surprisingly intuitive — and matches what experienced athletes already know about how their bodies respond to training.
+
+\subsection{The three states of an athlete}
+
+Under the FSA-v4 model, for any constant amount of training load $(\Phi_B, \Phi_S)$ — aerobic and strength stimulus respectively — an athlete's long-term physiology settles into one of three states. Which one depends on the size of the load. Figure \ref{fig:v4_bifurcation_curve} (page \pageref{fig:v4_bifurcation_curve}) is the map.
+
+\paragraph{1. The ``healthy'' state — moderate, sustainable training.}
+At low to moderate training loads, the body settles into a state where autonomic amplitude $A$ — a measure of cardiovascular variability and the capacity to mount a stress response — sits at a healthy positive value. Aerobic fitness $B$ and strength $S$ are also present. Crucially, this state is the \emph{only} long-term outcome at these loads: \emph{wherever you start, you end up here}. A poorly-rested, deconditioned, or injured athlete will progressively recover toward this state simply by sticking to the prescribed load. Coaches who say ``trust the process'' are describing this regime: the body has a single attractor and is being pulled toward it.
+
+\paragraph{2. The ``collapsed'' state — chronic overtraining.}
+At high sustained loads, the body settles into a state with $A = 0$ — autonomic suppression, blunted heart-rate variability, dampened stress response — even though aerobic and strength capacities $B$ and $S$ may still be high. This is the model's representation of overtraining syndrome / unexplained underperformance / autonomic burnout. At these loads, this state is also the \emph{only} long-term outcome: no matter how rested or motivated the athlete starts out, sustained high training pulls them down to autonomic collapse. The coach's instinct that ``you can't outwork chronic overtraining'' is a statement about this regime.
+
+\paragraph{3. The ``bistable'' state — moderate-to-high training, where it depends on the day.}
+Between the healthy and collapsed regimes there is a band of training loads at which \emph{both} states are stable simultaneously. Whether the athlete settles into healthy autonomic function or autonomic collapse depends on \emph{the state they were in} when the training block began. There is a separating threshold (the ``separatrix'' in Figure \ref{fig:v4_basin_phiB}). If the athlete's autonomic amplitude $A$ at the start of the block was above the threshold, they end up healthy. If it was below, they collapse. Same training, two different outcomes.
+
+This is the technical formulation of something every coach has experienced: the \emph{same} training session is constructive on a Tuesday after a good week, and disastrous on a Tuesday after a bad week. In the bistable regime, training tolerance is genuinely state-dependent; it is not noise or imagination.
+
+\subsection{What the stimulus map says you can and cannot do}
+
+The map in Figure \ref{fig:v4_bifurcation_curve} divides the training-load plane into three regions. Going from low load to high load, you cross two boundaries:
+
+\begin{itemize}
+  \item The \textbf{transcritical curve} (black solid). Below this curve, the healthy state is the unique attractor — easy life. Above it, the healthy state still exists but \emph{coexists with collapse}.
+  \item The \textbf{saddle-node curve} (magenta dashed). Above this, the healthy state has \emph{disappeared entirely} — the body cannot tolerate this load at all, and any starting point ends in collapse.
+\end{itemize}
+
+For practical training:
+\begin{itemize}
+  \item \textbf{Inside the black curve (low load):} you cannot overtrain at this level even if you tried. Useful for rehab, recovery weeks, beginners.
+  \item \textbf{Between black and magenta (moderate-to-high load):} you can train hard here \emph{provided you start from a recovered state}. This is where elite training lives. The risk is real but managed.
+  \item \textbf{Beyond the magenta curve (very high load):} no matter how recovered you are at the start, sustained loading at this level guarantees collapse. Avoid for sustained periods.
+\end{itemize}
+
+\subsection{Sedentary inactivity is not collapse}
+
+A natural question: doesn't $\Phi = 0$ — sedentary detraining — also lead to $A = 0$? In the FSA-v4 model, \textbf{no}: the model has a non-zero baseline autonomic drive ($\mu_0 > 0$ even at zero load), so a fully detrained sedentary individual settles into a low-but-positive $A^*$ rather than zero. Sedentary lifestyles produce \emph{deconditioned but autonomically intact} states ($B \to 0$, $S \to 0$, $A \approx 0.3$). The pathological $A = 0$ state in this model represents \emph{overtraining}, not under-training. (Medical reality is more complicated — long-term sedentary inactivity does eventually impair autonomic function — but the FSA-v4 model is calibrated to the training-stress regime, where the dominant pathology is overload.)
+
+\subsection{What ``optimal training'' means under this model}
+
+The mathematical question is: pick a training programme $\Phi(t)$ to drive the athlete into the healthy basin, deeply, and keep them there with the smallest possible training load. This translates to a specific recipe for the cost function the optimiser should solve. We discuss it in Section \ref{sec:fsa-v4-stability}; the short answer for the practitioner is:
+
+\begin{enumerate}
+  \item \textbf{The thing to maximise is the area under the autonomic curve $A(t)$.} Average autonomic amplitude over the training block is the right primary outcome — it tracks both ``in healthy state'' (because $A=0$ in the collapsed basin contributes nothing) and ``deep in healthy state'' (because the deeper the basin, the larger $A^*$).
+  \item \textbf{Subtract a small effort penalty.} A cost on the magnitude of training load $\|\Phi(t)\|^2$ ensures that two programmes that produce equal autonomic outcomes are differentiated by which one demanded less from the athlete.
+  \item \textbf{If aerobic fitness and strength matter as outcomes in their own right, add weighted $B(t)$ and $S(t)$ terms.} For pure recovery / autonomic-resilience problems, these are not needed; for race-preparation, they are.
+  \item \textbf{The hard ``fatigue must not exceed $F_{\max}$'' constraint of FSA-v3 may no longer be necessary.} The variable-dose dynamics of FSA-v4 (the $K_{FB}, K_{FS}$ states) penalise sustained loading naturally — a controller that ignores fatigue progressively raises the fatigue gain and is punished by autonomic collapse without an explicit barrier needing to be written into the cost. A softer penalty on elevated $K$-states is a cleaner v4-native alternative to the hard $F_{\max}$ ceiling.
+\end{enumerate}
+
+\subsection{What the controller has to be able to do}
+
+In the bistable regime, the right training plan depends on \emph{the athlete's current physiological state} — the day-to-day $A_t$, $F_t$ values. A plan that ignores those values is a fixed schedule, and a fixed schedule is structurally incapable of the day-by-day adjustments the bistability map requires. This is why Section \ref{sec:open_loop_limitation} concluded that an open-loop optimiser is the wrong tool for FSA-v4. A closed-loop controller — one that continuously updates the plan based on incoming heart-rate-variability, sleep, and performance measurements — is what the model is asking for. The SMC$^2$ control framework (Section \ref{sec:smc2_vs_ot}) is the natural fit because it can simultaneously maintain a probabilistic belief about \emph{where in the basin} the athlete is and \emph{which side of the separatrix} the next training block will land them on.
+
+In short: the basin map gives you an \emph{atlas} of safe and unsafe loads; the bistability tells you tolerance is state-dependent; the variable-dose dynamics tell you tolerance also has memory; and the autonomic amplitude $A$ is the single best summary measure of where in the atlas the athlete currently sits.

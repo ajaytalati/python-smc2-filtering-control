@@ -1,0 +1,63 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{hyperref}
+\usepackage{geometry}
+\geometry{margin=1in}
+
+\title{Technical Note: Controller Prior Bias Correction ($\Phi_{default}$)}
+\author{FSA-v5 Research Engineering}
+\date{May 10, 2026}
+
+\begin{document}
+
+\maketitle
+
+\section{Introduction}
+In the FSA-v5 control framework, the bimodal stimulus plan $\Phi(t) = (\Phi_B, \Phi_S)$ is optimized using a Gaussian Radial Basis Function (RBF) basis. The optimization is performed over a vector of coefficients $\theta \in \mathbb{R}^{2 \cdot n_{anchors}}$. This note documents the correction of the baseline stimulus intensity $\Phi_{default}$ from $1.0$ to $0.3$ and explains the physiological and mathematical necessity of this change.
+
+\section{Mathematical Implementation}
+The stimulus at any time $t$ is decoded from the optimized coefficients $\theta$ using a logistic transformation centered on a bias constant $c_\Phi$. 
+
+\subsection{Bias Precomputation}
+The constant $\Phi_{default}$ is converted into the logit-space bias $c_\Phi$ in the \texttt{FSAv5ControlGPUTarget} constructor:
+\begin{equation}
+    c_\Phi = \ln \left( \frac{\Phi_{default} / \Phi_{max}}{1 - \Phi_{default} / \Phi_{max}} \right)
+\end{equation}
+where $\Phi_{max} = 3.0$ is the saturation limit.
+
+\subsection{Stimulus Decoding}
+Inside the GPU kernel, the stimulus for the aerobic channel $\Phi_B$ (and similarly for strength $\Phi_S$) is calculated as:
+\begin{equation}
+    \Phi_B(t) = \frac{\Phi_{max}}{1 + \exp\left( -\left[ c_\Phi + \sum_{j=1}^{n_{anchors}} \theta_j \cdot R_j(t) \right] \right)}
+\end{equation}
+where $R_j(t)$ are the RBF basis functions. 
+
+\section{Rationale for Correction}
+
+\subsection{Physiological Baseline vs. Overtraining}
+In the FSA-v5 non-linear dynamics:
+\begin{itemize}
+    \item \textbf{$\Phi \approx 0.3$:} Represents a physiologically sustainable baseline training load. At this level, the system typically maintains Alertness ($A$) within the healthy basin of attraction.
+    \item \textbf{$\Phi = 1.0$:} Represents a heavy overtraining load. Sustained training at this intensity leads to rapid accumulation of fatigue ($F$) and high risk of autonomic collapse (transitioning to the $A=0$ basin).
+\end{itemize}
+
+\subsection{Optimization Search Efficiency}
+The Sequential Monte Carlo (SMC$^2$) optimizer initializes its search with $\theta \approx 0$. 
+\begin{itemize}
+    \item \textbf{Old Behavior ($\Phi_{default} = 1.0$):} The search was centered on the "Overtraining" regime. Particles had to perform significant work to "un-train" the initial guess just to reach a sustainable state.
+    \item \textbf{New Behavior ($\Phi_{default} = 0.3$):} The search is now centered on a healthy baseline. The optimizer can immediately explore nuanced deviations (tapering or peaking) from a stable starting point.
+\end{itemize}
+
+\section{Conclusion}
+By setting $\Phi_{default} = 0.3$, we align the controller's prior bias with the model's actual steady-state baseline. This reduces the computational effort required for the SMC particles to find viable plans and prevents the optimizer from being "trapped" in high-fatigue regions of the state space during the initial tempering levels.
+
+\section*{Code References}
+\begin{itemize}
+    \item \texttt{bench\_args.jl}: CLI flag \texttt{--ctrl-phi-default} (Default: 0.3).
+    \item \texttt{gpu\_control\_v5.jl}: Implementation of $c_\Phi$ and the sigmoid decoder.
+    \item \texttt{bench\_controller.jl}: Propagation of the default value to the kernel.
+\end{itemize}
+
+\end{document}

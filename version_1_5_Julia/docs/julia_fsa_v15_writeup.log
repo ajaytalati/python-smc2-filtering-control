@@ -1,0 +1,827 @@
+This is pdfTeX, Version 3.141592653-2.6-1.40.26 (TeX Live 2025/dev/Debian) (preloaded format=pdflatex 2026.3.5)  8 MAY 2026 10:20
+entering extended mode
+ restricted \write18 enabled.
+ %&-line parsing enabled.
+**julia_fsa_v15_writeup.tex
+(./julia_fsa_v15_writeup.tex
+LaTeX2e <2024-11-01> patch level 2
+L3 programming layer <2025-01-18>
+(/usr/share/texlive/texmf-dist/tex/latex/base/article.cls
+Document Class: article 2024/06/29 v1.4n Standard LaTeX document class
+(/usr/share/texlive/texmf-dist/tex/latex/base/size11.clo
+File: size11.clo 2024/06/29 v1.4n Standard LaTeX file (size option)
+)
+\c@part=\count196
+\c@section=\count197
+\c@subsection=\count198
+\c@subsubsection=\count199
+\c@paragraph=\count266
+\c@subparagraph=\count267
+\c@figure=\count268
+\c@table=\count269
+\abovecaptionskip=\skip49
+\belowcaptionskip=\skip50
+\bibindent=\dimen141
+)
+(/usr/share/texlive/texmf-dist/tex/latex/geometry/geometry.sty
+Package: geometry 2020/01/02 v5.9 Page Geometry
+
+(/usr/share/texlive/texmf-dist/tex/latex/graphics/keyval.sty
+Package: keyval 2022/05/29 v1.15 key=value parser (DPC)
+\KV@toks@=\toks17
+)
+(/usr/share/texlive/texmf-dist/tex/generic/iftex/ifvtex.sty
+Package: ifvtex 2019/10/25 v1.7 ifvtex legacy package. Use iftex instead.
+
+(/usr/share/texlive/texmf-dist/tex/generic/iftex/iftex.sty
+Package: iftex 2024/12/12 v1.0g TeX engine tests
+))
+\Gm@cnth=\count270
+\Gm@cntv=\count271
+\c@Gm@tempcnt=\count272
+\Gm@bindingoffset=\dimen142
+\Gm@wd@mp=\dimen143
+\Gm@odd@mp=\dimen144
+\Gm@even@mp=\dimen145
+\Gm@layoutwidth=\dimen146
+\Gm@layoutheight=\dimen147
+\Gm@layouthoffset=\dimen148
+\Gm@layoutvoffset=\dimen149
+\Gm@dimlist=\toks18
+)
+(/usr/share/texlive/texmf-dist/tex/latex/amsmath/amsmath.sty
+Package: amsmath 2024/11/05 v2.17t AMS math features
+\@mathmargin=\skip51
+
+For additional information on amsmath, use the `?' option.
+(/usr/share/texlive/texmf-dist/tex/latex/amsmath/amstext.sty
+Package: amstext 2021/08/26 v2.01 AMS text
+
+(/usr/share/texlive/texmf-dist/tex/latex/amsmath/amsgen.sty
+File: amsgen.sty 1999/11/30 v2.0 generic functions
+\@emptytoks=\toks19
+\ex@=\dimen150
+))
+(/usr/share/texlive/texmf-dist/tex/latex/amsmath/amsbsy.sty
+Package: amsbsy 1999/11/29 v1.2d Bold Symbols
+\pmbraise@=\dimen151
+)
+(/usr/share/texlive/texmf-dist/tex/latex/amsmath/amsopn.sty
+Package: amsopn 2022/04/08 v2.04 operator names
+)
+\inf@bad=\count273
+LaTeX Info: Redefining \frac on input line 233.
+\uproot@=\count274
+\leftroot@=\count275
+LaTeX Info: Redefining \overline on input line 398.
+LaTeX Info: Redefining \colon on input line 409.
+\classnum@=\count276
+\DOTSCASE@=\count277
+LaTeX Info: Redefining \ldots on input line 495.
+LaTeX Info: Redefining \dots on input line 498.
+LaTeX Info: Redefining \cdots on input line 619.
+\Mathstrutbox@=\box52
+\strutbox@=\box53
+LaTeX Info: Redefining \big on input line 721.
+LaTeX Info: Redefining \Big on input line 722.
+LaTeX Info: Redefining \bigg on input line 723.
+LaTeX Info: Redefining \Bigg on input line 724.
+\big@size=\dimen152
+LaTeX Font Info:    Redeclaring font encoding OML on input line 742.
+LaTeX Font Info:    Redeclaring font encoding OMS on input line 743.
+\macc@depth=\count278
+LaTeX Info: Redefining \bmod on input line 904.
+LaTeX Info: Redefining \pmod on input line 909.
+LaTeX Info: Redefining \smash on input line 939.
+LaTeX Info: Redefining \relbar on input line 969.
+LaTeX Info: Redefining \Relbar on input line 970.
+\c@MaxMatrixCols=\count279
+\dotsspace@=\muskip17
+\c@parentequation=\count280
+\dspbrk@lvl=\count281
+\tag@help=\toks20
+\row@=\count282
+\column@=\count283
+\maxfields@=\count284
+\andhelp@=\toks21
+\eqnshift@=\dimen153
+\alignsep@=\dimen154
+\tagshift@=\dimen155
+\tagwidth@=\dimen156
+\totwidth@=\dimen157
+\lineht@=\dimen158
+\@envbody=\toks22
+\multlinegap=\skip52
+\multlinetaggap=\skip53
+\mathdisplay@stack=\toks23
+LaTeX Info: Redefining \[ on input line 2953.
+LaTeX Info: Redefining \] on input line 2954.
+)
+(/usr/share/texlive/texmf-dist/tex/latex/amsfonts/amssymb.sty
+Package: amssymb 2013/01/14 v3.01 AMS font symbols
+
+(/usr/share/texlive/texmf-dist/tex/latex/amsfonts/amsfonts.sty
+Package: amsfonts 2013/01/14 v3.01 Basic AMSFonts support
+\symAMSa=\mathgroup4
+\symAMSb=\mathgroup5
+LaTeX Font Info:    Redeclaring math symbol \hbar on input line 98.
+LaTeX Font Info:    Overwriting math alphabet `\mathfrak' in version `bold'
+(Font)                  U/euf/m/n --> U/euf/b/n on input line 106.
+))
+(/usr/share/texlive/texmf-dist/tex/latex/tools/bm.sty
+Package: bm 2023/12/19 v1.2f Bold Symbol Support (DPC/FMi)
+\symboldoperators=\mathgroup6
+\symboldletters=\mathgroup7
+\symboldsymbols=\mathgroup8
+Package bm Info: No bold for \OMX/cmex/m/n, using \pmb.
+Package bm Info: No bold for \U/msa/m/n, using \pmb.
+Package bm Info: No bold for \U/msb/m/n, using \pmb.
+LaTeX Font Info:    Redeclaring math alphabet \mathbf on input line 149.
+)
+(/usr/share/texlive/texmf-dist/tex/latex/xcolor/xcolor.sty
+Package: xcolor 2024/09/29 v3.02 LaTeX color extensions (UK)
+
+(/usr/share/texlive/texmf-dist/tex/latex/graphics-cfg/color.cfg
+File: color.cfg 2016/01/02 v1.6 sample color configuration
+)
+Package xcolor Info: Driver file: pdftex.def on input line 274.
+
+(/usr/share/texlive/texmf-dist/tex/latex/graphics-def/pdftex.def
+File: pdftex.def 2024/04/13 v1.2c Graphics/color driver for pdftex
+)
+(/usr/share/texlive/texmf-dist/tex/latex/graphics/mathcolor.ltx)
+Package xcolor Info: Model `cmy' substituted by `cmy0' on input line 1349.
+Package xcolor Info: Model `hsb' substituted by `rgb' on input line 1353.
+Package xcolor Info: Model `RGB' extended on input line 1365.
+Package xcolor Info: Model `HTML' substituted by `rgb' on input line 1367.
+Package xcolor Info: Model `Hsb' substituted by `hsb' on input line 1368.
+Package xcolor Info: Model `tHsb' substituted by `hsb' on input line 1369.
+Package xcolor Info: Model `HSB' substituted by `hsb' on input line 1370.
+Package xcolor Info: Model `Gray' substituted by `gray' on input line 1371.
+Package xcolor Info: Model `wave' substituted by `hsb' on input line 1372.
+)
+(/usr/share/texlive/texmf-dist/tex/latex/hyperref/hyperref.sty
+Package: hyperref 2024-11-05 v7.01l Hypertext links for LaTeX
+
+(/usr/share/texlive/texmf-dist/tex/latex/kvsetkeys/kvsetkeys.sty
+Package: kvsetkeys 2022-10-05 v1.19 Key value parser (HO)
+)
+(/usr/share/texlive/texmf-dist/tex/generic/kvdefinekeys/kvdefinekeys.sty
+Package: kvdefinekeys 2019-12-19 v1.6 Define keys (HO)
+)
+(/usr/share/texlive/texmf-dist/tex/generic/pdfescape/pdfescape.sty
+Package: pdfescape 2019/12/09 v1.15 Implements pdfTeX's escape features (HO)
+
+(/usr/share/texlive/texmf-dist/tex/generic/ltxcmds/ltxcmds.sty
+Package: ltxcmds 2023-12-04 v1.26 LaTeX kernel commands for general use (HO)
+)
+(/usr/share/texlive/texmf-dist/tex/generic/pdftexcmds/pdftexcmds.sty
+Package: pdftexcmds 2020-06-27 v0.33 Utility functions of pdfTeX for LuaTeX (HO
+)
+
+(/usr/share/texlive/texmf-dist/tex/generic/infwarerr/infwarerr.sty
+Package: infwarerr 2019/12/03 v1.5 Providing info/warning/error messages (HO)
+)
+Package pdftexcmds Info: \pdf@primitive is available.
+Package pdftexcmds Info: \pdf@ifprimitive is available.
+Package pdftexcmds Info: \pdfdraftmode found.
+))
+(/usr/share/texlive/texmf-dist/tex/latex/hycolor/hycolor.sty
+Package: hycolor 2020-01-27 v1.10 Color options for hyperref/bookmark (HO)
+)
+(/usr/share/texlive/texmf-dist/tex/latex/hyperref/nameref.sty
+Package: nameref 2023-11-26 v2.56 Cross-referencing by name of section
+
+(/usr/share/texlive/texmf-dist/tex/latex/refcount/refcount.sty
+Package: refcount 2019/12/15 v3.6 Data extraction from label references (HO)
+)
+(/usr/share/texlive/texmf-dist/tex/generic/gettitlestring/gettitlestring.sty
+Package: gettitlestring 2019/12/15 v1.6 Cleanup title references (HO)
+
+(/usr/share/texlive/texmf-dist/tex/latex/kvoptions/kvoptions.sty
+Package: kvoptions 2022-06-15 v3.15 Key value format for package options (HO)
+))
+\c@section@level=\count285
+)
+(/usr/share/texlive/texmf-dist/tex/latex/etoolbox/etoolbox.sty
+Package: etoolbox 2025/02/11 v2.5l e-TeX tools for LaTeX (JAW)
+\etb@tempcnta=\count286
+)
+(/usr/share/texlive/texmf-dist/tex/generic/stringenc/stringenc.sty
+Package: stringenc 2019/11/29 v1.12 Convert strings between diff. encodings (HO
+)
+)
+\@linkdim=\dimen159
+\Hy@linkcounter=\count287
+\Hy@pagecounter=\count288
+
+(/usr/share/texlive/texmf-dist/tex/latex/hyperref/pd1enc.def
+File: pd1enc.def 2024-11-05 v7.01l Hyperref: PDFDocEncoding definition (HO)
+Now handling font encoding PD1 ...
+... no UTF-8 mapping file for font encoding PD1
+)
+(/usr/share/texlive/texmf-dist/tex/generic/intcalc/intcalc.sty
+Package: intcalc 2019/12/15 v1.3 Expandable calculations with integers (HO)
+)
+\Hy@SavedSpaceFactor=\count289
+
+(/usr/share/texlive/texmf-dist/tex/latex/hyperref/puenc.def
+File: puenc.def 2024-11-05 v7.01l Hyperref: PDF Unicode definition (HO)
+Now handling font encoding PU ...
+... no UTF-8 mapping file for font encoding PU
+)
+Package hyperref Info: Option `colorlinks' set `true' on input line 4040.
+Package hyperref Info: Hyper figures OFF on input line 4157.
+Package hyperref Info: Link nesting OFF on input line 4162.
+Package hyperref Info: Hyper index ON on input line 4165.
+Package hyperref Info: Plain pages OFF on input line 4172.
+Package hyperref Info: Backreferencing OFF on input line 4177.
+Package hyperref Info: Implicit mode ON; LaTeX internals redefined.
+Package hyperref Info: Bookmarks ON on input line 4424.
+\c@Hy@tempcnt=\count290
+
+(/usr/share/texlive/texmf-dist/tex/latex/url/url.sty
+\Urlmuskip=\muskip18
+Package: url 2013/09/16  ver 3.4  Verb mode for urls, etc.
+)
+LaTeX Info: Redefining \url on input line 4763.
+\XeTeXLinkMargin=\dimen160
+
+(/usr/share/texlive/texmf-dist/tex/generic/bitset/bitset.sty
+Package: bitset 2019/12/09 v1.3 Handle bit-vector datatype (HO)
+
+(/usr/share/texlive/texmf-dist/tex/generic/bigintcalc/bigintcalc.sty
+Package: bigintcalc 2019/12/15 v1.5 Expandable calculations on big integers (HO
+)
+))
+\Fld@menulength=\count291
+\Field@Width=\dimen161
+\Fld@charsize=\dimen162
+Package hyperref Info: Hyper figures OFF on input line 6042.
+Package hyperref Info: Link nesting OFF on input line 6047.
+Package hyperref Info: Hyper index ON on input line 6050.
+Package hyperref Info: backreferencing OFF on input line 6057.
+Package hyperref Info: Link coloring ON on input line 6060.
+Package hyperref Info: Link coloring with OCG OFF on input line 6067.
+Package hyperref Info: PDF/A mode OFF on input line 6072.
+
+(/usr/share/texlive/texmf-dist/tex/latex/base/atbegshi-ltx.sty
+Package: atbegshi-ltx 2021/01/10 v1.0c Emulation of the original atbegshi
+package with kernel methods
+)
+\Hy@abspage=\count292
+\c@Item=\count293
+\c@Hfootnote=\count294
+)
+Package hyperref Info: Driver (autodetected): hpdftex.
+
+(/usr/share/texlive/texmf-dist/tex/latex/hyperref/hpdftex.def
+File: hpdftex.def 2024-11-05 v7.01l Hyperref driver for pdfTeX
+
+(/usr/share/texlive/texmf-dist/tex/latex/base/atveryend-ltx.sty
+Package: atveryend-ltx 2020/08/19 v1.0a Emulation of the original atveryend pac
+kage
+with kernel methods
+)
+\Fld@listcount=\count295
+\c@bookmark@seq@number=\count296
+
+(/usr/share/texlive/texmf-dist/tex/latex/rerunfilecheck/rerunfilecheck.sty
+Package: rerunfilecheck 2022-07-10 v1.10 Rerun checks for auxiliary files (HO)
+
+(/usr/share/texlive/texmf-dist/tex/generic/uniquecounter/uniquecounter.sty
+Package: uniquecounter 2019/12/15 v1.4 Provide unlimited unique counter (HO)
+)
+Package uniquecounter Info: New unique counter `rerunfilecheck' on input line 2
+85.
+)
+\Hy@SectionHShift=\skip54
+)
+(/usr/share/texlive/texmf-dist/tex/latex/listings/listings.sty
+\lst@mode=\count297
+\lst@gtempboxa=\box54
+\lst@token=\toks24
+\lst@length=\count298
+\lst@currlwidth=\dimen163
+\lst@column=\count299
+\lst@pos=\count300
+\lst@lostspace=\dimen164
+\lst@width=\dimen165
+\lst@newlines=\count301
+\lst@lineno=\count302
+\lst@maxwidth=\dimen166
+
+(/usr/share/texlive/texmf-dist/tex/latex/listings/lstpatch.sty
+File: lstpatch.sty 2024/09/23 1.10c (Carsten Heinz)
+)
+(/usr/share/texlive/texmf-dist/tex/latex/listings/lstmisc.sty
+File: lstmisc.sty 2024/09/23 1.10c (Carsten Heinz)
+\c@lstnumber=\count303
+\lst@skipnumbers=\count304
+\lst@framebox=\box55
+)
+(/usr/share/texlive/texmf-dist/tex/latex/listings/listings.cfg
+File: listings.cfg 2024/09/23 1.10c listings configuration
+))
+Package: listings 2024/09/23 1.10c (Carsten Heinz)
+
+(/usr/share/texlive/texmf-dist/tex/latex/booktabs/booktabs.sty
+Package: booktabs 2020/01/12 v1.61803398 Publication quality tables
+\heavyrulewidth=\dimen167
+\lightrulewidth=\dimen168
+\cmidrulewidth=\dimen169
+\belowrulesep=\dimen170
+\belowbottomsep=\dimen171
+\aboverulesep=\dimen172
+\abovetopsep=\dimen173
+\cmidrulesep=\dimen174
+\cmidrulekern=\dimen175
+\defaultaddspace=\dimen176
+\@cmidla=\count305
+\@cmidlb=\count306
+\@aboverulesep=\dimen177
+\@belowrulesep=\dimen178
+\@thisruleclass=\count307
+\@lastruleclass=\count308
+\@thisrulewidth=\dimen179
+)
+(/usr/share/texlive/texmf-dist/tex/latex/enumitem/enumitem.sty
+Package: enumitem 2025/02/06 v3.11 Customized lists
+\labelindent=\skip55
+\enit@outerparindent=\dimen180
+\enit@toks=\toks25
+\enit@inbox=\box56
+\enit@count@id=\count309
+\enitdp@description=\count310
+)
+(/usr/share/texlive/texmf-dist/tex/latex/tools/longtable.sty
+Package: longtable 2024-10-27 v4.22 Multi-page Table package (DPC)
+\LTleft=\skip56
+\LTright=\skip57
+\LTpre=\skip58
+\LTpost=\skip59
+\LTchunksize=\count311
+\LTcapwidth=\dimen181
+\LT@head=\box57
+\LT@firsthead=\box58
+\LT@foot=\box59
+\LT@lastfoot=\box60
+\LT@gbox=\box61
+\LT@cols=\count312
+\LT@rows=\count313
+\c@LT@tables=\count314
+\c@LT@chunks=\count315
+\LT@p@ftn=\toks26
+)
+(/usr/share/texlive/texmf-dist/tex/latex/listings/lstlang1.sty
+File: lstlang1.sty 2024/09/23 1.10c listings language file
+)
+(/usr/share/texlive/texmf-dist/tex/latex/l3backend/l3backend-pdftex.def
+File: l3backend-pdftex.def 2024-05-08 L3 backend support: PDF output (pdfTeX)
+\l__color_backend_stack_int=\count316
+\l__pdf_internal_box=\box62
+)
+(./julia_fsa_v15_writeup.aux)
+\openout1 = `julia_fsa_v15_writeup.aux'.
+
+LaTeX Font Info:    Checking defaults for OML/cmm/m/it on input line 29.
+LaTeX Font Info:    ... okay on input line 29.
+LaTeX Font Info:    Checking defaults for OMS/cmsy/m/n on input line 29.
+LaTeX Font Info:    ... okay on input line 29.
+LaTeX Font Info:    Checking defaults for OT1/cmr/m/n on input line 29.
+LaTeX Font Info:    ... okay on input line 29.
+LaTeX Font Info:    Checking defaults for T1/cmr/m/n on input line 29.
+LaTeX Font Info:    ... okay on input line 29.
+LaTeX Font Info:    Checking defaults for TS1/cmr/m/n on input line 29.
+LaTeX Font Info:    ... okay on input line 29.
+LaTeX Font Info:    Checking defaults for OMX/cmex/m/n on input line 29.
+LaTeX Font Info:    ... okay on input line 29.
+LaTeX Font Info:    Checking defaults for U/cmr/m/n on input line 29.
+LaTeX Font Info:    ... okay on input line 29.
+LaTeX Font Info:    Checking defaults for PD1/pdf/m/n on input line 29.
+LaTeX Font Info:    ... okay on input line 29.
+LaTeX Font Info:    Checking defaults for PU/pdf/m/n on input line 29.
+LaTeX Font Info:    ... okay on input line 29.
+
+*geometry* driver: auto-detecting
+*geometry* detected driver: pdftex
+*geometry* verbose mode - [ preamble ] result:
+* driver: pdftex
+* paper: a4paper
+* layout: <same size as paper>
+* layoutoffset:(h,v)=(0.0pt,0.0pt)
+* modes: 
+* h-part:(L,W,R)=(71.13188pt, 455.24411pt, 71.13188pt)
+* v-part:(T,H,B)=(71.13188pt, 702.78308pt, 71.13188pt)
+* \paperwidth=597.50787pt
+* \paperheight=845.04684pt
+* \textwidth=455.24411pt
+* \textheight=702.78308pt
+* \oddsidemargin=-1.1381pt
+* \evensidemargin=-1.1381pt
+* \topmargin=-38.1381pt
+* \headheight=12.0pt
+* \headsep=25.0pt
+* \topskip=11.0pt
+* \footskip=30.0pt
+* \marginparwidth=50.0pt
+* \marginparsep=10.0pt
+* \columnsep=10.0pt
+* \skip\footins=10.0pt plus 4.0pt minus 2.0pt
+* \hoffset=0.0pt
+* \voffset=0.0pt
+* \mag=1000
+* \@twocolumnfalse
+* \@twosidefalse
+* \@mparswitchfalse
+* \@reversemarginfalse
+* (1in=72.27pt=25.4mm, 1cm=28.453pt)
+
+(/usr/share/texlive/texmf-dist/tex/context/base/mkii/supp-pdf.mkii
+[Loading MPS to PDF converter (version 2006.09.02).]
+\scratchcounter=\count317
+\scratchdimen=\dimen182
+\scratchbox=\box63
+\nofMPsegments=\count318
+\nofMParguments=\count319
+\everyMPshowfont=\toks27
+\MPscratchCnt=\count320
+\MPscratchDim=\dimen183
+\MPnumerator=\count321
+\makeMPintoPDFobject=\count322
+\everyMPtoPDFconversion=\toks28
+)
+Package hyperref Info: Link coloring ON on input line 29.
+ (./julia_fsa_v15_writeup.out) (./julia_fsa_v15_writeup.out)
+\@outlinefile=\write3
+\openout3 = `julia_fsa_v15_writeup.out'.
+
+\c@lstlisting=\count323
+LaTeX Font Info:    Trying to load font information for U+msa on input line 31.
+
+
+(/usr/share/texlive/texmf-dist/tex/latex/amsfonts/umsa.fd
+File: umsa.fd 2013/01/14 v3.01 AMS symbols A
+)
+LaTeX Font Info:    Trying to load font information for U+msb on input line 31.
+
+
+(/usr/share/texlive/texmf-dist/tex/latex/amsfonts/umsb.fd
+File: umsb.fd 2013/01/14 v3.01 AMS symbols B
+)
+(./julia_fsa_v15_writeup.toc
+LaTeX Font Info:    Font shape `OT1/cmtt/bx/n' in size <10.95> not available
+(Font)              Font shape `OT1/cmtt/m/n' tried instead on input line 36.
+
+
+[1
+
+{/var/lib/texmf/fonts/map/pdftex/updmap/pdftex.map}])
+\tf@toc=\write4
+\openout4 = `julia_fsa_v15_writeup.toc'.
+
+
+Overfull \hbox (3.2389pt too wide) in paragraph at lines 57--60
+[]\OT1/cmr/bx/n/10.95 v1 \OT1/cmr/m/n/10.95 ($\OT1/cmtt/m/n/10.95 version _ 1 _
+ Julia / models / fsa _ high _ res/$\OT1/cmr/m/n/10.95 ) --- G0 dy-nam-ics (no 
+reparametri-sa-tion), GPU
+ []
+
+
+Overfull \hbox (2.12865pt too wide) in paragraph at lines 60--66
+[]\OT1/cmr/bx/n/10.95 v2 \OT1/cmr/m/n/10.95 ($\OT1/cmtt/m/n/10.95 version _ 2 _
+ Julia / models / fsa _ high _ res/$\OT1/cmr/m/n/10.95 ) --- G1 reparametrised 
+dy-nam-ics, four-channel
+ []
+
+
+Overfull \hbox (44.46736pt too wide) in paragraph at lines 75--84
+\OT1/cmr/m/n/10.95 strength-ened con-troller (\OT1/cmtt/m/n/10.95 ctrl-n-smc=25
+6, ctrl-n-inner=64, ctrl-num-mcmc=8, ctrl-hmc-leap=16\OT1/cmr/m/n/10.95 )
+ []
+
+
+Overfull \hbox (32.31761pt too wide) in paragraph at lines 86--95
+ []\OT1/cmr/bx/n/10.95 Why purely func-tional.[] \OT1/cmr/m/n/10.95 v1 and v2 a
+re im-per-a-tive Python ports: \OT1/cmtt/m/n/10.95 mutable struct StepwisePlant
+\OT1/cmr/m/n/10.95 ,
+ []
+
+
+Overfull \hbox (48.13449pt too wide) in paragraph at lines 86--95
+\OT1/cmtt/m/n/10.95 !\OT1/cmr/m/n/10.95 -suffix in-place mu-ta-tors, his-tory d
+icts \OT1/cmtt/m/n/10.95 push!\OT1/cmr/m/n/10.95 -ed onto, RNG state threaded a
+s a state-ful \OT1/cmtt/m/n/10.95 MersenneTwister\OT1/cmr/m/n/10.95 .
+ []
+
+
+
+[2{/usr/share/texmf/fonts/enc/dvips/cm-super/cm-super-ts1.enc}]
+LaTeX Font Info:    Trying to load font information for OMS+cmtt on input line 
+141.
+LaTeX Font Info:    No file OMScmtt.fd. on input line 141.
+
+
+LaTeX Font Warning: Font shape `OMS/cmtt/m/n' undefined
+(Font)              using `OMS/cmsy/m/n' instead
+(Font)              for symbol `textbraceleft' on input line 141.
+
+
+Overfull \hbox (21.00336pt too wide) in paragraph at lines 148--155
+[]\OT1/cmr/bx/n/10.95 No \OT1/cmtt/m/n/10.95 !\OT1/cmr/bx/n/10.95 -suffix mu-ta
+t-ing meth-ods. \OT1/cmr/m/n/10.95 Ev-ery pub-lic func-tion re-turns new val-ue
+s. \OT1/cmtt/m/n/10.95 plant[]step(state,
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 189--189
+[]\OT1/cmtt/m/n/10.95 parallel[]hmc[]one[]move!(U, target,
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 189--190
+[]\OT1/cmtt/m/n/10.95 parallel[]hmc[]one[]move(U, target, ...,
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 190--190
+[]\OT1/cmtt/m/n/10.95 MersenneTwister(seed) ;
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 191--191
+[]\OT1/cmtt/m/n/10.95 for s in 1:n; advance!(plant,
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 191--192
+[]\OT1/cmtt/m/n/10.95 foldl((acc, s)$\OMS/cmtt/m/n/10.95 !$\OT1/cmtt/m/n/10.95 
+step(acc, s), 1:n;
+ []
+
+
+Overfull \hbox (206.49849pt too wide) in paragraph at lines 180--194
+ []\OT1/cmr/bx/n/10.95 Imperative $\OMS/cmtt/m/n/10.95 !$ \OT1/cmr/bx/n/10.95 f
+unc-tional name ta-ble.[] [] 
+ []
+
+
+
+[3]
+LaTeX Font Info:    Font shape `OT1/cmtt/bx/n' in size <12> not available
+(Font)              Font shape `OT1/cmtt/m/n' tried instead on input line 202.
+
+Overfull \hbox (33.96564pt too wide) in paragraph at lines 212--216
+\OT1/cmtt/m/n/10.95 kappa[]B, kappa[]F, epsilon[]A, lambda[]A, mu[]0, mu[]B, mu
+[]F, mu[]FF, eta, sigma[]B, sigma[]F,
+ []
+
+
+Overfull \hbox (15.23773pt too wide) in paragraph at lines 227--230
+[]\OT1/cmtt/m/n/10.95 diffusion[]state[]dep(y, params) \OT1/cmr/m/n/10.95 --- p
+ure. Di-ag-o-nal state-dependent dif-fu-sion: $\OML/cmm/m/it/10.95 ^^[[] []$\OT
+1/cmr/m/n/10.95 ,
+ []
+
+
+Overfull \hbox (10.8142pt too wide) in paragraph at lines 232--237
+[]\OT1/cmtt/m/n/10.95 em[]step[]substepped(y, params, noise, $\OT1/cmr/m/n/10.9
+5 ^^H[]$\OT1/cmtt/m/n/10.95 , dt; n[]substeps=4) \OT1/cmr/m/n/10.95 --- pure su
+b-stepped Euler--
+ []
+
+
+
+[4]
+Overfull \hbox (78.9167pt too wide) in paragraph at lines 253--257
+[]\OT1/cmtt/m/n/10.95 BINS[]PER[]DAY = (60 $\OMS/cmtt/m/n/10.95 ^^A$ \OT1/cmtt/
+m/n/10.95 24) $\OMS/cmtt/m/n/10.95 ^^D$ []\OT1/cmtt/m/n/10.95 STEP[]MIN\OT1/cmr
+/m/n/10.95 , where []\OT1/cmtt/m/n/10.95 STEP[]MIN = parse(Int, get(ENV, "FSA[]
+STEP[]MINUTES",
+ []
+
+
+Overfull \hbox (45.74799pt too wide) in paragraph at lines 283--286
+[]\OT1/cmtt/m/n/10.95 sample[]obs[]bfa(state::SVector\OMS/cmtt/m/n/10.95 f\OT1/
+cmtt/m/n/10.95 3, Float64\OMS/cmtt/m/n/10.95 g\OT1/cmtt/m/n/10.95 , params::Dic
+t\OMS/cmtt/m/n/10.95 f\OT1/cmtt/m/n/10.95 Symbol, Float64\OMS/cmtt/m/n/10.95 g\
+OT1/cmtt/m/n/10.95 , key::UInt64)
+ []
+
+
+Overfull \hbox (14.18912pt too wide) in paragraph at lines 283--286
+\OT1/cmtt/m/n/10.95 NamedTuple\OMS/cmtt/m/n/10.95 f\OT1/cmtt/m/n/10.95 (:obs[]B
+, :obs[]F, :obs[]A), Tuple\OMS/cmtt/m/n/10.95 f\OT1/cmtt/m/n/10.95 Float64, Flo
+at64, Float64\OMS/cmtt/m/n/10.95 gg\OT1/cmr/m/n/10.95 . Pure. Sam-
+ []
+
+
+
+[5]
+Overfull \hbox (54.17622pt too wide) in paragraph at lines 341--348
+[]\OT1/cmtt/m/n/10.95 plant[]rollout(s0, $\OT1/cmr/m/n/10.95 ^^H$[]\OT1/cmtt/m/
+n/10.95 subdaily, params, dt, key0) -> NamedTuple \OT1/cmr/m/n/10.95 --- ap-ply
+ \OT1/cmtt/m/n/10.95 length($\OT1/cmr/m/n/10.95 ^^H$[]\OT1/cmtt/m/n/10.95 subda
+ily)
+ []
+
+
+Overfull \hbox (8.17271pt too wide) in paragraph at lines 341--348
+\OT1/cmr/m/n/10.95 con-sec-u-tive \OT1/cmtt/m/n/10.95 plant[]step\OT1/cmr/m/n/1
+0.95 s from $\OML/cmm/m/it/10.95 s[]$\OT1/cmr/m/n/10.95 . Re-turns \OT1/cmtt/m/
+n/10.95 (final[]state, trajectory::Matrix\OMS/cmtt/m/n/10.95 f\OT1/cmtt/m/n/10.
+95 Float64\OMS/cmtt/m/n/10.95 g\OT1/cmtt/m/n/10.95 (n,
+ []
+
+
+Overfull \hbox (7.86496pt too wide) in paragraph at lines 371--374
+[]\OT1/cmtt/m/n/10.95 gpu[]cost[]log[]density[]batched(target, theta[]unc) -> V
+ector\OMS/cmtt/m/n/10.95 f\OT1/cmtt/m/n/10.95 Float64\OMS/cmtt/m/n/10.95 g \OT1
+/cmr/m/n/10.95 --- per-chain $\OMS/cmtt/m/n/10.95 ^^@\OML/cmm/m/it/10.95 J$\OT1
+/cmr/m/n/10.95 .
+ []
+
+
+Overfull \hbox (28.8181pt too wide) in paragraph at lines 371--374
+\OT1/cmr/m/n/10.95 The bench wraps this in \OT1/cmtt/m/n/10.95 make[]log[]densi
+ty[]fn(target) \OT1/cmr/m/n/10.95 for the frame-work's \OT1/cmtt/m/n/10.95 run[
+]tempered[]smc[]gpu\OT1/cmr/m/n/10.95 . 
+ []
+
+
+Overfull \hbox (2.5576pt too wide) in paragraph at lines 398--402
+[]\OT1/cmtt/m/n/10.95 PARAM[]PRIOR[]CONFIG :: Vector\OMS/cmtt/m/n/10.95 f\OT1/c
+mtt/m/n/10.95 (Symbol, Symbol, Float64, Float64)\OMS/cmtt/m/n/10.95 g \OT1/cmr/
+m/n/10.95 --- one tu-ple per
+ []
+
+
+Overfull \hbox (10.59288pt too wide) in paragraph at lines 408--414
+[]\OT1/cmtt/m/n/10.95 propagate(particles::Matrix\OMS/cmtt/m/n/10.95 f\OT1/cmtt
+/m/n/10.95 Float64\OMS/cmtt/m/n/10.95 g\OT1/cmtt/m/n/10.95 , $\OT1/cmr/m/n/10.9
+5 ^^H[]$\OT1/cmtt/m/n/10.95 , params, dt, key) -> Matrix\OMS/cmtt/m/n/10.95 f\O
+T1/cmtt/m/n/10.95 Float64\OMS/cmtt/m/n/10.95 g \OT1/cmr/m/n/10.95 ---
+ []
+
+
+
+[6]
+Overfull \hbox (14.50095pt too wide) in paragraph at lines 416--418
+[]\OT1/cmtt/m/n/10.95 obs[]log[]weight(particles, obs::NamedTuple, params) -> V
+ector\OMS/cmtt/m/n/10.95 f\OT1/cmtt/m/n/10.95 Float64\OMS/cmtt/m/n/10.95 g \OT1
+/cmr/m/n/10.95 --- pure. Sum
+ []
+
+
+Overfull \hbox (0.38304pt too wide) in paragraph at lines 460--463
+[]\OT1/cmtt/m/n/10.95 FSAGPUTarget(; K[]per[]chain, M[]max, T[]steps, R=4, dt, 
+...) \OT1/cmr/m/n/10.95 --- con-struc-tor. Al-lo-cates
+ []
+
+
+Overfull \hbox (60.32214pt too wide) in paragraph at lines 465--471
+[]\OT1/cmtt/m/n/10.95 gpu[]log[]density(target, U[]unc::Matrix\OMS/cmtt/m/n/10.
+95 f\OT1/cmtt/m/n/10.95 Float64\OMS/cmtt/m/n/10.95 g\OT1/cmtt/m/n/10.95 (M, 10)
+, grid[]obs::NamedTuple, key::UInt64)
+ []
+
+
+Overfull \hbox (21.19865pt too wide) in paragraph at lines 465--471
+\OT1/cmtt/m/n/10.95 u $\OMS/cmtt/m/n/10.95 !$ []\OT1/cmtt/m/n/10.95 to[]v15[]co
+nstrained[]nt $\OMS/cmtt/m/n/10.95 !$ \OT1/cmtt/m/n/10.95 fill[]pinned[]nt $\OM
+S/cmtt/m/n/10.95 !$ \OT1/cmtt/m/n/10.95 params[]v15[]to[]v1[]nt $\OMS/cmtt/m/n/
+10.95 !$ []\OT1/cmtt/m/n/10.95 pack[]v1[]row!
+ []
+
+
+Overfull \hbox (5.35864pt too wide) in paragraph at lines 473--476
+[]\OT1/cmtt/m/n/10.95 gpu[]grads(target, U[]unc, grid[]obs, h, key) -> (vals, g
+rads) \OT1/cmr/m/n/10.95 --- central-difference FD
+ []
+
+
+Overfull \hbox (5.26953pt too wide) in paragraph at lines 478--482
+[]\OT1/cmtt/m/n/10.95 parallel[]hmc[]one[]move(U, target, grid[]obs, $\OML/cmm/
+m/it/10.95 "$\OT1/cmtt/m/n/10.95 , L, prior[]means, prior[]sigmas, key)
+ []
+
+
+
+[7]
+Overfull \hbox (5.36554pt too wide) in paragraph at lines 487--490
+[][]\OT1/cmtt/m/n/10.95 to[]v15[]constrained[]nt(u) \OT1/cmr/m/n/10.95 --- 10-e
+lement \OT1/cmtt/m/n/10.95 u[]unc $\OMS/cmtt/m/n/10.95 !$ \OT1/cmr/m/n/10.95 Na
+med-Tu-ple of 10 LogNormal-constrained
+ []
+
+
+
+[8]
+
+[9]
+Overfull \hbox (39.14304pt too wide) in paragraph at lines 663--663
+[]              \OT1/cmtt/m/n/10.95 raw = c_Phi + Sum_a theta_a * exp(-0.5 * ((
+t_k - anchor_a)/sigma_rbf)^2)[] 
+ []
+
+
+
+[10]
+LaTeX Font Info:    Font shape `OT1/cmtt/bx/n' in size <14.4> not available
+(Font)              Font shape `OT1/cmtt/m/n' tried instead on input line 665.
+
+Underfull \hbox (badness 5862) in paragraph at lines 682--685
+\OT1/cmtt/m/n/10.95 = 1440 / step-minutes\OT1/cmr/m/n/10.95 . Must be set BE-
+ []
+
+
+Underfull \hbox (badness 2932) in paragraph at lines 682--685
+\OT1/cmr/m/n/10.95 FORE the model im-ports (the bench ex-ports
+ []
+
+
+Underfull \hbox (badness 1789) in paragraph at lines 689--690
+[]|\OT1/cmr/m/n/10.95 Filter outer-SMC$[]$ par-ti-cles (num-ber of $\OML/cmm/m/
+it/10.95 ^^R$\OT1/cmr/m/n/10.95 -cloud
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 712--716
+[]|\OT1/cmr/m/n/10.95 "true" $\OMS/cmtt/m/n/10.95 )$ \OT1/cmr/m/n/10.95 one ini
+-tial con-troller plan from
+ []
+
+
+Overfull \hbox (3.62689pt too wide) in alignment at lines 674--717
+ [] [] [] [] 
+ []
+
+
+Underfull \hbox (badness 5847) in paragraph at lines 743--744
+[]|\OT1/cmr/m/n/10.95 Target nat bud-get for con-troller $\OML/cmm/m/it/10.95 ^
+^L[]$ \OT1/cmr/m/n/10.95 auto-
+ []
+
+
+Overfull \hbox (5.54308pt too wide) in alignment at lines 722--747
+ [] [] [] [] 
+ []
+
+[11]
+
+[12]
+
+[13]
+Overfull \hbox (49.74069pt too wide) in paragraph at lines 929--935
+[]\OT1/cmr/bx/n/10.95 Out of scope for this round. \OT1/cmr/m/n/10.95 The GPU k
+er-nels (\OT1/cmtt/m/n/10.95 propagate[]segment[]kernel!\OT1/cmr/m/n/10.95 , \O
+T1/cmtt/m/n/10.95 fsa[]v1[]cost[]kernel!\OT1/cmr/m/n/10.95 )
+ []
+
+
+
+[14] (./julia_fsa_v15_writeup.aux)
+ ***********
+LaTeX2e <2024-11-01> patch level 2
+L3 programming layer <2025-01-18>
+ ***********
+
+
+LaTeX Font Warning: Some font shapes were not available, defaults substituted.
+
+Package rerunfilecheck Info: File `julia_fsa_v15_writeup.out' has not changed.
+(rerunfilecheck)             Checksum: 25AA4663A62E40BD71776193CE2358F4;4974.
+ ) 
+Here is how much of TeX's memory you used:
+ 13021 strings out of 473197
+ 192496 string characters out of 5718606
+ 1171207 words of memory out of 5000000
+ 35922 multiletter control sequences out of 15000+600000
+ 578372 words of font info for 109 fonts, out of 8000000 for 9000
+ 1141 hyphenation exceptions out of 8191
+ 75i,10n,79p,392b,1977s stack positions out of 10000i,1000n,20000p,200000b,200000s
+</usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmbx10.pfb></us
+r/share/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmbx12.pfb></usr/shar
+e/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmex10.pfb></usr/share/texl
+ive/texmf-dist/fonts/type1/public/amsfonts/cm/cmmi10.pfb></usr/share/texlive/te
+xmf-dist/fonts/type1/public/amsfonts/cm/cmmi8.pfb></usr/share/texlive/texmf-dis
+t/fonts/type1/public/amsfonts/cm/cmr10.pfb></usr/share/texlive/texmf-dist/fonts
+/type1/public/amsfonts/cm/cmr12.pfb></usr/share/texlive/texmf-dist/fonts/type1/
+public/amsfonts/cm/cmr17.pfb></usr/share/texlive/texmf-dist/fonts/type1/public/
+amsfonts/cm/cmr6.pfb></usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts
+/cm/cmr7.pfb></usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmr8
+.pfb></usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmsy10.pfb><
+/usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmsy8.pfb></usr/sh
+are/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmti10.pfb></usr/share/te
+xlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmtt10.pfb></usr/share/texlive/
+texmf-dist/fonts/type1/public/amsfonts/cm/cmtt12.pfb></usr/share/texlive/texmf-
+dist/fonts/type1/public/amsfonts/cm/cmtt9.pfb></usr/share/texmf/fonts/type1/pub
+lic/cm-super/sfrm1095.pfb></usr/share/texmf/fonts/type1/public/cm-super/sftt109
+5.pfb>
+Output written on julia_fsa_v15_writeup.pdf (14 pages, 297193 bytes).
+PDF statistics:
+ 482 PDF objects out of 1000 (max. 8388607)
+ 423 compressed objects within 5 object streams
+ 195 named destinations out of 1000 (max. 500000)
+ 185 words of extra memory for PDF output out of 10000 (max. 10000000)
+

@@ -1,0 +1,75 @@
+[ Info: loading v5 model + framework (FSA_STEP_MINUTES=15)...
+[ Info: config: T=4d step=15min BINS_PER_DAY=96 WINDOW=96 STRIDE=48 n_strides=7  open_loop=false
+[ Info: GPU device: NVIDIA GeForce RTX 5090
+[ Info: filter target: N_SMC=32 K_per_chain=200 d=37 M_max=2400
+[ Info: filter target: OT rescue DISABLED (fast path)
+[ Info: controller cfg: n_smc=256 n_inner=64 per-channel n_anchors=8 θ_dim=16 chees=[16, 32, 64, 128, 256]
+[ Info: [stride  1/ 7] 0.0s  warming up (hist=48/96) Φ̄_B=1.000 Φ̄_S=1.000 x̂=(B=0.058, S=0.104, F=0.313, A=0.091)
+[ Info:   [stride  1 phase walls (s)] slice=0.0000 plant=0.0001 acc=0.0000 grid=0.0000 filter=0.000 xhat=0.0000 replan=0.000 postlog=0.0000 total=0.202
+[ Info:     [ 1] λ 0.000 → 0.001 (Δλ=0.001) L=64 accept=99%
+[ Info:     [ 2] λ 0.001 → 0.003 (Δλ=0.003) L=64 accept=98%
+[ Info:     [ 3] λ 0.003 → 0.014 (Δλ=0.010) L=64 accept=99%
+[ Info:     [ 4] λ 0.014 → 0.040 (Δλ=0.026) L=64 accept=100%
+[ Info:     [ 5] λ 0.040 → 0.100 (Δλ=0.060) L=64 accept=99%
+[ Info:     [ 6] λ 0.100 → 0.207 (Δλ=0.107) L=64 accept=100%
+[ Info:     [ 7] λ 0.207 → 0.395 (Δλ=0.188) L=64 accept=91%
+[ Info:     [ 8] λ 0.395 → 0.595 (Δλ=0.200) L=64 accept=91%
+[ Info:     [ 9] λ 0.595 → 0.795 (Δλ=0.200) L=64 accept=95%
+[ Info:     [10] λ 0.795 → 0.995 (Δλ=0.200) L=64 accept=91%
+[ Info:     [11] λ 0.995 → 1.000 (Δλ=0.005) L=32 accept=91%
+[ Info: [stride  2/ 7] 51.2s  11 filter levels  Φ̄_B=1.000 Φ̄_S=1.000 x̂=(B=0.061, S=0.106, F=0.334, A=0.090)
+[ Info:   [replan @ stride  2] 8.0s  Φ̄_B_plan=0.688 Φ̄_S_plan=0.429  ctrl_n_temp=5
+[ Info:     [replan call-split] n_calls=3196  in=0.344s (4.3%)  kern+sync=1.260s (15.8%)  out+sum=5.374s (67.2%)  other=1.014s (12.7%)
+[ Info:   [stride  2 phase walls (s)] slice=0.0000 plant=0.0001 acc=0.0000 grid=0.0000 filter=50.858 xhat=0.2995 replan=7.992 postlog=0.1376 total=59.951
+[ Info:     [ 1] λ 0.000 → 0.200 (Δλ=0.200) L=64 accept=98%
+[ Info:     [ 2] λ 0.200 → 0.367 (Δλ=0.167) L=64 accept=95%
+[ Info:     [ 3] λ 0.367 → 0.567 (Δλ=0.200) L=64 accept=97%
+[ Info:     [ 4] λ 0.567 → 0.767 (Δλ=0.200) L=64 accept=92%
+[ Info:     [ 5] λ 0.767 → 0.967 (Δλ=0.200) L=64 accept=91%
+[ Info:     [ 6] λ 0.967 → 1.000 (Δλ=0.033) L=64 accept=95%
+[ Info: [stride  3/ 7] 24.7s  6 filter levels  Φ̄_B=0.826 Φ̄_S=0.376 x̂=(B=0.069, S=0.108, F=0.337, A=0.084)
+[ Info:   [stride  3 phase walls (s)] slice=0.0000 plant=0.0000 acc=0.0000 grid=0.0000 filter=24.726 xhat=0.0001 replan=0.000 postlog=0.0000 total=24.727
+[ Info:     [ 1] λ 0.000 → 0.200 (Δλ=0.200) L=64 accept=98%
+[ Info:     [ 2] λ 0.200 → 0.400 (Δλ=0.200) L=64 accept=95%
+[ Info:     [ 3] λ 0.400 → 0.600 (Δλ=0.200) L=64 accept=95%
+[ Info:     [ 4] λ 0.600 → 0.800 (Δλ=0.200) L=64 accept=92%
+[ Info:     [ 5] λ 0.800 → 1.000 (Δλ=0.200) L=64 accept=95%
+[ Info: [stride  4/ 7] 20.1s  5 filter levels  Φ̄_B=0.683 Φ̄_S=0.305 x̂=(B=0.069, S=0.110, F=0.324, A=0.073)
+[ Info:   [replan @ stride  4] 6.9s  Φ̄_B_plan=0.644 Φ̄_S_plan=0.452  ctrl_n_temp=5
+[ Info:     [replan call-split] n_calls=3196  in=0.325s (4.7%)  kern+sync=0.338s (4.9%)  out+sum=5.220s (75.5%)  other=1.031s (14.9%)
+[ Info:   [stride  4 phase walls (s)] slice=0.0000 plant=0.0000 acc=0.0000 grid=0.0000 filter=20.110 xhat=0.0001 replan=6.914 postlog=0.0000 total=27.025
+[ Info:     [ 1] λ 0.000 → 0.200 (Δλ=0.200) L=64 accept=99%
+[ Info:     [ 2] λ 0.200 → 0.400 (Δλ=0.200) L=64 accept=99%
+[ Info:     [ 3] λ 0.400 → 0.600 (Δλ=0.200) L=64 accept=92%
+[ Info:     [ 4] λ 0.600 → 0.800 (Δλ=0.200) L=64 accept=86%
+[ Info:     [ 5] λ 0.800 → 1.000 (Δλ=0.200) L=64 accept=85%
+[ Info: [stride  5/ 7] 20.4s  5 filter levels  Φ̄_B=0.704 Φ̄_S=0.433 x̂=(B=0.076, S=0.109, F=0.334, A=0.070)
+[ Info:   [stride  5 phase walls (s)] slice=0.0000 plant=0.0000 acc=0.0000 grid=0.0000 filter=20.445 xhat=0.0001 replan=0.000 postlog=0.0000 total=20.445
+[ Info:     [ 1] λ 0.000 → 0.200 (Δλ=0.200) L=64 accept=97%
+[ Info:     [ 2] λ 0.200 → 0.400 (Δλ=0.200) L=64 accept=98%
+[ Info:     [ 3] λ 0.400 → 0.600 (Δλ=0.200) L=64 accept=96%
+[ Info:     [ 4] λ 0.600 → 0.800 (Δλ=0.200) L=64 accept=95%
+[ Info:     [ 5] λ 0.800 → 1.000 (Δλ=0.200) L=64 accept=89%
+[ Info: [stride  6/ 7] 20.7s  5 filter levels  Φ̄_B=0.580 Φ̄_S=0.351 x̂=(B=0.078, S=0.111, F=0.321, A=0.063)
+[ Info:   [replan @ stride  6] 7.0s  Φ̄_B_plan=0.649 Φ̄_S_plan=0.432  ctrl_n_temp=5
+[ Info:     [replan call-split] n_calls=3196  in=0.369s (5.3%)  kern+sync=0.346s (4.9%)  out+sum=5.374s (76.8%)  other=0.912s (13.0%)
+[ Info:   [stride  6 phase walls (s)] slice=0.0000 plant=0.0000 acc=0.0000 grid=0.0000 filter=20.683 xhat=0.0001 replan=7.001 postlog=0.0000 total=27.684
+[ Info:     [ 1] λ 0.000 → 0.200 (Δλ=0.200) L=64 accept=97%
+[ Info:     [ 2] λ 0.200 → 0.400 (Δλ=0.200) L=64 accept=96%
+[ Info:     [ 3] λ 0.400 → 0.600 (Δλ=0.200) L=64 accept=95%
+[ Info:     [ 4] λ 0.600 → 0.800 (Δλ=0.200) L=64 accept=88%
+[ Info:     [ 5] λ 0.800 → 1.000 (Δλ=0.200) L=64 accept=91%
+[ Info: [stride  7/ 7] 21.3s  5 filter levels  Φ̄_B=0.707 Φ̄_S=0.469 x̂=(B=0.086, S=0.110, F=0.344, A=0.063)
+[ Info:   [stride  7 phase walls (s)] slice=0.0000 plant=0.0000 acc=0.0000 grid=0.0000 filter=21.337 xhat=0.0001 replan=0.000 postlog=0.0000 total=21.337
+[ Info: Total wall time: 186.4 s
+[ Info: wrote /home/ajay/Repos/python-smc2-filtering-control/compare_v15_julia_vs_python/example_run/julia_v5_T4d_2026-05-10/T4d_seed42/data.jld2
+[ Info: wrote /home/ajay/Repos/python-smc2-filtering-control/compare_v15_julia_vs_python/example_run/julia_v5_T4d_2026-05-10/T4d_seed42/per_stride.csv
+[ Info: wrote /home/ajay/Repos/python-smc2-filtering-control/compare_v15_julia_vs_python/example_run/julia_v5_T4d_2026-05-10/T4d_seed42/controller_diagnostics.csv
+[ Info: wrote manifest.json + experiment_run.md
+[ Info: plotting deferred for v5 (data.jld2 has all fields a future v5 plotter needs)
+Could not create decoration from factory! Running with no decorations.
+[ Info: wrote: /home/ajay/Repos/python-smc2-filtering-control/compare_v15_julia_vs_python/example_run/julia_v5_T4d_2026-05-10/T4d_seed42/v5_T4d_traces.png
+Could not create decoration from factory! Running with no decorations.
+[ Info: wrote: /home/ajay/Repos/python-smc2-filtering-control/compare_v15_julia_vs_python/example_run/julia_v5_T4d_2026-05-10/T4d_seed42/v5_T4d_param_traces.png
+Could not create decoration from factory! Running with no decorations.
+[ Info: wrote: /home/ajay/Repos/python-smc2-filtering-control/compare_v15_julia_vs_python/example_run/julia_v5_T4d_2026-05-10/T4d_seed42/v5_T4d_obs_channels.png

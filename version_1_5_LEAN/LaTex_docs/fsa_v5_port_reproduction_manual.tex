@@ -1,0 +1,1184 @@
+\documentclass[11pt,a4paper]{article}
+\input{preamble.tex}
+
+% Tighter imperative-list formatting; not in the shared preamble.
+\usepackage{enumitem}
+% Flow diagrams in §1; the shared preamble.tex is slim and doesn't
+% include tikz, so load it locally for this document.
+\usepackage{tikz}
+\usetikzlibrary{positioning, arrows.meta, shapes.geometric, fit}
+
+\title{FSA v5 port reproduction manual\\
+       \large Step-by-step recipe with per-phase verification gates\\
+       From the FSA v5 technical guide and Lean4 source\\
+       to a verified closed-loop SMC$^2$-MPC bench}
+\author{Ajay Talati \quad+\quad Claude}
+\date{2026-05-09}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This document is the operational companion to the
+\emph{LEAN4-First Charter}, the \emph{FSA v5 Technical Guide}, and
+the \emph{LaTeX $\to$ Lean4 $\to$ Julia pipeline} doc. Given two
+on-disk inputs --- the FSA v5 technical guide
+(\path{LaTex_docs/FSA_version_5_technical_guide.tex}) and the Lean4
+source files at \path{Fsa/V5/} --- this manual walks a fresh human
+or AI agent through the seven phases needed to produce a verified
+closed-loop SMC$^2$-MPC bench. Each phase is a small set of files,
+an imperative procedure, and a single-command verification gate.
+The final gate is an end-to-end T=7 day bench that should complete
+in $\sim 6$ minutes on RTX 5090 and produce
+\path{data.jld2}, three diagnostic PNGs, and a recovered final
+state matching the verified reference run on 2026-05-09.
+
+The manual is deliberately operational (\emph{do X; verify Y; then
+do Z}); the chronological narrative of how the port was
+constructed is captured separately in
+\path{models/fsa_v5/PORT_LOG.md}.
+\end{abstract}
+
+\tableofcontents
+\clearpage
+
+
+% =============================================================================
+\section{Goal and overview}
+\label{sec:overview}
+% =============================================================================
+
+\subsection{One-sentence goal}
+
+\textbf{Given the FSA v5 tech guide and the Lean4 source files in
+\path{Fsa/V5/}, produce a verified Julia port that runs the
+closed-loop SMC$^2$-MPC bench end-to-end.}
+
+\subsection{Why this manual exists}
+
+The work to date is captured only in conversational history and in a
+chronological \path{PORT_LOG.md}. Neither is a stable artefact a
+future reader can pick up and execute without reverse-engineering
+the order of operations and the rationale at each step.
+
+LLM coding agents are a lossy medium for code: the LEAN4-First
+Charter exists precisely because pattern-matching agents introduce
+transcription errors when porting math. The differential test
+catches transcription errors at machine precision, but only if a
+future port is structured so that the diff-test gates apply. This
+manual prescribes the structure, the gates, and the per-phase pass
+criteria so that the verifiability of the work is preserved.
+
+The result of every closed-loop bench --- recovered $\theta$
+posteriors, controller plans, $A$-accumulation traces --- is only
+as trustworthy as the pipeline that produced it. The manual is
+the pipeline's contract: \emph{if you follow these steps and hit
+these gates, you have the same pipeline that produced the verified
+reference run on 2026-05-09}.
+
+\subsection{Where this manual sits in the doc set}
+\label{sec:doc-ecosystem}
+
+Four LaTeX documents in \path{version_1_5_LEAN/LaTex_docs/} answer
+four orthogonal questions
+(Figure~\ref{fig:doc-ecosystem}): \textbf{why} we use a Lean4-first
+discipline, \textbf{what} the v5 model actually is, \textbf{how} the
+pipeline is architected, and (this manual) \textbf{how} to execute
+the port operationally.
+
+\begin{figure}[h]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+  node distance=8mm and 14mm,
+  every node/.style={font=\small},
+  doc/.style={draw, rectangle, rounded corners=2pt, align=center,
+              minimum width=58mm, minimum height=12mm, inner sep=4pt},
+  arr/.style={-{Latex[length=2mm]}, thick}
+]
+\node[doc, fill=blue!5] (charter) {LEAN4-First Charter\\
+  \texttt{lean4\_first\_charter.tex}\\
+  \emph{WHY} (policy / rationale)};
+\node[doc, fill=blue!5, below=of charter] (techguide) {FSA v5 Technical Guide\\
+  \texttt{FSA\_version\_5\_technical\_guide.tex}\\
+  \emph{WHAT} (the model maths; the input)};
+\node[doc, fill=green!7, below left=of techguide, xshift=-6mm] (pipeline)
+   {LaTeX $\to$ Lean4 $\to$ Julia\\
+    pipeline doc\\
+    \texttt{lean4\_to\_julia\_pipeline.tex}\\
+    \emph{HOW (architecturally)}};
+\node[doc, fill=orange!10, below right=of techguide, xshift=6mm] (manual)
+   {\textbf{FSA v5 port}\\
+    \textbf{reproduction manual}\\
+    \texttt{fsa\_v5\_port\_reproduction\_manual.tex}\\
+    \emph{HOW (operationally)}};
+\draw[arr] (charter) -- node[right]{\small motivates} (techguide);
+\draw[arr] (techguide.south) -- (pipeline.north);
+\draw[arr] (techguide.south) -- (manual.north);
+\end{tikzpicture}%
+}
+\caption{Where this manual fits in the doc set. The two
+\emph{HOW} docs are complementary: the pipeline doc explains what
+the components are and why they exist; this manual explains how to
+build them step by step.}
+\label{fig:doc-ecosystem}
+\end{figure}
+
+\subsection{The seven port phases}
+\label{sec:seven-phases}
+
+Inside the manual, the work is organised into seven phases
+(Figure~\ref{fig:seven-phases}). Phase 0 is the inputs the reader
+starts with; Phases 1 and 2 run in parallel and both feed Phase 3;
+Phases 4--6 are sequential. Each phase has a verification gate that
+must be green before the next phase begins.
+
+\begin{figure}[h]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+  node distance=10mm and 14mm,
+  every node/.style={font=\footnotesize},
+  ph/.style={draw, rectangle, rounded corners=2pt, align=center,
+              minimum width=24mm, minimum height=14mm, inner sep=3pt,
+              fill=blue!5},
+  inp/.style={draw, rectangle, rounded corners=2pt, align=center,
+              minimum width=22mm, minimum height=14mm, inner sep=3pt,
+              fill=yellow!10},
+  arr/.style={-{Latex[length=2mm]}, thick}
+]
+\node[inp] (P0) {\textbf{Phase 0}\\inputs\\\emph{tech guide}\\\emph{+ Lean4}};
+\node[ph, right=of P0, yshift=8mm] (P1) {\textbf{Phase 1}\\Lean4 CLI\\\texttt{fsa\_v5\_cli}};
+\node[ph, right=of P0, yshift=-8mm] (P2) {\textbf{Phase 2}\\Julia CPU\\8 \texttt{.jl} files};
+\node[ph, right=of P1, yshift=-8mm, xshift=2mm] (P3) {\textbf{Phase 3}\\diff test\\$401 / 401$};
+\node[ph, right=of P3] (P4) {\textbf{Phase 4}\\GPU port\\$\to 424 / 424$};
+\node[ph, right=of P4] (P5) {\textbf{Phase 5}\\bench driver\\\texttt{tools\_v5/}};
+\node[ph, right=of P5] (P6) {\textbf{Phase 6}\\plotters +\\launcher};
+\draw[arr] (P0) -- (P1);
+\draw[arr] (P0) -- (P2);
+\draw[arr] (P1) -- (P3);
+\draw[arr] (P2) -- (P3);
+\draw[arr] (P3) -- (P4);
+\draw[arr] (P4) -- (P5);
+\draw[arr] (P5) -- (P6);
+\end{tikzpicture}%
+}
+\caption{Seven-phase port flow. Phase 0 is the on-disk inputs the
+reader starts with. Phases 1 and 2 are independent and run in
+parallel; both feed Phase 3 (the differential test, which gates
+correctness). Phase 4--6 are sequential. Each phase has a
+verification gate listed in \S\ref{sec:gates}.}
+\label{fig:seven-phases}
+\end{figure}
+
+\subsection{How to read this manual}
+
+Read in order. Treat each phase's verification gate as a stop-and-check
+point: only proceed to the next phase when the current gate is
+green. \S\ref{sec:gates} consolidates all seven gates as a final
+checklist; \S\ref{sec:trouble} lists known gotchas the reader will
+likely hit.
+
+
+% =============================================================================
+\section{Prerequisites}
+\label{sec:prereqs}
+% =============================================================================
+
+\begin{itemize}[itemsep=2pt]
+  \item \textbf{Hardware.} NVIDIA GPU with CUDA support. The project
+        is tuned for RTX 5090; smaller GPUs (e.g.\ RTX 3090, A100)
+        will work but at reduced throughput. The reference T=7 run
+        used $\sim 5.4$~GB peak VRAM.
+  \item \textbf{OS.} Linux. Tested on Ubuntu.
+  \item \textbf{Toolchain.}
+        \begin{itemize}[itemsep=0pt]
+          \item Julia $\ge 1.11$, with the project's manifest
+                resolved (\texttt{julia --project=. -e 'using Pkg; Pkg.instantiate()'}).
+          \item Lean4 with \texttt{lake} on the PATH.
+          \item CUDA driver matching the project's \texttt{CUDA.jl}
+                pin (driver $\ge 590.48.01$ for the RTX 5090's
+                consumer Blackwell saturated config).
+          \item The project's conda env \texttt{comfyenv}
+                (per the repo's \path{CLAUDE.md}).
+        \end{itemize}
+  \item \textbf{Repo state.} Clean checkout of
+        \path{python-smc2-filtering-control}. No
+        \texttt{git stash}-ed work in \path{version_1_5_Julia/}
+        or \path{version_1_5_LEAN/}.
+  \item \textbf{Reading.} Skim sections 1--7 of the FSA v5
+        technical guide for the model maths. The manual cites
+        specific subsections as needed during the port; don't
+        memorise it.
+\end{itemize}
+
+
+% =============================================================================
+\section{Phase 0 --- Inputs}
+\label{sec:inputs}
+% =============================================================================
+
+The reader starts with three on-disk artefacts. Confirm each is
+present before beginning Phase 1.
+
+\begin{center}\footnotesize
+\begin{tabular}{p{36mm}p{60mm}p{52mm}}
+\toprule
+Artefact & Path (under repo root) & Role \\
+\midrule
+FSA v5 technical guide & \path{version_1_5_LEAN/LaTex_docs/FSA_version_5_technical_guide.tex} & Math source-of-truth. Every drift / diffusion / observation equation is here. \\
+Lean4 model & \path{version_1_5_LEAN/Fsa/V5/} & Six files: \texttt{Types}, \texttt{Drift}, \texttt{Plant}, \texttt{Obs}, \texttt{Cost}, \texttt{Schedule}. Already transcribed from the tech guide; the Julia port mirrors these line-by-line. \\
+v1.5 Julia layout & \path{version_1_5_Julia/models/fsa_high_res/} & The pattern to mirror: 7 \texttt{.jl} files, 1 bench-glue file, 2 GPU files. v5 maintains the same shape. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+
+% =============================================================================
+\section{Phase 1 --- Build the v5 Lean4 CLI}
+\label{sec:phase1}
+% =============================================================================
+
+\paragraph{Goal.} Produce a native binary \texttt{fsa\_v5\_cli} that the
+differential test in Phase 3 calls. The binary speaks JSON on
+stdin/stdout, one request per line.
+
+\paragraph{Inputs.} The six \texttt{.lean} files in \path{Fsa/V5/}
+(complete, verified to compile) and the existing \path{Main.lean}
+for v1.5 as the dispatch-pattern reference.
+
+\paragraph{Files to create / modify.}
+
+\begin{center}\footnotesize
+\begin{tabular}{lll}
+\toprule
+File & New / modified & Purpose \\
+\midrule
+\texttt{version\_1\_5\_LEAN/Fsa/V5.lean}     & new, $\sim 6$ lines     & umbrella module: \texttt{import Fsa.V5} pulls all six submodules \\
+\texttt{version\_1\_5\_LEAN/Main\_v5.lean}    & new, $\sim 250$ lines  & JSON-line dispatcher; one handler per public function \\
+\texttt{version\_1\_5\_LEAN/lakefile.lean}    & $+5$ lines              & second \texttt{lean\_exe} target named \texttt{fsa\_v5\_cli} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{JSON wire conventions.} The dispatcher serialises four
+record types as JSON:
+
+\begin{center}\footnotesize
+\begin{tabular}{lp{82mm}}
+\toprule
+Lean type & JSON shape \\
+\midrule
+\texttt{State6D}      & array of 6 floats: \texttt{[B, S, F, A, K\_FB, K\_FS]} \\
+\texttt{BimodalPhi}   & object \texttt{\{"Phi\_B": x, "Phi\_S": y\}} \\
+\texttt{Params}       & object with 28 named keys (matches the field order in \texttt{Types.lean}) \\
+\texttt{ObsParams}    & object with 22 named keys \\
+\texttt{Float}        & decimal; \texttt{$\pm$Inf} / \texttt{NaN} use the literal extended-JSON tokens (Julia's \texttt{JSON3} accepts these via \texttt{allow\_inf=true}) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Float printing uses Lean's default \texttt{toString} which emits 6
+significant digits. This is the wire-format precision floor; see
+\S\ref{sec:trouble}.
+
+\paragraph{Dispatch tags exposed (15).} \texttt{drift}, \texttt{diffusion},
+\texttt{emStep}, \texttt{hrMean}, \texttt{sleepProb},
+\texttt{stressMean}, \texttt{stepsLogMean},
+\texttt{volumeLoadMean}, \texttt{muBar}, \texttt{findASep},
+\texttt{aSepGrid}, \texttt{scheduleFromTheta},
+\texttt{designMatrix}, \texttt{cPhi}, \texttt{sigmoid}.
+
+Two surfaces are deliberately \emph{not} exposed:
+
+\begin{itemize}[itemsep=2pt]
+  \item \texttt{applyPrior}. Lives in v1.5's
+        \path{Fsa/V15/Estimation.lean}; not duplicated for v5.
+        The prior transform is identical across versions, so the
+        v5 diff test reuses the v1.5 binary if it ever needs to
+        verify \texttt{applyPrior}.
+  \item \texttt{obsLogWeight}. The v5 likelihood is a sum of five
+        per-channel Gaussian / Bernoulli log-likelihoods. The
+        per-channel \emph{means} (\texttt{hrMean},
+        \texttt{stressMean}, etc.) are exposed individually; the
+        sum is composed Julia-side. Keeps the Lean surface minimal
+        and avoids redundant test paths.
+\end{itemize}
+
+\paragraph{Procedure.}
+
+\begin{enumerate}[itemsep=2pt]
+  \item Create \path{Fsa/V5.lean} with one \texttt{import} per submodule.
+  \item Create \path{Main_v5.lean} mirroring \path{Main.lean}'s
+        structure: \texttt{handleRequest} dispatches on the JSON
+        \texttt{"fn"} field; per-tag handlers parse the typed
+        record from JSON, call the corresponding
+        \texttt{Fsa.V5.*} function, and serialise the result.
+  \item In \path{lakefile.lean}, add a second \texttt{lean\_exe}:
+\begin{lstlisting}[language=bash]
+@[default_target]
+lean_exe fsa_v5_cli where
+  root := `Main_v5
+\end{lstlisting}
+\end{enumerate}
+
+\paragraph{Verification.}
+
+\begin{lstlisting}[language=bash]
+cd /home/ajay/Repos/python-smc2-filtering-control/version_1_5_LEAN
+lake build
+# Both binaries should appear:
+ls .lake/build/bin/fsa_v15_cli .lake/build/bin/fsa_v5_cli
+
+echo '{"fn":"sigmoid","x":0.0}' | .lake/build/bin/fsa_v5_cli
+# Expect: {"x":0.500000}
+
+echo '{"fn":"cPhi","phi_default":1.0,"phi_max":3.0}' | .lake/build/bin/fsa_v5_cli
+# Expect: {"x":-0.693147}      (i.e.\ -log(2))
+\end{lstlisting}
+
+If both invocations return the expected values, Phase 1 is green.
+
+
+% =============================================================================
+\section{Phase 2 --- Write the Julia CPU port}
+\label{sec:phase2}
+% =============================================================================
+
+\paragraph{Goal.} Create eight \texttt{.jl} files under
+\path{version_1_5_Julia/models/fsa_v5/} that transcribe each Lean4
+module into a Julia equivalent. Mirror the v1.5 layout at
+\path{version_1_5_Julia/models/fsa_high_res/} exactly: each Julia
+file has a one-to-one Lean source.
+
+\paragraph{Files to create.}
+
+\begin{center}\footnotesize
+\begin{tabular}{p{34mm}p{40mm}p{72mm}}
+\toprule
+File & Lean source & What it provides \\
+\midrule
+\texttt{simulation\_v5.jl}   & \texttt{Types.lean}, tech guide \S6
+                              & constants \texttt{BINS\_PER\_DAY=96},
+                                \texttt{DT\_BIN\_DAYS=1/96};
+                                \texttt{TRUTH\_PARAMS\_V5},
+                                \texttt{DEFAULT\_OBS\_PARAMS\_V5},
+                                \texttt{DEFAULT\_INIT},
+                                \texttt{TRAINED\_ATHLETE\_INIT},
+                                \texttt{FROZEN\_PARAMS\_V5},
+                                \texttt{PARAM\_KEYS\_V5},
+                                \texttt{OBS\_PARAM\_KEYS\_V5} \\
+\texttt{\_dynamics\_v5.jl}    & \texttt{Drift.lean}
+                              & \texttt{drift\_v5}, \texttt{diffusion\_v5},
+                                \texttt{em\_step\_v5}.
+                                Hill exponent \texttt{n\_dec} hardcoded
+                                to 4 (frozen per tech guide \S7.2). \\
+\texttt{\_plant\_v5.jl}       & \texttt{Plant.lean}
+                              & \texttt{PlantState6D},
+                                \texttt{plant\_step\_v5},
+                                \texttt{plant\_rollout\_v5}. NB
+                                rollout return shape is
+                                bench-consumed (flat NamedTuple),
+                                not Lean-counterpart. \\
+\texttt{obs\_v5.jl}            & \texttt{Obs.lean}
+                              & \texttt{hr\_mean}, \texttt{sleep\_prob},
+                                \texttt{stress\_mean},
+                                \texttt{steps\_log\_mean},
+                                \texttt{volume\_load\_mean} \\
+\texttt{estimation\_v5.jl}    & \texttt{Obs.lean} + tech guide \S3
+                              & \texttt{obs\_log\_weight\_v5}
+                                (5-channel sum, per-channel gates),
+                                \texttt{propagate\_v5},
+                                \texttt{PARAM\_NAMES\_V5} (37 entries),
+                                \texttt{PARAM\_PRIOR\_CONFIG\_V5} \\
+\texttt{cost\_v5.jl}           & \texttt{Cost.lean}
+                              & \texttt{mu\_bar},
+                                \texttt{find\_a\_sep} ($\pm$Inf sentinels),
+                                \texttt{a\_sep\_grid}
+                                (per-particle $\times$ per-bin matrix) \\
+\texttt{schedule\_v5.jl}      & \texttt{Schedule.lean}
+                              & \texttt{sigmoid}, \texttt{c\_phi},
+                                \texttt{schedule\_from\_theta},
+                                \texttt{design\_matrix} \\
+\texttt{FSAv5.jl}             & aggregator
+                              & \texttt{include}s the seven submodules
+                                in dependency order; re-exports 39
+                                public symbols (47 after Phase 4
+                                adds the GPU files) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Lean $\to$ Julia idiom conversions.} The transcription is
+mechanical but a handful of Lean idioms map specifically to Julia:
+
+\begin{center}\footnotesize
+\begin{tabular}{ll}
+\toprule
+Lean & Julia \\
+\midrule
+\texttt{Id.run do} mutable loop                & ordinary \texttt{for} loop with mutable accumulator \\
+\texttt{Float.pow (max x 0.0) n}               & \texttt{max(x, 0.0)\^{}n} \\
+\texttt{1.0 / 0.0} ($+\infty$ sentinel)        & \texttt{Inf} (native, no extra plumbing) \\
+\texttt{-1.0 / 0.0} ($-\infty$ sentinel)        & \texttt{-Inf} \\
+\texttt{Array (Array Float)}                   & \texttt{Matrix\{Float64\}} (rectangular) or \texttt{Vector\{Vector\{Float64\}\}} (irregular) \\
+state record                                    & \texttt{StaticArrays.SVector\{6, Float64\}} for zero-allocation hot paths \\
+\texttt{Params} record                          & \texttt{Dict\{Symbol, Float64\}} (with NamedTuple-converter helper for ForwardDiff compatibility) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Boundary handling --- a deliberate v5 deviation from v1.5.}
+v1.5's \texttt{em\_step\_substepped} reflects $B$ at the
+$[0, 1]$ boundary and \texttt{abs}-folds $F$, $A$. v5 instead
+\emph{clamps} $B, S$ to $[\varepsilon, 1-\varepsilon]$ and floors
+$F, A, K_{FB}, K_{FS}$ at $0$, per tech guide \S6.4. The Lean
+\texttt{Plant.lean} encodes the clamp-and-floor convention; the
+Julia transcription must match.
+
+\paragraph{Verification (smoke-load only --- full diff test in Phase 3).}
+
+\begin{lstlisting}[language=bash]
+cd /home/ajay/Repos/python-smc2-filtering-control/version_1_5_Julia
+julia --project=. -e '
+include("models/fsa_v5/FSAv5.jl"); using .FSAv5
+@assert sigmoid(0.0) == 0.5
+@assert isapprox(c_phi(1.0, 3.0), -log(2.0))
+@assert isapprox(drift_v5(zeros(6), TRUTH_PARAMS_V5, (0.0, 0.0))[5],
+                  TRUTH_PARAMS_V5[:KFB_0] / TRUTH_PARAMS_V5[:tau_K])
+@assert isinf(find_a_sep((0.30, 0.30), TRUTH_PARAMS_V5))
+@assert find_a_sep((0.30, 0.30), TRUTH_PARAMS_V5) < 0
+# tech guide section 4.5: balanced moderate is healthy mono-stable -> -Inf
+println("Phase 2 smoke-load: PASS")
+'
+\end{lstlisting}
+
+If the script prints \verb|PASS|, Phase 2 is green.
+
+
+% =============================================================================
+\section{Phase 3 --- Differential test}
+\label{sec:phase3}
+% =============================================================================
+
+\subsection{Background: what is a differential test, and why use one here?}
+\label{sec:diff-test-explained}
+
+A \textbf{differential test} is a test that checks two independent
+implementations of the same mathematical function and asserts they
+produce the same answer on every input. Think of it as
+spell-checking a translation by feeding the same paragraph into two
+dictionaries: if their definitions disagree on any word, you know
+that word was mistranslated.
+
+\paragraph{Why a differential test is the right tool here.} The work
+in Phases 1 and 2 is, at its core, \emph{transcription}. The maths
+already exists (in the FSA v5 technical guide and the Lean4 source);
+the Julia code is supposed to encode the same arithmetic in a
+different programming language. The bugs that show up in this kind
+of work are typos, sign flips, swapped arguments, off-by-one
+indexing --- not algorithmic errors. These bugs are very hard to
+spot by reading the code, and very easy to expose by feeding the
+same numerical input to both implementations and watching for a
+disagreement on the output. A differential test does exactly that,
+mechanically, on hundreds of inputs in a few seconds.
+
+\paragraph{Who plays which role?} The Lean4 binary
+\texttt{fsa\_v5\_cli} (Phase 1's deliverable) is the \emph{reference}.
+It is small, type-checked, and was reviewed line-by-line against
+the technical guide --- it is treated as the ground truth. The
+Julia code from Phase 2 is the \emph{implementation under test};
+the diff test asks ``does Julia produce the same number Lean did?''
+and flags any disagreement.
+
+\paragraph{How the two sides talk to each other.} Lean4 compiles
+to a native binary that reads one JSON request per line on stdin
+and writes one JSON response per line on stdout. The Julia test
+driver:
+
+\begin{enumerate}[itemsep=2pt]
+  \item launches the binary as a long-lived subprocess (\emph{one}
+        startup cost per test run, not per assertion);
+  \item for each test case, builds a JSON object describing the
+        function call (e.g.\ \texttt{\{"fn": "drift", "state": [...]
+        , "phi": \{...\}, "params": \{...\}\}}), writes it on
+        stdin, and reads the JSON response on stdout;
+  \item runs the same call locally in Julia;
+  \item asserts \texttt{|Julia $-$ Lean4| < tol} component-by-component
+        (or \texttt{isapprox}-style for arrays).
+\end{enumerate}
+
+The subprocess + JSON-line protocol is just a robust way of
+calling a function across a programming-language boundary
+(Lean and Julia don't share a runtime). It is mechanically simple;
+the same pattern works for any pair of compiled-to-native
+languages.
+
+\paragraph{The pre-drawn-noise trick (and why it matters).} Some
+functions in the model involve random numbers --- in particular,
+the Euler--Maruyama step in \texttt{em\_step\_v5} adds a Gaussian
+noise increment to advance the SDE by one bin. If Julia and Lean
+each drew their own noise from their respective random-number
+generators, they would draw \emph{different} numbers (the two
+languages have different RNGs and even different default seeds),
+so the outputs would always differ --- not because the maths
+disagrees but because the inputs were different. That is a false
+fail.
+
+The fix is the \textbf{pre-drawn noise} convention: the test
+driver draws the noise vector \emph{once} on the Julia side, then
+passes that exact noise array to \emph{both} the Julia call and
+the Lean call. Both implementations now run their EM step on
+\emph{identical} noise. Any output disagreement is purely due to
+the deterministic arithmetic (sign error, wrong coefficient,
+swapped state component, etc.) --- which is what we actually want
+to detect.
+
+\paragraph{Why a tolerance, not strict equality.} Floating-point
+arithmetic is not exact. Two valid implementations of the same
+formula can produce results that differ in the last few bits
+because of how the rounding accumulates through the operations
+(IEEE-754 round-off). Insisting on \texttt{==} would fail
+correctly-written code. The diff test instead asks ``do the two
+results agree to $n$ digits?''. The threshold is the
+\textbf{tolerance}.
+
+The manual uses two tolerances. The bulk of the tests use $10^{-6}$
+(roughly six matching digits): tight enough to catch any real bug,
+loose enough to absorb the round-off of single-arithmetic-operation
+disagreement. The integrated EM step uses a looser $10^{-4}$
+because it composes 4 substeps plus a Wiener increment, so
+round-off accumulates more. The exact tolerance for each function
+is in the table below; the rationale per row is the only piece a
+fresh reader needs to internalise.
+
+\paragraph{What ``green'' means.} A green test run means: every Julia
+function in Phase 2, on every random input the test threw at it,
+produced a number indistinguishable from Lean's at the prescribed
+tolerance. The reverse is also true: \emph{any} red assertion
+points at a specific function whose Julia code disagrees with the
+Lean reference, and the assertion message tells you exactly which
+input triggered the disagreement and by how much. That makes
+debugging a port mechanical: you do not have to read the code; the
+test tells you which line to fix.
+
+\subsection{Implementation in this manual}
+
+\paragraph{Goal.} Verify every Julia function from Phase 2 against
+its Lean4 reference at machine precision. The differential test
+spawns the \texttt{fsa\_v5\_cli} binary as a long-lived subprocess,
+sends each function's inputs as JSON on stdin, reads the Lean4
+result on stdout, runs the same call locally in Julia, and asserts
+\texttt{|Julia $-$ Lean4| < tol}.
+
+\paragraph{File to create.}
+\path{version_1_5_Julia/diff_test/test_lean_diff_v5.jl} ($\sim 440$
+lines). Mirrors \path{test_lean_diff_v15.jl}'s structure (long-lived
+subprocess client, \texttt{round\_trip} helper, pre-drawn noise).
+
+\paragraph{Pre-drawn noise convention.} For \texttt{em\_step\_v5} (the
+only function that integrates noise) both sides receive the same
+6-vector standard-normal noise as input rather than each drawing
+its own. RNG-divergence between Julia and Lean is excluded from
+the comparison; the test is purely about the deterministic
+numerical agreement of the math.
+
+\paragraph{Tolerance ladder.}
+
+\begin{center}\footnotesize
+\begin{tabular}{lll}
+\toprule
+Class                                          & Tolerance & Functions \\
+\midrule
+single-step deterministic                      & $10^{-6}$ atol/rtol & \texttt{drift\_v5}, \texttt{diffusion\_v5}, \texttt{plant\_step}, all 5 channel means, \texttt{mu\_bar}, \texttt{find\_a\_sep}, \texttt{a\_sep\_grid}, \texttt{c\_phi}, \texttt{sigmoid}, \texttt{design\_matrix} \\
+integrated EM step                             & $10^{-4}$ atol      & \texttt{em\_step\_v5} (4-substep EM + Wiener increment) \\
+schedule outputs at magnitude $\sim 3$         & $10^{-5}$ rtol      & \texttt{schedule\_from\_theta} (Lean's 6-sig-digit \texttt{toString} is the wire-format precision floor; see \S\ref{sec:trouble}) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Run command and expected output.}
+
+\begin{lstlisting}[language=bash]
+cd /home/ajay/Repos/python-smc2-filtering-control/version_1_5_LEAN && lake build
+cd ../version_1_5_Julia
+julia --project=. diff_test/test_lean_diff_v15.jl
+# Expect: Test Summary: FSA v1.5 LEAN4 diff | Pass 121 | Total 121
+julia --project=. diff_test/test_lean_diff_v5.jl
+# Expect: Test Summary: FSA v5 LEAN4 diff   | Pass 401 | Total 401
+\end{lstlisting}
+
+The v1.5 test must still pass --- this confirms no regression on
+the existing surface. The v5 test reports 401 / 401 here; Phase 4
+extends it to 424 / 424.
+
+
+% =============================================================================
+\section{Phase 4 --- GPU port (SOFT cost only)}
+\label{sec:phase4}
+% =============================================================================
+
+\paragraph{Goal.} Produce two GPU files that run the v5 SDE math
+on-device: \texttt{gpu\_pf\_v5.jl} (the inner-PF kernel for the
+filter) and \texttt{gpu\_control\_v5.jl} (the cost kernel for the
+controller). Each file mirrors its v1.5 counterpart's plumbing
+verbatim and only swaps the math block.
+
+\paragraph{Architectural rule (cite the LEAN4-First Charter).}
+
+\begin{quote}
+Copy v1.5's plumbing verbatim --- kernel structure, RNG-per-thread
+layout, log-likelihood reduction, NaN guards, framework hooks. Only
+swap the per-particle (or per-trial) math block with the v5
+versions transcribed from the diff-tested CPU functions. Do NOT
+rewrite the plumbing; that is the AI-fuckup-prone surface.
+\end{quote}
+
+\paragraph{Dimension bumps (the only changes inside the kernel
+plumbing).}
+
+\begin{itemize}[itemsep=2pt]
+  \item Particle state dim: $3 \to 6$ (allocations, indexing, packing).
+  \item Obs dim: $3 \to 5$ Gaussian + Bernoulli, with explicit
+        per-bin gates as \texttt{Float32} masks (multiply each
+        channel's log-likelihood by its gate).
+  \item Params per chain: $14 \to 15$ estimated dynamics +
+        $22$ estimated obs-channel + $14$ frozen.
+  \item Boundary: reflect $\to$ clamp/floor (matches Phase 2).
+\end{itemize}
+
+\paragraph{SOFT cost only.} The v5 cost kernel implements
+
+\[
+J(\theta) = \lambda_\Phi \int_0^T (\Phi_B^2 + \Phi_S^2) \, dt
+            \;-\; \int_0^T A \, dt
+            \;+\; \lambda_F \int_0^T \max(F - F_{\max}, 0)^2 \, dt
+            \;+\; \lambda_{\rm chance} \int_0^T \sigma\!\left(
+              \beta \cdot \frac{A_{\rm thr} - A}{\rm scale}
+            \right) dt.
+\]
+
+The chance surrogate uses a constant $A_{\rm thr}$ (default 0.05)
+rather than the per-bin $A_{\rm sep}(\Phi_t)$ from
+\texttt{find\_a\_sep}. The full per-bin form would require either
+a CPU-side precompute or a separate GPU prep kernel
+(${\sim} 286$M \texttt{mu\_bar} evaluations per call at production
+sizes); deferred. The HARD chance-constraint variant (with
+indicator instead of sigmoid) is deliberately out of scope.
+
+\paragraph{Single-thread debug entry points.} Each kernel exposes a
+1-thread debug function that the diff test invokes for
+\texttt{ndrange = 1}:
+
+\begin{itemize}[itemsep=0pt]
+  \item \texttt{gpu\_propagate\_one!} runs the PF kernel for one
+        \emph{(chain, particle, bin)} and returns the next 6D state
+        and the accumulated log-weight.
+  \item \texttt{gpu\_cost\_one!} runs the controller cost kernel for
+        one \emph{(chain, trial)} and returns the scalar cost.
+\end{itemize}
+
+These let the diff test compare the GPU per-thread math against the
+diff-tested CPU functions (\texttt{em\_step\_v5},
+\texttt{obs\_log\_weight\_v5}, the inline cost replicate) at fp32
+precision ($\sim 10^{-3}$ absolute). Closes the GPU-coverage gap
+documented in the pipeline doc \S8.
+
+\paragraph{HMC clarification --- both filter and controller HMC live
+in the framework, not in the model.} The v5 model exposes two
+closures:
+
+\begin{itemize}[itemsep=0pt]
+  \item \texttt{gpu\_log\_density\_v5(target, U, grid\_obs, key)} ---
+        the filter's $\log p(y \mid \theta)$ closure.
+  \item \texttt{make\_log\_density\_fn\_v5(ctrl\_target)} --- the
+        controller's $-\mathrm{cost}(\theta)$ closure.
+\end{itemize}
+
+\texttt{SMC2FC\_functional} consumes these via
+\texttt{parallel\_hmc\_one\_move\_generic!} +
+\texttt{chees\_pick\_L\_generic} (filter) and
+\texttt{run\_tempered\_smc\_gpu} (controller). \textbf{No new HMC
+code is needed in the model directory.} The legacy
+model-specific \texttt{parallel\_hmc\_one\_move} in v1.5's
+\texttt{gpu\_pf.jl} is dead code.
+
+\paragraph{Files to create / modify.}
+
+\begin{center}\footnotesize
+\begin{tabular}{lll}
+\toprule
+File & Lines & Purpose \\
+\midrule
+\texttt{models/fsa\_v5/gpu\_pf\_v5.jl}      & $\sim 430$ & propagate\_segment kernel + log-lik accumulator + \texttt{FSAv5GPUTarget} + \texttt{gpu\_log\_density\_v5} + \texttt{gpu\_propagate\_one!} \\
+\texttt{models/fsa\_v5/gpu\_control\_v5.jl}  & $\sim 330$ & v5 cost kernel + \texttt{FSAv5ControlGPUTarget} + \texttt{gpu\_cost\_log\_density\_batched\_v5} + \texttt{make\_log\_density\_fn\_v5} + \texttt{gpu\_cost\_one!} \\
+\texttt{models/fsa\_v5/FSAv5.jl}            & $+12$ lines & \texttt{include} + re-export the two GPU files (47 exports total) \\
+\texttt{diff\_test/test\_lean\_diff\_v5.jl} & $+\sim 200$ lines & two new testsets exercising the single-thread debug entries \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Verification.}
+
+\begin{lstlisting}[language=bash]
+cd /home/ajay/Repos/python-smc2-filtering-control/version_1_5_Julia
+julia --project=. diff_test/test_lean_diff_v5.jl
+# Expect: Test Summary: FSA v5 LEAN4 diff   | Pass 424 | Total 424
+\end{lstlisting}
+
+That is, 401 from Phase 3 plus 23 new GPU parity asserts (21 state
+components + 1 log-weight + 2 cost = 24 minus 1 for the cost
+trial running 2-pass = 23). At fp32 vs fp64 precision (tolerance
+$10^{-3}$ absolute).
+
+
+% =============================================================================
+\section{Phase 5 --- Bench driver}
+\label{sec:phase5}
+% =============================================================================
+
+\paragraph{Goal.} Produce a runnable closed-loop SMC$^2$-MPC bench:
+a top-level driver script plus five bench-helper modules and one
+model-specific glue file.
+
+\paragraph{Honest flag about ``model-agnostic''.} The v1.5
+\texttt{tools/bench/} subdir is generic in \emph{flow} (foldl over
+strides, tempered SMC$^2$ ladder, ChEES-HMC, RBF schedule decoder)
+but not in \emph{symbols}. The bench files hardcode
+\texttt{FSAGPUTarget}, \texttt{gpu\_log\_density},
+\texttt{posterior\_mean\_v15}, \texttt{PARAM\_NAMES},
+\texttt{DEFAULT\_PARAMS}, \texttt{PINNED\_PARAMS}, the 3-channel
+obs schema, and the \texttt{SVector\{3\}} state extraction. The
+v5 port copies the structure and substitutes the v5 names / shapes
+in place. It is \emph{not} a verbatim copy.
+
+\paragraph{Files to create.}
+
+\begin{center}\footnotesize
+\begin{tabular}{lll}
+\toprule
+File & Lines & Source / change \\
+\midrule
+\texttt{tools\_v5/bench\_smc\_full\_mpc\_fsa\_v5\_gpu.jl} & $\sim 250$ & top-level driver; mirrors \texttt{bench\_smc\_full\_mpc\_fsa\_gpu.jl} with v5 imports + v5-shaped accumulator \\
+\texttt{tools\_v5/bench/bench\_args.jl}                    & $\sim 270$ & verbatim copy of v1.5 + \texttt{step-minutes} default $60 \to 15$ \\
+\texttt{tools\_v5/bench/bench\_filter.jl}                  & $\sim 230$ & sed-renamed: \texttt{FSAGPUTarget} $\to$ \texttt{FSAv5GPUTarget}; \texttt{gpu\_log\_density} $\to$ \texttt{gpu\_log\_density\_v5}; \texttt{extract\_xhat} widened to \texttt{SVector\{6\}} \\
+\texttt{tools\_v5/bench/bench\_controller.jl}              & $\sim 120$ & rewritten: 6D init, params Dict, $\theta$-dim $= 2 \cdot n_{\rm anchors}$, decoder produces TWO $\Phi$ vectors \\
+\texttt{tools\_v5/bench/bench\_loop.jl}                    & $\sim 210$ & rewritten: 13-field obs accumulator (5 obs + 5 gates + $\Phi_B$ + $\Phi_S$ + $C$), 6D state, plant\_rollout\_v5 shape \\
+\texttt{tools\_v5/bench/bench\_postproc.jl}                & $\sim 280$ & sed-renamed; data.jld2 schema bumped to \texttt{1.0-v5} with \texttt{state\_names}, separate \texttt{Phi\_B\_per\_bin\_*} / \texttt{Phi\_S\_per\_bin\_*}, 13-column per-stride CSV \\
+\texttt{models/fsa\_v5/bench\_glue\_v5.jl}                  & $\sim 110$ & \texttt{posterior\_mean\_v5} (50-key Dict: 37 estimated + 13 frozen), \texttt{window\_grid\_obs\_v5} (14-field NamedTuple matching \texttt{gpu\_log\_density\_v5}) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Plant-rollout shape change in \texttt{\_plant\_v5.jl}
+(ripple edit).} The Phase 2 \texttt{plant\_rollout\_v5} returned
+\texttt{(trajectory, obs\_seq)}. Phase 5 changes it to a flat
+NamedTuple matching the bench's \texttt{accumulate\_obs\_history\_v5}
+consumer (separate \texttt{obs\_HR / obs\_S / obs\_steps / obs\_VL /
+obs\_sleep / Phi\_B / Phi\_S / C / final\_state / trajectory} fields).
+The function is not diff-tested against Lean (no Lean counterpart),
+so the shape change does not invalidate any test.
+
+\paragraph{Verification (dry-run smoke).}
+
+\begin{lstlisting}[language=bash]
+cd /home/ajay/Repos/python-smc2-filtering-control/version_1_5_Julia
+FSA_V5_DRY_RUN=1 julia --project=. tools_v5/bench_smc_full_mpc_fsa_v5_gpu.jl --T-days 1
+# Expected: two log lines and exit 0:
+#   [ Info: loading v5 model + framework (FSA_STEP_MINUTES=15)...
+#   [ Info: FSA_V5_DRY_RUN=1 -- driver loaded but main() skipped
+\end{lstlisting}
+
+The \texttt{FSA\_V5\_DRY\_RUN} guard at the bottom of the driver
+makes the include-and-link smoke test possible without running
+the bench.
+
+
+% =============================================================================
+\section{Phase 6 --- Plotters, production gating, and launchers}
+\label{sec:phase6}
+% =============================================================================
+
+Three plotters (state traces, parameter traces, observation
+channels), one production gating-logic addition to the bench, and
+two launcher shell scripts.
+
+\paragraph{Files to create.}
+
+\begin{center}\footnotesize
+\begin{tabular}{lll}
+\toprule
+File & Lines & Purpose \\
+\midrule
+\texttt{tools\_v5/plot\_state\_traces\_v5.jl}      & $\sim 120$ & 8-panel state plot: 6 state components ($B, S, F, A, K_{FB}, K_{FS}$) + 2 daily-$\Phi$-per-stride traces \\
+\texttt{tools\_v5/plot\_param\_traces\_v5.jl}      & $\sim 95$  & $5 \times 8$ grid of per-parameter posterior trace + 5/95\% quantile band + truth horizontal line \\
+\texttt{tools\_v5/plot\_obs\_channels\_v5.jl}      & $\sim 190$ & 6-panel obs plot: HR / Stress / Steps / VL / Sleep + circadian, with deterministic $\mu$ overlay and gate-aware colouring \\
+\texttt{tools\_v5/launchers/run\_julia\_v5\_T42d.sh} & $\sim 120$ & T=42 default launcher; \texttt{nvidia-smi} 1 Hz sampler + bench + 3 plotters + manifest \\
+\texttt{tools\_v5/launchers/run\_julia\_v5\_T7d.sh}  & $\sim 120$ & smoke-test variant; T=7 default \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Production sleep / wake gating} (tech guide \S3.2).
+Modify \texttt{bench\_loop.jl::accumulate\_obs\_history\_v5} to
+compute per-bin gates from the bin's hour-of-day rather than
+emitting all-ones:
+
+\begin{center}\footnotesize
+\begin{tabular}{ll}
+\toprule
+Channel  & Gate rule \\
+\midrule
+HR        & sleep window: $h \in [22, 24) \cup [0, 6)$ \\
+Stress    & wake (complement of sleep) \\
+Steps     & wake (complement of sleep) \\
+VolumeLoad & one bin per day at 18:00 (= bin 72 in 0-indexed bin-within-day at \texttt{BINS\_PER\_DAY=96}) \\
+Sleep label & every bin (always 1.0) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Verification arithmetic at \texttt{BINS\_PER\_DAY=96}:
+
+\begin{center}\footnotesize
+\begin{tabular}{ll}
+\toprule
+Quantity & Expected value \\
+\midrule
+\texttt{sum(gate\_HR)}     & 32 (= 8 h $\times$ 4 bins/h) \\
+\texttt{sum(gate\_stress)} & 64 (= 16 h $\times$ 4 bins/h) \\
+\texttt{sum(gate\_VL)}     & 1 (single bin at 18:00) \\
+\texttt{sum(gate\_sleep)}  & 96 (every bin) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{\texttt{bench\_postproc.jl} additions.} Save the 5 obs
+vectors, 5 gate masks, and circadian $C(t)$ to \texttt{data.jld2}
+so the obs-channel plotter has all required inputs. The fields are
+documented in \S\ref{app:files} and consumed by
+\texttt{plot\_obs\_channels\_v5.jl}.
+
+\paragraph{Verification.}
+
+\begin{lstlisting}[language=bash]
+cd /home/ajay/Repos/python-smc2-filtering-control/version_1_5_Julia
+chmod +x tools_v5/launchers/run_julia_v5_T7d.sh
+./tools_v5/launchers/run_julia_v5_T7d.sh 7 \
+    --N-smc 32 --K-per-chain 200 --ctrl-n-smc 256 \
+    --ctrl-num-mcmc 8 --ctrl-chees-max 256 \
+    --ctrl-n-anchors 8 --ctrl-max-levels 25
+\end{lstlisting}
+
+This is the Phase 6 verification gate and it doubles as the
+end-to-end manual gate. Expected wall on RTX 5090: $\sim 6$
+minutes. The output dir
+\path{compare_v15_julia_vs_python/example_run/julia_v5_T7d_<DATE>/T7d_seed42/}
+should contain:
+
+\begin{lstlisting}[language=bash]
+bench.log
+controller_diagnostics.csv
+data.jld2
+experiment_run.md
+manifest.json
+nvidia_smi.csv
+per_stride.csv
+v5_T7d_obs_channels.png
+v5_T7d_param_traces.png
+v5_T7d_traces.png
+\end{lstlisting}
+
+
+% =============================================================================
+\section{Verification gates --- final checklist}
+\label{sec:gates}
+% =============================================================================
+
+After completing all six phases, run these gates in order. Each
+must be green before claiming the port is reproduced.
+
+\begin{enumerate}[itemsep=3pt]
+  \item \textbf{Lean binaries build.} \\
+        \texttt{cd version\_1\_5\_LEAN \&\& lake build} \\
+        Pass: both \texttt{fsa\_v15\_cli} and \texttt{fsa\_v5\_cli}
+        appear under \path{.lake/build/bin/}.
+  \item \textbf{v1.5 diff test still passes.} \\
+        \texttt{julia --project=. diff\_test/test\_lean\_diff\_v15.jl} \\
+        Pass: \texttt{Pass 121 | Total 121}.
+  \item \textbf{v5 diff test passes.} \\
+        \texttt{julia --project=. diff\_test/test\_lean\_diff\_v5.jl} \\
+        Pass: \texttt{Pass 424 | Total 424} (8 model + 5 obs-channel
+        + 5 cost/schedule + 23 GPU parity asserts; see
+        \S\ref{app:diff-coverage}).
+  \item \textbf{Driver dry-run loads cleanly.} \\
+        \texttt{FSA\_V5\_DRY\_RUN=1 julia --project=. tools\_v5/bench\_smc\_full\_mpc\_fsa\_v5\_gpu.jl --T-days 1} \\
+        Pass: prints the load banner and the dry-run skip; exit 0.
+  \item \textbf{End-to-end T=7 smoke run.} \\
+        \verb|./tools_v5/launchers/run_julia_v5_T7d.sh 7 --N-smc 32 ...| \\
+        Pass: exit 0; output dir contains 10 artefacts listed in
+        \S\ref{sec:phase6}; wall time $\sim 6$ min on RTX 5090.
+  \item \textbf{Reference-run comparison.} The verified reference
+        run from 2026-05-09T22:01:01 had wall = 362 s, 13 strides,
+        37 estimated parameters, 13 frozen, and recovered final
+        state \texttt{(B=0.0922, S=0.1098, F=0.3471, A=0.0409, K\_FB=0.0488, K\_FS=0.0652)}.
+        Pass: the reproducer's run matches this within stochastic
+        variation --- order of magnitude on each component;
+        qualitative trajectory shape; same artefact set produced.
+\end{enumerate}
+
+
+% =============================================================================
+\section{Troubleshooting and known gotchas}
+\label{sec:trouble}
+% =============================================================================
+
+\paragraph{Lean's \texttt{Float.toString} floor at 6 significant
+digits.} Manifests as \texttt{schedule\_from\_theta} test failures
+at $10^{-6}$ atol when the output magnitude is $\sim 3$
+($\Phi_{\max} \cdot \mathrm{sigmoid}$). Fix: use \texttt{rtol=1e-5}
+for schedule outputs. Documented in \texttt{test\_lean\_diff\_v5.jl}.
+
+\paragraph{GPU plumbing reuse.} Don't refactor the kernel /
+framework glue when porting v5. Verbatim copy from v1.5 with
+math-block swap is the rule. Refactoring there is the
+AI-fuckup-prone surface.
+
+\paragraph{fp32 inner loops, fp64 outer state.} Project convention
+(see \texttt{CLAUDE.md} GPU-dtype section). Do not annotate
+\texttt{Float64} inside SDE inner loops on the GPU; doing so
+requests fp64 throughout and tanks RTX 5090 throughput by
+$\sim 64\times$.
+
+\paragraph{\texttt{FSA\_STEP\_MINUTES} env var must be set before
+model import.} The bench driver sets
+\texttt{ENV["FSA\_STEP\_MINUTES"] = ...} before
+\texttt{include("FSAv5.jl")}. Reorder this and \texttt{BINS\_PER\_DAY}
+resolves to the wrong value because \texttt{simulation\_v5.jl}
+reads the env var at module-load time.
+
+\paragraph{\texttt{FSA\_V5\_DRY\_RUN=1} for dry-run smoke testing.}
+Loads the driver and all its includes but skips \texttt{main()}.
+Useful for catching parse / unresolved-symbol errors without
+running the bench.
+
+\paragraph{\texttt{ot-max-weight = 0.0} default.} Setting this $> 0$
+enables the framework's OT rescue with a documented $\sim 12\times$
+wall-time penalty (per-chain Julia loop with PCIe round-trips).
+v5's strong direct-Gaussian + 5-channel obs model does not need
+OT rescue at the saturated config.
+
+\paragraph{HARD chance-constraint deliberately out of scope.} Only
+SOFT (Lagrangian-relaxed with constant $A_{\rm thr}$, default
+0.05) is implemented. The HARD form (using
+\texttt{find\_a\_sep}-derived per-bin $A_{\rm sep}$ as an
+indicator) requires either CPU-side precompute of $A_{\rm sep}$
+per (chain, bin) or a separate GPU prep kernel. Deferred.
+
+\paragraph{\texttt{@match} site numbering.} v1.5 has 3 \texttt{@match}
+sites (\texttt{paramsV15ToV1}, \texttt{reflect\_unit},
+\texttt{apply\_prior}). v5 has zero --- no basis adapter (v5 uses
+its own basis directly), no reflection (uses clamp/floor instead),
+no separate prior transform exposed at the JSON layer. Don't look
+for v5 \texttt{@match} sites.
+
+\paragraph{If a phase gate fails.} Don't proceed to the next phase.
+Almost every failure mode reduces to either (a) a wrong field
+order in the JSON wire (Lean side) or the param Dict (Julia side),
+or (b) an incorrect Lean $\to$ Julia idiom translation in the math
+block. The diff test is precise about which function disagrees;
+re-read the corresponding \texttt{Fsa/V5/<file>.lean} and the
+Julia transcription side by side.
+
+
+% =============================================================================
+\appendix
+\section{Complete file tree (post-port)}
+\label{app:files}
+% =============================================================================
+
+After all six phases:
+
+\begin{lstlisting}[language=bash]
+version_1_5_LEAN/
+  Fsa/V5/                               (Phase 0 input; six files)
+  Fsa/V5.lean                           (Phase 1 new)
+  Main_v5.lean                          (Phase 1 new)
+  lakefile.lean                         (Phase 1 +5 lines)
+  LaTex_docs/
+    fsa_v5_port_reproduction_manual.tex (this doc)
+
+version_1_5_Julia/
+  models/fsa_v5/                        (Phase 2-4-5 new directory)
+    FSAv5.jl                            (aggregator)
+    simulation_v5.jl
+    _dynamics_v5.jl
+    _plant_v5.jl
+    obs_v5.jl
+    estimation_v5.jl
+    cost_v5.jl
+    schedule_v5.jl
+    gpu_pf_v5.jl                        (Phase 4)
+    gpu_control_v5.jl                   (Phase 4)
+    bench_glue_v5.jl                    (Phase 5)
+    PORT_LOG.md                         (chronological record)
+
+  diff_test/
+    test_lean_diff_v5.jl                (Phase 3 + extended in Phase 4)
+
+  tools_v5/                             (Phase 5 + 6 new directory)
+    bench_smc_full_mpc_fsa_v5_gpu.jl
+    bench/
+      bench_args.jl
+      bench_filter.jl
+      bench_controller.jl
+      bench_loop.jl
+      bench_postproc.jl
+    plot_state_traces_v5.jl             (Phase 6)
+    plot_param_traces_v5.jl             (Phase 6)
+    plot_obs_channels_v5.jl             (Phase 6)
+    launchers/
+      run_julia_v5_T42d.sh
+      run_julia_v5_T7d.sh
+\end{lstlisting}
+
+\texttt{data.jld2} schema produced by Phase 6's bench:
+
+\begin{lstlisting}[language=bash]
+trajectory_mpc                # (n_bins, 6)  Float32
+trajectory_baseline           # (n_bins, 6)  Float32
+Phi_B_per_bin_mpc             # (n_bins,)    Float32
+Phi_S_per_bin_mpc             # (n_bins,)    Float32
+Phi_B_per_bin_baseline        # (n_bins,)    Float32
+Phi_S_per_bin_baseline        # (n_bins,)    Float32
+daily_phi_per_stride          # (n_strides,) Float32
+state_names                   # ["B","S","F","A","K_FB","K_FS"]
+posterior_particles           # (n_strides, n_smc, 37)  Float64 (constrained)
+posterior_window_mask         # (n_strides,) Bool
+param_names                   # 37 Strings
+truth_params_dict             # Dict{String, Float64}, 50 keys
+obs_HR, obs_S, obs_steps      # (n_bins,)    Float32
+obs_VL, obs_sleep             # (n_bins,)    Float32
+gate_HR, gate_stress          # (n_bins,)    Float32  (0 or 1)
+gate_steps, gate_VL           # (n_bins,)    Float32
+gate_sleep                    # (n_bins,)    Float32
+circadian_C                   # (n_bins,)    Float32
+BINS_PER_DAY, STRIDE_BINS     # Int
+WINDOW_BINS                   # Int
+dt_days, F_max, wall_seconds  # Float64
+seed                          # Int
+\end{lstlisting}
+
+
+% =============================================================================
+\section{Command index}
+\label{app:commands}
+% =============================================================================
+
+Every shell / Julia / lake command in the manual, in execution
+order:
+
+\begin{lstlisting}[language=bash]
+# Phase 1 verification
+cd /home/ajay/Repos/python-smc2-filtering-control/version_1_5_LEAN
+lake build
+echo '{"fn":"sigmoid","x":0.0}' | .lake/build/bin/fsa_v5_cli
+echo '{"fn":"cPhi","phi_default":1.0,"phi_max":3.0}' | .lake/build/bin/fsa_v5_cli
+
+# Phase 2 verification
+cd ../version_1_5_Julia
+julia --project=. -e '
+include("models/fsa_v5/FSAv5.jl"); using .FSAv5
+@assert sigmoid(0.0) == 0.5
+@assert isapprox(c_phi(1.0, 3.0), -log(2.0))
+@assert isapprox(drift_v5(zeros(6), TRUTH_PARAMS_V5, (0.0, 0.0))[5],
+                  TRUTH_PARAMS_V5[:KFB_0] / TRUTH_PARAMS_V5[:tau_K])
+@assert isinf(find_a_sep((0.30, 0.30), TRUTH_PARAMS_V5))
+println("PASS")
+'
+
+# Phase 3 verification
+julia --project=. diff_test/test_lean_diff_v15.jl   # 121/121
+julia --project=. diff_test/test_lean_diff_v5.jl    # 401/401
+
+# Phase 4 verification (extended diff test)
+julia --project=. diff_test/test_lean_diff_v5.jl    # 424/424
+
+# Phase 5 verification (dry-run smoke)
+FSA_V5_DRY_RUN=1 julia --project=. tools_v5/bench_smc_full_mpc_fsa_v5_gpu.jl --T-days 1
+
+# Phase 6 verification (end-to-end T=7 smoke)
+chmod +x tools_v5/launchers/run_julia_v5_T7d.sh
+./tools_v5/launchers/run_julia_v5_T7d.sh 7 \
+    --N-smc 32 --K-per-chain 200 --ctrl-n-smc 256 \
+    --ctrl-num-mcmc 8 --ctrl-chees-max 256 \
+    --ctrl-n-anchors 8 --ctrl-max-levels 25
+\end{lstlisting}
+
+
+% =============================================================================
+\section{Differential-test coverage table}
+\label{app:diff-coverage}
+% =============================================================================
+
+\begin{center}\footnotesize
+\begin{tabular}{p{40mm}rl}
+\toprule
+Testset                          & Asserts & Tolerance \\
+\midrule
+\texttt{sigmoid}                 & 12 & $10^{-6}$ \\
+\texttt{c\_phi}                  &  4 & $10^{-6}$ \\
+\texttt{drift\_v5}               & 30 & $10^{-6}$ \\
+\texttt{diffusion\_v5}           & 30 & $10^{-6}$ \\
+\texttt{em\_step\_v5}            & 30 & $10^{-4}$ (integrated) \\
+\texttt{hr\_mean}                &  5 & $10^{-6}$ \\
+\texttt{sleep\_prob}             &  5 & $10^{-6}$ \\
+\texttt{stress\_mean}            &  5 & $10^{-6}$ \\
+\texttt{steps\_log\_mean}        &  5 & $10^{-6}$ \\
+\texttt{volume\_load\_mean}      &  5 & $10^{-6}$ \\
+\texttt{mu\_bar}                 &  5 & $10^{-6}$ \\
+\texttt{find\_a\_sep}            &  7 & $10^{-6}$ + sentinel checks \\
+\texttt{a\_sep\_grid}            & 15 & $10^{-6}$ \\
+\texttt{schedule\_from\_theta}   & 237 & $10^{-5}$ \\
+\midrule
+Phase 3 subtotal                  & \textbf{401} & \\
+\midrule
+\texttt{gpu\_pf\_v5} single-thread parity      & 21 & $10^{-3}$ (fp32 vs fp64) \\
+\texttt{gpu\_control\_v5} single-thread parity &  2 & $10^{-3}$ \\
+\midrule
+Phase 4 subtotal                  & \textbf{23} & \\
+\midrule
+\textbf{Total}                    & \textbf{424} & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+
+% =============================================================================
+\begin{thebibliography}{9}
+
+\bibitem{charter}
+  \emph{A LEAN4-First Charter for FSA Model Development.}
+  \\\path{version_1_5_LEAN/LaTex_docs/lean4_first_charter.tex}.
+  Policy doc: why Lean4 is the formal source of truth and Julia is
+  the differentially-tested artefact.
+
+\bibitem{techguide}
+  \emph{FSA-v5 Technical Implementation Guide.}
+  \\\path{version_1_5_LEAN/LaTex_docs/FSA_version_5_technical_guide.tex}.
+  The model maths source-of-truth for Phase 0 inputs.
+
+\bibitem{pipeline}
+  \emph{Practical pipeline documentation: LaTeX $\to$ Lean4 $\to$ Julia
+  for FSA v1.5.} \\\path{version_1_5_LEAN/LaTex_docs/lean4_to_julia_pipeline.tex}.
+  Architecture-level companion to this operational manual.
+
+\bibitem{portlog}
+  \emph{PORT\_LOG.md.}
+  \\\path{version_1_5_Julia/models/fsa_v5/PORT_LOG.md}.
+  Chronological record of WHAT was done; this manual condenses it
+  into HOW.
+
+\end{thebibliography}
+
+\end{document}

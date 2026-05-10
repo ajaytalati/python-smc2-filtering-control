@@ -1,0 +1,27 @@
+\section{Physiological Foundations}
+
+The FSA-v2 model is a three-dimensional representation of an individual's physiological response to physical training stimulus. It builds upon the classical impulse-response models of human performance, specifically the Banister model, and extends it with a dynamic autonomic component.
+
+\subsection{The Banister Framework: Fitness and Fatigue}
+
+The core of the model is the Banister two-compartment framework (Banister et al., 1975). In this paradigm, physical training stimulus ($\Phi$) has two simultaneous but opposing effects on performance:
+\begin{enumerate}
+    \item \textbf{Fitness (B):} A slow-changing, positive chronic effect. Fitness accrues through training and decays slowly over several weeks.
+    \item \textbf{Fatigue (F):} A fast-changing, negative acute effect. Fatigue accrues more rapidly than fitness and decays faster (typically over a few days).
+\end{enumerate}
+
+Traditional Banister models are deterministic and linear. The FSA-v2 model modernizes this by treating \(B\) and \(F\) as latent variables in a stochastic system, where the training stimulus \(\Phi(t)\) acts as a driving force.
+
+\subsection{Autonomic Amplitude (A)}
+
+The third state variable, \(A\), represents the amplitude of a Stuart-Landau oscillator, acting as a proxy for autonomic regulation or circadian robustness. In the FSA-v2 model, \(A\) is not just a passive marker but is coupled to the fitness and fatigue compartments:
+\begin{itemize}
+    \item High fitness (\(B\)) promotes a higher equilibrium for \(A\).
+    \item High fatigue (\(F\)) suppresses the amplitude \(A\).
+\end{itemize}
+
+This coupling creates a "biologically realistic" feedback loop where overtraining (high \(F\) relative to \(B\)) can lead to an autonomic collapse, characterized by a bifurcation in the \(A\) dynamics.
+
+\subsection{Biological Interpretation of the G1 Form}
+
+The G1-reparametrization reflects the biological reality that certain physiological interactions are only observable under specific conditions. For example, the effect of autonomic amplitude \(A\) on the rate of fitness accrual is most identifiable when \(A\) deviates significantly from its typical baseline. By centering the model around an operating point \((B_{\mathrm{typ}}, F_{\mathrm{typ}}, A_{\mathrm{typ}})\), we distinguish between the "canonical" Banister response and the "residual" coupling effects that become prominent under high-performance or pathological regimes.

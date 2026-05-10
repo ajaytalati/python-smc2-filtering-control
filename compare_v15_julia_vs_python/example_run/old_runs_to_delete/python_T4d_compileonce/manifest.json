@@ -1,0 +1,82 @@
+{
+  "bench": "bench_smc_full_mpc_fsa_v15",
+  "T_days": 4,
+  "n_strides": 8,
+  "replan_K": 2,
+  "n_smc": 512,
+  "k_pf": 1000,
+  "ctrl_n_smc": 2048,
+  "ctrl_n_inner": 64,
+  "ctrl_num_mcmc": 8,
+  "ctrl_hmc_step": 0.2,
+  "ctrl_hmc_leap": 16,
+  "ctrl_target_nats": 8.0,
+  "ctrl_max_levels": 40,
+  "ctrl_max_lambda_inc": 0.2,
+  "ctrl_sigma_prior": 1.5,
+  "ctrl_n_anchors": 12,
+  "smoke": false,
+  "seed": 42,
+  "device": "gpu",
+  "total_elapsed_s": 190.8273322582245,
+  "replan_history": [
+    {
+      "stride": 2,
+      "plan_per_day": [
+        0.08579575562210047,
+        0.11706073208320833,
+        0.29099945518882814,
+        0.7333751576731595
+      ],
+      "n_temp": 6
+    },
+    {
+      "stride": 4,
+      "plan_per_day": [
+        0.0912149511879053,
+        0.13143610161798772,
+        0.3065799098652131,
+        0.7384203796985626
+      ],
+      "n_temp": 6
+    },
+    {
+      "stride": 6,
+      "plan_per_day": [
+        0.08930200577252778,
+        0.12777465446133562,
+        0.2889162768094724,
+        0.7346272736830857
+      ],
+      "n_temp": 6
+    }
+  ],
+  "param_names": [
+    "tau_F",
+    "B_inf",
+    "F_inf",
+    "lambda_A",
+    "mu_0",
+    "mu_B",
+    "mu_F",
+    "sigma_B",
+    "sigma_F",
+    "sigma_A"
+  ],
+  "truth_params": {
+    "tau_F": 7.0,
+    "B_inf": 0.504,
+    "F_inf": 0.21,
+    "lambda_A": 1.0,
+    "mu_0": 0.02,
+    "mu_B": 0.3,
+    "mu_F": 0.1,
+    "sigma_B": 0.01,
+    "sigma_F": 0.012,
+    "sigma_A": 0.02
+  },
+  "BINS_PER_DAY": 24,
+  "STRIDE_BINS": 12,
+  "WINDOW_BINS": 24,
+  "step_minutes": 60
+}

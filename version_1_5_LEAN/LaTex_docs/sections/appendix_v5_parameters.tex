@@ -1,0 +1,169 @@
+\section*{Appendix: Complete FSA-v5 Parameter Reference}
+\addcontentsline{toc}{section}{Appendix: Complete FSA-v5 Parameter Reference}
+\label{sec:appendix-v5-parameters}
+
+This appendix is the canonical reference for every parameter in the
+FSA-v5 model as implemented in the ``smc2fc``-port-ready codebase. For
+each parameter we list its symbol, role in the equations of motion,
+prior (if estimated) or frozen value, and where it first appears in the
+main document.
+
+The parameter set as implemented in
+\path{models/fsa_high_res/estimation.py} consists of \textbf{37
+estimated parameters} plus \textbf{14 frozen} (8 dynamics +
+6 diffusion-related). The maximum-pinning rationale is the §11.6
+recommendation derived from the Fisher-information analysis in §11.
+
+\subsection*{Estimated parameters (37)}
+
+These are the entries of \texttt{PARAM\_PRIOR\_CONFIG} in
+\texttt{estimation.py}. Lognormal priors are parameterised as
+$\log\theta \sim \mathcal{N}(\mu_{\log}, \sigma_{\log}^2)$ — the table
+shows $(\exp(\mu_{\log}),\, \sigma_{\log})$. Normal priors are
+parameterised directly as $(\mu, \sigma)$.
+
+\begin{center}\small
+\begin{tabular}{llll}
+\toprule
+Symbol & Role / location & Prior & Truth \\
+\midrule
+\multicolumn{4}{l}{\textit{Dynamics — aerobic capacity B}} \\
+\midrule
+$\tau_B$ & B time-scale / §11.1 & lognormal $(42.0,\,0.10)$ & $42.0$ d \\
+$\kappa_B$ & B gain / §11.1 & lognormal $(0.01248,\,0.20)$ & $0.01248$ \\
+$\epsilon_{AB}$ & autonomic-coupling on B / §11.1 & lognormal $(0.40,\,0.05)$ & $0.40$ \\
+\midrule
+\multicolumn{4}{l}{\textit{Dynamics — strength capacity S}} \\
+\midrule
+$\tau_S$ & S time-scale / §11.1 & lognormal $(60.0,\,0.10)$ & $60.0$ d \\
+$\kappa_S$ & S gain / §11.1 & lognormal $(0.00816,\,0.20)$ & $0.00816$ \\
+$\epsilon_{AS}$ & autonomic-coupling on S / §11.1 & lognormal $(0.20,\,0.05)$ & $0.20$ \\
+\midrule
+\multicolumn{4}{l}{\textit{Dynamics — fatigue F}} \\
+\midrule
+$\tau_F$ & F time-scale / §11.1 & lognormal $(6.36,\,0.15)$ & $6.36$ d \\
+$\lambda_A$ & autonomic-coupling on F / §11.1 & lognormal $(1.00,\,0.05)$ & $1.00$ \\
+\midrule
+\multicolumn{4}{l}{\textit{Dynamics — variable-dose K (Busso 2003)}} \\
+\midrule
+$\mu_K$ & K damage rate / §11.1 & lognormal $(0.005,\,0.20)$ & $0.005$ \\
+\midrule
+\multicolumn{4}{l}{\textit{Dynamics — Stuart--Landau bifurcation parameter $\bar\mu$}} \\
+\midrule
+$\mu_0$ & baseline drive / §11.1 & lognormal $(0.036,\,0.20)$ & $0.036$ \\
+$\mu_B$ & B$\to$A coupling / §11.1 & lognormal $(0.30,\,0.20)$ & $0.30$ \\
+$\mu_S$ & S$\to$A coupling / §11.1 & lognormal $(0.15,\,0.20)$ & $0.15$ \\
+$\mu_F$ & F$\to$A linear suppression / §11.1 & lognormal $(0.26,\,0.20)$ & $0.26$ \\
+$\mu_{FF}$ & quadratic F penalty / §11.1 & lognormal $(0.40,\,0.05)$ & $0.40$ \\
+$\eta$ & cubic damping in A / §11.1 & lognormal $(0.20,\,0.15)$ & $0.20$ \\
+\midrule
+\multicolumn{4}{l}{\textit{HR observation channel}} \\
+\midrule
+$\text{HR}_\text{base}$ & resting HR baseline (bpm) / §11.1 & normal $(62.0,\,2.0)$ & $62.0$ \\
+$\kappa_B^{HR}$ & HR$\propto -B$ slope / §11.1 & lognormal $(12.0,\,0.15)$ & $12.0$ \\
+$\alpha_A^{HR}$ & HR$\propto +A$ slope / §11.1 & lognormal $(3.0,\,0.20)$ & $3.0$ \\
+$\beta_C^{HR}$ & HR circadian coefficient / §11.1 & normal $(-2.5,\,0.5)$ & $-2.5$ \\
+$\sigma_{HR}$ & HR observation noise (bpm) / §11.1 & lognormal $(2.0,\,0.20)$ & $2.0$ \\
+\midrule
+\multicolumn{4}{l}{\textit{Sleep Bernoulli channel}} \\
+\midrule
+$k_C$ & sleep$\propto C$ slope / §11.1 & lognormal $(3.0,\,0.15)$ & $3.0$ \\
+$k_A$ & sleep$\propto A$ slope / §11.1 & lognormal $(2.0,\,0.25)$ & $2.0$ \\
+$\tilde c$ & sleep logit intercept / §11.1 & normal $(0.5,\,0.25)$ & $0.5$ \\
+\midrule
+\multicolumn{4}{l}{\textit{Stress observation channel}} \\
+\midrule
+$S_\text{base}$ & stress baseline / §11.1 & normal $(30.0,\,3.0)$ & $30.0$ \\
+$k_F$ & stress$\propto +F$ slope / §11.1 & lognormal $(20.0,\,0.20)$ & $20.0$ \\
+$k_{A,S}$ & stress$\propto -A$ slope / §11.1 & lognormal $(8.0,\,0.25)$ & $8.0$ \\
+$\beta_C^{S}$ & stress circadian coefficient / §11.1 & normal $(-4.0,\,0.8)$ & $-4.0$ \\
+$\sigma_S$ & stress observation noise / §11.1 & lognormal $(4.0,\,0.20)$ & $4.0$ \\
+\midrule
+\multicolumn{4}{l}{\textit{Steps observation channel (log-Gaussian)}} \\
+\midrule
+$\mu_\text{step,0}$ & log-steps intercept / §11.1 & normal $(5.5,\,0.3)$ & $5.5$ \\
+$\beta_B^{st}$ & steps$\propto +B$ slope / §11.1 & lognormal $(0.8,\,0.20)$ & $0.8$ \\
+$\beta_F^{st}$ & steps$\propto -F$ slope / §11.1 & lognormal $(0.5,\,0.25)$ & $0.5$ \\
+$\beta_A^{st}$ & steps$\propto +A$ slope / §11.1 & lognormal $(0.3,\,0.25)$ & $0.3$ \\
+$\beta_C^{st}$ & steps circadian coefficient / §11.1 & normal $(-0.8,\,0.2)$ & $-0.8$ \\
+$\sigma_\text{st}$ & log-steps noise / §11.1 & lognormal $(0.5,\,0.15)$ & $0.5$ \\
+\midrule
+\multicolumn{4}{l}{\textit{Volume Load observation channel}} \\
+\midrule
+$\beta_S^{VL}$ & VL$\propto +S$ slope / §11.1 & lognormal $(100.0,\,0.15)$ & $100.0$ \\
+$\beta_F^{VL}$ & VL$\propto -F$ slope / §11.1 & lognormal $(20.0,\,0.20)$ & $20.0$ \\
+$\sigma_{VL}$ & VL observation noise / §11.1 & lognormal $(10.0,\,0.20)$ & $10.0$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection*{Frozen parameters (8 dynamics + 6 diffusion-related)}
+
+These do not appear in the estimated parameter vector. They are baked
+into the ``EstimationModel.frozen\_params`` dict. Reasons for freezing
+each one are tied directly to the §11 FIM analysis.
+
+\begin{center}\small
+\begin{tabular}{lllp{6cm}}
+\toprule
+Symbol & Frozen value & Role / location & Reason for freezing \\
+\midrule
+\multicolumn{4}{l}{\textit{Dynamics-side freezes}} \\
+\midrule
+$K_{FB}^0$  & $0.030$ & baseline aerobic K / §11.1   & Structurally non-identifiable. Slow-manifold relaxation collapses $K_{FB}^0$ and $\tau_K \mu_K$ into a single observable. §11.6 result (1). \\
+$K_{FS}^0$  & $0.050$ & baseline strength K / §11.1  & Same as $K_{FB}^0$. \\
+$\tau_K$    & $21.0$ d & K relaxation timescale / §11.1 & Busso-standard. Jointly weakly identified with $\mu_K$ (§11.6 result 5). \\
+$n_\text{dec}$ & $4.0$ & Hill exponent / §10 eq.\ 25 & Structural shape parameter; not learned. \\
+$B_\text{dec}$ & $0.07$ & B deconditioning threshold / §10 & Pinned to §10.4 Table 5 value. Inference requires $\ge 6$-week detraining episode (§11.6 result 3). \\
+$S_\text{dec}$ & $0.07$ & S deconditioning threshold / §10 & Same. \\
+$\mu_{B-}$ & $0.10$ & B deconditioning amplitude / §10 & Pinned to §10.4 Table 5 value. Inference requires same long detraining (§11.6 result 2). \\
+$\mu_{S-}$ & $0.10$ & S deconditioning amplitude / §10 & Same. \\
+\midrule
+\multicolumn{4}{l}{\textit{Diffusion-side freezes (always frozen, both v4 and v5)}} \\
+\midrule
+$\sigma_B$ & $0.010$ & B Jacobi diffusion / §11.1 & Identifiability via diffusion is weak; standard practice. \\
+$\sigma_S$ & $0.008$ & S Jacobi diffusion / §11.1 & Same. \\
+$\sigma_F$ & $0.012$ & F CIR diffusion / §11.1 & Same. \\
+$\sigma_A$ & $0.020$ & A CIR diffusion / §11.1 & Same. \\
+$\sigma_K$ & $0.005$ & K CIR diffusion (shared) / §11.1 & Same. \\
+$\phi$    & $0.0$    & circadian phase reference / §11.1 & Held at zero by convention. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection*{Initial state}
+
+The 6D initial state is set from data or from \texttt{DEFAULT\_INIT}; it
+has no explicit prior in the v5 \texttt{EstimationModel} (i.e.,
+\texttt{INIT\_STATE\_PRIOR\_CONFIG = OrderedDict()}). Default values
+correspond to a ``deconditioned but not unhealthy'' baseline:
+
+\begin{center}\small
+\begin{tabular}{lll}
+\toprule
+State & Default & Bounds \\
+\midrule
+$B$    & $0.05$  & $[0, 1]$ \\
+$S$    & $0.10$  & $[0, 1]$ \\
+$F$    & $0.30$  & $[0, \infty)$ \\
+$A$    & $0.10$  & $[0, \infty)$ \\
+$K_{FB}$ & $0.030$ & $[0, \infty)$ \\
+$K_{FS}$ & $0.050$ & $[0, \infty)$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection*{Reading guide for the smc2fc port}
+
+After importing \texttt{models.fsa\_high\_res}, the port has access to:
+
+\begin{itemize}
+  \item \texttt{HIGH\_RES\_FSA\_V5\_ESTIMATION} — the ``EstimationModel`` to register with the SMC$^2$ engine. Built from the parameter prior config and frozen-params dict above.
+  \item \texttt{HIGH\_RES\_FSA\_V5\_MODEL} — the ``SDEModel`` for forward simulation.
+  \item \texttt{StepwisePlant} — the closed-loop plant for synthetic-feedback testing.
+  \item \texttt{evaluate\_chance\_constrained\_cost} — the §9.6 v5 control cost (equations 23, 24).
+\end{itemize}
+
+The frozen values can be relaxed one at a time (move from
+\texttt{frozen\_params} into \texttt{PARAM\_PRIOR\_CONFIG}) as the
+calibration data set grows to support them.

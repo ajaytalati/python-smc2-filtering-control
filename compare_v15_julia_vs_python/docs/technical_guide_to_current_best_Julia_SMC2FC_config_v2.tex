@@ -1,0 +1,528 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=2cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{microtype}
+\usepackage{parskip}
+\usepackage{listings}
+
+\hypersetup{colorlinks=true, linkcolor=blue!50!black, urlcolor=blue!50!black}
+
+\lstset{basicstyle=\ttfamily\footnotesize,breaklines=true,
+        frame=single,framerule=0pt,backgroundcolor=\color{black!4},
+        columns=fullflexible,keepspaces=true,
+        showstringspaces=false,xleftmargin=0pt}
+
+\title{\textbf{Current best Julia v1.5 SMC$^2$-FC config (RTX 5090) --- v2}\\
+       \large 2026-05-09 update: filter HMC unified with framework ChEES,
+              fast controller is the new default}
+\author{}
+\date{Generated 2026-05-09}
+
+\begin{document}
+\maketitle
+
+\section*{What changed since v1}
+
+The 2026-05-08 v1 of this guide documented an out-of-date config. The
+2026-05-09 changes that prompted this v2:
+
+\begin{itemize}[leftmargin=*, itemsep=2pt]
+\item \textbf{Filter HMC was 0\,\% accept across 2880 logged tempering
+      levels} in the v1 saturated baseline (measured: source
+      \texttt{compare\_v15\_julia\_vs\_python/example\_run/}\\
+      \texttt{julia\_horizon\_sweep\_2026-05-09/} bench logs;
+      cross-tabulation in
+      \texttt{TIER\_0\_FINDINGS.md}). Two underlying bugs:
+      step size $\varepsilon$ too large and $h_{\mathrm{fd}}$ too
+      small (Bug~A); MCMC kernel did not scale by $\lambda$ (Bug~B,
+      masked by Bug~A). \emph{Fixed} by porting the filter HMC to
+      the framework's generic ChEES path
+      (\texttt{parallel\_hmc\_one\_move\_generic!} +
+      \texttt{chees\_pick\_L\_generic} in
+      \texttt{julia/SMC2FC\_functional/src/Control/GPUControlSMC.jl}),
+      passing \texttt{beta = next\_$\lambda$}, with
+      $\varepsilon = 0.005$ and $h_{\mathrm{fd}} = 0.01$.
+\item \textbf{Fast controller is the new default}
+      (\texttt{--ctrl-n-smc 1024 --ctrl-num-mcmc 8}; was 2048 / 16
+      in v1). The technical guide v1's "When to deviate $\to$
+      shorter wall time" recipe is now the default; saturated
+      controller is the deviation.
+\item \textbf{New filter-side rejuvenation knobs} that v1 did not
+      expose at all: \texttt{--liu-west-a 0.97},
+      \texttt{--smooth-resample-bw 1.0},
+      \texttt{--gaussian-bridge true},
+      \texttt{--h-fd 0.01},
+      \texttt{--filter-chees-min/max 4 / 64},
+      \texttt{--collect-ctrl-diagnostics true}.
+\end{itemize}
+
+Compared to the v1 saturated config, the new defaults at
+$T = 28$\,d trade roughly the same wall (19.1 vs 19.5 min) for a
+filter HMC that actually works (mean accept 65.5\,\% vs 0\,\%). Full
+table in \S\ref{sec:headline}.
+
+
+\section*{TL;DR --- minimal CLI invocation}
+
+The new defaults reproduce the saturated 2026-05-09 unified-filter-HMC
+sweep with no flag overrides:
+
+\begin{verbatim}
+cd /home/ajay/Repos/python-smc2-filtering-control/version_1_5_Julia
+
+julia --project=. tools/bench_smc_full_mpc_fsa_gpu.jl \
+    --T-days 28 --seed 42 --output-dir /tmp/v15_T28d_run
+\end{verbatim}
+
+\noindent
+Verified on a sanity run 2026-05-09 (saved manifest at
+\texttt{/tmp/v15\_new\_defaults\_T2d/manifest.json}): a bare
+invocation produces \texttt{hmc\_step\_size = 0.005},
+\texttt{h\_fd = 0.01}, \texttt{liu\_west\_a = 0.97},
+\texttt{smooth\_resample\_bw = 1.0},
+\texttt{gaussian\_bridge = true},
+\texttt{filter\_chees\_min/max = 4 / 64},
+controller \texttt{n\_smc = 1024 num\_mcmc = 8}.
+
+\textbf{If you need to be explicit} about every flag (for
+reproducibility / scripts), the full command is:
+
+\begin{verbatim}
+julia --project=. tools/bench_smc_full_mpc_fsa_gpu.jl \
+    --T-days 28 --seed 42 \
+    --num-mcmc 3 \
+    --hmc-step-size 0.005 \
+    --hmc-leapfrog 4 \
+    --h-fd 0.01 \
+    --filter-chees-min 4 --filter-chees-max 64 \
+    --liu-west-a 0.97 \
+    --smooth-resample-bw 1.0 \
+    --gaussian-bridge true \
+    --N-smc 512 --K-per-chain 1000 \
+    --ctrl-n-smc 1024 --ctrl-num-mcmc 8 \
+    --collect-ctrl-diagnostics true \
+    --output-dir /tmp/v15_T28d_run
+\end{verbatim}
+
+The two are equivalent at the time of writing (verified by reading
+the bench's \texttt{\_parse\_args} \texttt{defaults} dict in
+\texttt{version\_1\_5\_Julia/tools/bench\_smc\_full\_mpc\_fsa\_gpu.jl}).
+
+\tableofcontents
+
+
+\section{The framework: \texttt{SMC2FC\_functional}}
+
+\texttt{julia/SMC2FC\_functional/} is the default Julia framework.
+The previous \texttt{julia/SMC2FC/} has been renamed to
+\texttt{julia/SMC2FC\_DEPRECIATED\_USE\_FUNCTIONAL/} and is no longer
+used by the v1.5 bench. Both the bench's \texttt{Project.toml} and
+\texttt{version\_1\_5\_Julia/models/fsa\_high\_res/gpu\_pf.jl} import
+\texttt{SMC2FC\_functional} (commits \texttt{4a5c007},
+\texttt{9bab259}; numerics bit-identical to the deprecated framework
+on the GPU bench). v2 of this guide adds: the bench's filter HMC
+also goes through the framework's generic ChEES code path
+(\S\ref{sec:filter_hmc_unified}).
+
+
+\section{Filter-side config (the inner PF + outer SMC$^2$)}
+\label{sec:filter_cfg}
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabular}{lll}
+\toprule
+flag & value & what it controls \\
+\midrule
+\texttt{--N-smc}             & 512  & outer SMC$^2$ posterior particles over $\theta$ (10-D filter parameters) \\
+\texttt{--K-per-chain}       & 1000 & inner-PF state particles per chain (latent state cloud size) \\
+\texttt{--num-mcmc}          & 3    & filter HMC moves per outer tempering level \\
+\texttt{--hmc-step-size}     & 0.005 & filter HMC $\varepsilon$ (was 0.05 in v1; sweet-spot from sweep) \\
+\texttt{--hmc-leapfrog}      & 4    & filter HMC initial-fallback $L$ (overridden adaptively by ChEES) \\
+\texttt{--h-fd}              & 0.01 & filter HMC FD-gradient step (was hardcoded $10^{-3}$; new in v2) \\
+\texttt{--filter-chees-min}  & 4    & filter ChEES candidate-list minimum (new in v2) \\
+\texttt{--filter-chees-max}  & 64   & filter ChEES candidate-list maximum (list = $[4, 8, 16, 32, 64]$; new in v2) \\
+\texttt{--max-temp-levels}   & 30   & filter tempering cap (typically uses 5 in practice) \\
+\texttt{--max-lambda-inc}    & 0.20 & maximum $\Delta\lambda$ per step \\
+\texttt{--target-ess-frac}   & 0.5  & ESS-bisection target as fraction of $N_{\mathrm{smc}}$ \\
+\texttt{--ot-max-weight}     & 0.0  & OT rescue OFF; turning it on costs $\sim 12\times$ wall \\
+\bottomrule
+\end{tabular}
+\caption{Filter-side defaults. Bold-equivalent changes from v1:
+\texttt{--hmc-step-size} 0.05 $\to$ 0.005, and the new flags
+\texttt{--h-fd}, \texttt{--filter-chees-min},
+\texttt{--filter-chees-max}.}
+\label{tab:filter_cfg}
+\end{table}
+
+\paragraph{Why $\varepsilon = 0.005$?} The standalone HMC accept-rate
+sweep at
+\texttt{compare\_v15\_julia\_vs\_python/example\_run/}\\
+\texttt{julia\_horizon\_sweep\_2026-05-09/diag\_hmc\_accept\_sweep.csv}
+varied $\varepsilon \in [10^{-3}, 0.2]$, $L \in \{1, 4, 16\}$,
+$h_{\mathrm{fd}} \in \{10^{-2}, 10^{-3}, 10^{-4}\}$ at fixed $M = 128$
+chains over a 1-day truth-window prior cloud. Selected rows:
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabular}{rrrr}
+\toprule
+$\varepsilon$ & $L$ & $h_{\mathrm{fd}}$ & accept (\%) \\
+\midrule
+0.001  & 1 & $10^{-2}$ & 73.4 \\
+0.001  & 4 & $10^{-2}$ & 74.2 \\
+0.005  & 1 & $10^{-2}$ & 58.6 \\
+0.005  & 4 & $10^{-2}$ & 36.7 \\
+0.01   & 1 & $10^{-2}$ & 50.0 \\
+\textbf{0.05} & \textbf{4} & \textbf{$10^{-3}$} (v1 defaults) & \textbf{0.0} \\
+\bottomrule
+\end{tabular}
+\caption{Selected rows from \texttt{diag\_hmc\_accept\_sweep.csv}.}
+\label{tab:hmc_sweep}
+\end{table}
+
+\noindent
+Pick: $\varepsilon = 0.005$, $h_{\mathrm{fd}} = 10^{-2}$. The
+rolling-window unified-HMC sweep
+(\texttt{julia\_horizon\_sweep\_2026-05-09\_filter\_hmc\_unified/})
+measured 61.9--71.4\,\% mean accept at this default across
+$T \in \{14, 28, 42\}$\,d
+(\texttt{docs/filter\_hmc\_accept\_summary.csv}).
+
+
+\section{Filter-side rejuvenation knobs}
+\label{sec:rejuv}
+
+These flags wire in three complementary diversification mechanisms
+on the parameter cloud. v1 had none of them exposed; v2 makes them
+the default.
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabular}{lll}
+\toprule
+flag & value & where it fires \\
+\midrule
+\texttt{--liu-west-a}        & 0.97 & per-tempering level, between systematic resample and HMC; per-dim Liu--West shrinkage \\
+\texttt{--smooth-resample-bw} & 1.0  & per-tempering level; Silverman-bandwidth KDE resample with Liu--West correction \\
+\texttt{--gaussian-bridge}   & true & between rolling windows; multivariate Gaussian bridge \\
+\bottomrule
+\end{tabular}
+\caption{New filter-side rejuvenation defaults. All three are ON by
+default in v2.}
+\label{tab:rejuv}
+\end{table}
+
+\noindent
+\textbf{Per-dim Liu--West shrinkage} (\texttt{--liu-west-a 0.97}):
+$\theta_i \leftarrow a \cdot \theta_i + (1 - a) \cdot \overline{\theta} + \sqrt{1 - a^2} \cdot \sigma_d \cdot \xi$
+applied per parameter dimension, between systematic resample and
+HMC. Inline implementation in
+\texttt{version\_1\_5\_Julia/tools/bench\_smc\_full\_mpc\_fsa\_gpu.jl}
+inside \texttt{run\_outer\_smc}. Fall-back; superseded by
+smooth-resample when that is on.
+
+\noindent
+\textbf{Silverman+KDE+LW smooth resample}
+(\texttt{--smooth-resample-bw 1.0}): multivariate kernel-density
+resample with bandwidth from Silverman's rule and a coupled
+Liu--West correction $a = \sqrt{1 - h_{\mathrm{norm}}^2}$. Math
+ported into the bench from
+\texttt{julia/SMC2FC\_functional/src/Filtering/Kernels.jl::}
+\texttt{smooth\_resample}. When \texttt{smooth\_resample\_bw $>$ 0}
+this branch is selected over the per-dim Liu--West.
+
+\noindent
+\textbf{Multivariate Gaussian bridge}
+(\texttt{--gaussian-bridge true}): between rolling windows, replaces
+the identity-copy of the previous-window posterior with a sample
+from $\mathcal{N}(\hat\mu, \hat\Sigma_{\mathrm{reg}})$ via
+\texttt{Bridge.fit\_gaussian} +
+\texttt{Bridge.sample\_from\_gaussian} in
+\texttt{julia/SMC2FC\_functional/src/SMC2/Bridge.jl}. Regularised
+sample covariance with $10^{-6}$ Tikhonov.
+
+
+\section{Filter HMC = framework ChEES path}
+\label{sec:filter_hmc_unified}
+
+In v1 the filter HMC was a model-specific function
+(\texttt{parallel\_hmc\_one\_move!}) in
+\texttt{models/fsa\_high\_res/gpu\_pf.jl} with FIXED leapfrog count
+and a \texttt{tempered\_grads} closure that did not depend on
+$\lambda$. In v2 the filter calls the same generic framework
+functions the controller uses:
+
+\begin{itemize}[itemsep=2pt]
+  \item \texttt{parallel\_hmc\_one\_move\_generic!} in
+        \texttt{julia/SMC2FC\_functional/src/Control/GPUControlSMC.jl}.
+        Takes a \texttt{beta::Float64} keyword and computes
+        \texttt{vals\_prior + beta * vals\_data} (and the
+        corresponding gradient) --- this fixes Bug~B (missing
+        $\lambda$-tempering) by construction. Bench passes
+        \texttt{beta = next\_$\lambda$} per tempering level.
+  \item \texttt{chees\_pick\_L\_generic} same file. Adapts the
+        leapfrog count $L$ per tempering level by maximising
+        expected squared jump distance per $\varepsilon \cdot L$
+        across the candidate list
+        $\{4, 8, 16, 32, 64\}$ (filter side; controller list is
+        $\{16, \ldots, 512\}$).
+\end{itemize}
+
+The bench's call site in \texttt{run\_outer\_smc} now wraps
+\texttt{gpu\_log\_density} as a closure
+\texttt{log\_density\_fn :: Matrix\{Float64\} -> Vector\{Float64\}}
+and passes it to the framework functions. The model-specific
+\texttt{parallel\_hmc\_one\_move!} and
+\texttt{parallel\_hmc\_one\_move} in \texttt{gpu\_pf.jl} are no
+longer called by the bench (left in place, separate cleanup).
+
+\paragraph{Measured filter HMC behaviour at the new defaults.}
+From the unified-HMC sweep
+(\texttt{julia\_horizon\_sweep\_2026-05-09\_filter\_hmc\_unified/}\\
+\texttt{docs/filter\_hmc\_accept\_summary.csv}):
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabular}{rrrrrrr}
+\toprule
+$T$ (d) & n levels & mean accept (\%) & median (\%) & min (\%) & max (\%) & mean ChEES $L$ \\
+\midrule
+14 & 130 & 71.35 & 73.00 & 24 & 94 & 58.22 \\
+28 & 270 & 65.47 & 68.00 & 13 & 94 & 54.70 \\
+42 & 410 & 61.90 & 64.00 & 10 & 93 & 51.84 \\
+\bottomrule
+\end{tabular}
+\caption{Measured filter HMC behaviour. Compare with the v1
+configuration's \textbf{0\,\% accept across 2880 levels}.}
+\label{tab:filter_hmc_meas}
+\end{table}
+
+
+\section{Controller-side config (the SMC$^2$-MPC plan finder)}
+\label{sec:ctrl_cfg}
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabular}{lll}
+\toprule
+flag & value & what it controls \\
+\midrule
+\texttt{--ctrl-n-smc}        & 1024 & outer SMC$^2$ particles over RBF $\theta_{\mathrm{ctrl}}$ (was 2048 in v1) \\
+\texttt{--ctrl-num-mcmc}     & 8    & ChEES-HMC moves per controller tempering level (was 16 in v1) \\
+\texttt{--ctrl-chees-max}    & 512  & ChEES picker upper bound; candidate list = $[16, 32, 64, \ldots, 512]$ \\
+\texttt{--ctrl-n-anchors}    & 12   & RBF basis cardinality (controller posterior dimension) \\
+\texttt{--ctrl-max-levels}   & 40   & cap on controller tempering levels (typically uses 5--6) \\
+\texttt{--ctrl-n-inner}      & 64   & inner CRN-MC trajectories per cost evaluation \\
+\texttt{--ctrl-target-nats}  & 8.0  & auto-calibration target entropy (nats) \\
+\texttt{--ctrl-sigma-prior}  & 1.5  & prior std on the RBF coefficient vector \\
+\texttt{--ctrl-hmc-step}     & 0.2  & base leapfrog step size $\varepsilon$ \\
+\texttt{--ctrl-hmc-leap}     & 16   & base leapfrog count (overridden adaptively by ChEES) \\
+\texttt{--collect-ctrl-diagnostics} & true & per-tempering-level controller HMC diagnostics CSV (new in v2) \\
+\bottomrule
+\end{tabular}
+\caption{Controller-side defaults. Changes from v1:
+\texttt{--ctrl-n-smc} 2048 $\to$ 1024,
+\texttt{--ctrl-num-mcmc} 16 $\to$ 8, plus the new
+\texttt{--collect-ctrl-diagnostics} flag (default \texttt{true}).
+To recover v1's saturated config, pass \texttt{--ctrl-n-smc 2048
+--ctrl-num-mcmc 16}.}
+\label{tab:ctrl_cfg}
+\end{table}
+
+\paragraph{Controller-HMC measured behaviour at the new defaults}
+(\texttt{docs/controller\_hmc\_summary.csv}):
+
+\begin{table}[ht]
+\centering
+\footnotesize
+\begin{tabular}{rrrrrrr}
+\toprule
+$T$ (d) & replans & total levels & mean accept (\%) & mean $L$ & mean $\beta_{\max}$ & mean ESJD/$\varepsilon L$ \\
+\midrule
+14 & 13 & 69  & 96.87 & 16 & 226.39 & 14.12 \\
+28 & 27 & 147 & 95.43 & 16 &  27.02 & 13.73 \\
+42 & 41 & 238 & 96.31 & 16 &   5.69 & 13.63 \\
+\bottomrule
+\end{tabular}
+\caption{Controller HMC was already correct in v1 (the $\beta$
+keyword in
+\texttt{parallel\_hmc\_one\_move\_generic!} has always been
+respected on the controller side). v2's instrumentation just makes
+this measurable per stride.}
+\label{tab:ctrl_hmc_meas}
+\end{table}
+
+
+\section{Why this config (not bigger, not smaller)}
+\label{sec:why}
+
+\paragraph{The filter-HMC tier is now correct, not just larger.}
+v1 reached its filter "saturated" tier by setting $N_{\mathrm{smc}}
+= 512$ and $K_{\mathrm{per\_chain}} = 1000$ but left the HMC
+kernel rejecting 100\,\% of proposals --- so the cloud was kept
+alive only by systematic resample. v2 re-enables HMC by porting it
+to the framework's working code path; the filter cloud now mixes
+each tempering level (61.9--71.4\,\% accept,
+Table~\ref{tab:filter_hmc_meas}).
+
+\paragraph{The fast controller is the new default} because it
+delivers comparable wall to v1's saturated config
+($T = 28$\,d: 19.1 vs 19.5 min) while the filter side does the
+extra HMC work. Saturated controller is now an opt-in deviation
+(\S\ref{sec:deviate}).
+
+\paragraph{Smaller still leaves the GPU empty.} The historical
+$N = 32, K = 200$ default mentioned in v1 stays a footnote: GPU
+util $\sim 38\,\%$, controller settles for a weakly-ramped
+schedule.
+
+\paragraph{Bigger is still wall-time-infeasible} for now. v1 noted
+$N = 1024, K = 4000, n_{\mathrm{anchors}} = 16$ does not produce
+log output in 33 min wall. Untouched in v2.
+
+
+\section{Headline scientific result at the new defaults}
+\label{sec:headline}
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabular}{lrr}
+\toprule
+metric ($T = 28$\,d, seed=42, RTX 5090) & v1 saturated config & 2026-05-09 default (v2) \\
+\midrule
+total wall time              & 19.5 min  & 19.1 min   \\
+mean GPU util                & 49.5\,\%  & 59.0\,\%   \\
+peak VRAM                    & 6662 MiB  & 5903 MiB   \\
+filter HMC mean accept       & 0\,\%     & 65.5\,\%   \\
+controller HMC mean accept   & (not measured) & 95.4\,\% \\
+applied $\bar\Phi$ at stride 21 & 0.695  & 1.72       \\
+$\overline{A}_{\mathrm{MPC}}$  & (not in v1) & 0.090   \\
+final $A_{\mathrm{MPC}}$       & (not in v1) & 0.155   \\
+$F$ violations                 & (not in v1) & 0       \\
+\bottomrule
+\end{tabular}
+\caption{Comparison of v1's saturated baseline with the new v2
+default. Sources: v1's quoted numbers from
+\texttt{compare\_v15\_julia\_vs\_python/example\_run/}\\
+\texttt{julia\_saturation/FINDINGS\_T28d\_julia\_saturated.md};
+v2 numbers from
+\texttt{julia\_horizon\_sweep\_2026-05-09\_filter\_hmc\_unified/}\\
+\texttt{horizons\_results.csv} +
+\texttt{docs/filter\_hmc\_accept\_summary.csv} +
+\texttt{docs/controller\_hmc\_summary.csv}.}
+\label{tab:headline}
+\end{table}
+
+\paragraph{What the table is saying.} The new defaults' wall is
+within 2\,\% of v1's saturated config wall, but the filter HMC
+contributes real mixing (65.5\,\% accept) where v1's was producing
+zero useful HMC work. The applied $\bar\Phi$ at stride 21 jumps
+from 0.695 to 1.72 --- the controller is acting on a more
+informative posterior, so it commits more aggressively to the
+build-up phase. Closed-loop $\overline{A}_{\mathrm{MPC}}$ at
+$T = 28$\,d is 0.090 (vs the constant-$\Phi=1$ baseline rollout's
+0.181); zero $F$-barrier violations.
+
+
+\section{When to deviate from these defaults}
+\label{sec:deviate}
+
+\begin{itemize}[leftmargin=*, itemsep=2pt]
+\item \textbf{Want the v1 saturated controller back} (richer
+$\Phi$ schedule basis, $\sim 4\times$ more wall): set
+\texttt{--ctrl-n-smc 2048 --ctrl-num-mcmc 16}. v1's "Why this config"
+discussion of the saturated tier still applies, just at the cost
+of $\sim 4\times$ wall.
+
+\item \textbf{Want the v1 filter HMC behaviour back} (debugging
+purposes only --- this is the broken config): set
+\texttt{--num-mcmc 0} to disable filter HMC, OR
+\texttt{--hmc-step-size 0.05} to put it back in the 0\,\% accept
+regime. Both reproduce the filter posterior collapse measured in
+\texttt{TIER\_0\_FINDINGS.md}.
+
+\item \textbf{Want all rejuvenation tricks off} (also debugging):
+set \texttt{--liu-west-a 0.0 --smooth-resample-bw 0.0
+--gaussian-bridge false}. The cloud will collapse by day $\sim$15
+per the no-filter-HMC baseline measurements.
+
+\item \textbf{Need OT rescue} (very low ESS / hard observation
+models): set \texttt{--ot-max-weight 0.01} and accept the
+$\sim 12\times$ slowdown. v1.5's 3-channel direct-Gaussian
+observation model has not needed this so far.
+
+\item \textbf{Want even shorter wall for debug runs}: there is no
+"safer" controller tier below 1024 / 8 in current testing. Drop
+\texttt{--N-smc} to 64 and \texttt{--K-per-chain} to 200 if
+you need a $\sim 30$ s sanity test --- but the filter posterior
+is no longer scientifically meaningful at that scale.
+
+\item \textbf{Reproducibility}: always set \texttt{--seed} explicitly.
+Default is 42. Keep \texttt{--replan-K 2} unless you specifically
+want more or less frequent re-planning.
+\end{itemize}
+
+
+\section{Where artefacts live}
+\label{sec:artefacts}
+
+\begin{itemize}[leftmargin=*, itemsep=2pt]
+\item \textbf{Bench script}:
+\texttt{version\_1\_5\_Julia/tools/bench\_smc\_full\_mpc\_fsa\_gpu.jl}.
+\item \textbf{Sweep launchers}:
+\texttt{version\_1\_5\_Julia/tools/launchers/}\\
+\texttt{run\_julia\_horizon\_sweep\_filter\_hmc\_unified.sh} (the
+new default config sweep) and the original
+\texttt{run\_julia\_horizon\_sweep.sh}.
+\item \textbf{Plotting and diagnostics}:
+\texttt{compare\_v15\_julia\_vs\_python/src/}.
+This now includes
+\texttt{diag\_cloud\_collapse.jl},
+\texttt{diag\_controller\_hmc.jl},
+\texttt{diag\_filter\_hmc\_accept.jl},
+\texttt{diag\_posterior\_median\_compare.jl}.
+\item \textbf{Microbench}:
+\texttt{version\_1\_5\_Julia/tools/profile\_gpu.jl --both} for
+filter + controller per-call timings. Unchanged from v1.
+\item \textbf{GPU PF tests}:
+\texttt{version\_1\_5\_Julia/tools/test\_gpu\_pf.jl}. Unchanged
+from v1.
+\item \textbf{Lean4 diff test}:
+\texttt{version\_1\_5\_Julia/diff\_test/test\_lean\_diff\_v15.jl}.
+Unchanged from v1.
+\item \textbf{2026-05-09 measurement runs}:
+\begin{itemize}[itemsep=1pt]
+  \item v1 saturated baseline:
+    \texttt{compare\_v15\_julia\_vs\_python/example\_run/}\\
+    \texttt{julia\_horizon\_sweep\_2026-05-09/} (with
+    \texttt{TIER\_0\_FINDINGS.md}).
+  \item No-filter-HMC sweep (rejuvenation-only baseline):
+    \texttt{compare\_v15\_julia\_vs\_python/example\_run/}\\
+    \texttt{julia\_horizon\_sweep\_2026-05-09\_no\_filter\_hmc/} (with
+    \texttt{HMC\_NOT\_NEEDED\_FINDINGS.md}).
+  \item Unified filter-HMC sweep (the new default config):
+    \texttt{compare\_v15\_julia\_vs\_python/example\_run/}\\
+    \texttt{julia\_horizon\_sweep\_2026-05-09\_filter\_hmc\_unified/} (with
+    \texttt{docs/filter\_hmc\_unified\_sweep\_writeup.tex}/.pdf).
+\end{itemize}
+\item \textbf{Framework}:
+\texttt{julia/SMC2FC\_functional/} (the default; \emph{do} import
+from this). Deprecated framework at
+\texttt{julia/SMC2FC\_DEPRECIATED\_USE\_FUNCTIONAL/} (do
+\emph{not} import from this).
+\end{itemize}
+
+
+\end{document}

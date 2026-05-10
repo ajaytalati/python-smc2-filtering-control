@@ -1,0 +1,15 @@
+\contentsline {section}{\numberline {1}Purpose}{2}{section.1}%
+\contentsline {section}{\numberline {2}What was run}{2}{section.2}%
+\contentsline {subsection}{\numberline {2.1}Decoding each filter-side flag}{3}{subsection.2.1}%
+\contentsline {section}{\numberline {3}Wall and closed-loop metrics}{3}{section.3}%
+\contentsline {subsection}{\numberline {3.1}Walls vs the no-filter-HMC sibling sweep}{3}{subsection.3.1}%
+\contentsline {subsection}{\numberline {3.2}Closed-loop $A$ trajectory matches the no-filter-HMC run}{3}{subsection.3.2}%
+\contentsline {section}{\numberline {4}Filter HMC measurements (NEW)}{4}{section.4}%
+\contentsline {section}{\numberline {5}Controller HMC measurements}{4}{section.5}%
+\contentsline {section}{\numberline {6}Posterior parameter traces (per horizon)}{4}{section.6}%
+\contentsline {section}{\numberline {7}State trajectory plots (per horizon)}{6}{section.7}%
+\contentsline {section}{\numberline {8}Other plots on disk (not embedded)}{8}{section.8}%
+\contentsline {section}{\numberline {9}Source edits applied}{8}{section.9}%
+\contentsline {paragraph}{Now-unused functions in the model.}{8}{section*.13}%
+\contentsline {section}{\numberline {10}Conclusion}{8}{section.10}%
+\contentsline {section}{\numberline {11}What this report does NOT claim}{9}{section.11}%

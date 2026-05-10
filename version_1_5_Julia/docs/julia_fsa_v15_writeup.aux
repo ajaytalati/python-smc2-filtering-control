@@ -1,0 +1,72 @@
+\relax 
+\providecommand\hyper@newdestlabel[2]{}
+\providecommand\HyField@AuxAddToFields[1]{}
+\providecommand\HyField@AuxAddToCoFields[2]{}
+\@writefile{toc}{\contentsline {section}{\numberline {1}Introduction}{2}{section.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Status (validated).}{2}{section*.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Why purely functional.}{2}{section*.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Why Match.jl.}{2}{section*.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {2}Repository layout}{2}{section.2}\protected@file@percent }
+\newlabel{sec:layout}{{2}{2}{Repository layout}{section.2}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {3}Functional design principles}{3}{section.3}\protected@file@percent }
+\newlabel{sec:functional}{{3}{3}{Functional design principles}{section.3}{}}
+\@writefile{toc}{\contentsline {paragraph}{Imperative $\to $ functional name table.}{4}{section*.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {4}Per-file semantic specification}{4}{section.4}\protected@file@percent }
+\newlabel{sec:files}{{4}{4}{Per-file semantic specification}{section.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}\texttt  {\_dynamics.jl} (v1 verbatim)}{4}{subsection.4.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Public exports.}{4}{section*.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Invariants.}{4}{section*.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.2}\texttt  {simulation.jl} (NEW)}{4}{subsection.4.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Resolved at module load.}{5}{section*.8}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Constants.}{5}{section*.9}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Public functions.}{5}{section*.10}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Why two adapters.}{5}{section*.11}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}\texttt  {\_plant.jl} (NEW, written from first principles)}{5}{subsection.4.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Immutable state.}{5}{lstlisting.-1}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Public functions.}{6}{section*.13}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Internal helper.}{6}{section*.14}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.4}\texttt  {gpu\_control.jl} (v1 verbatim)}{6}{subsection.4.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Public exports.}{6}{section*.15}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Why kept verbatim.}{6}{section*.16}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.5}\texttt  {estimation.jl} (NEW)}{6}{subsection.4.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Constants.}{6}{section*.17}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Public functions.}{7}{section*.18}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.6}\texttt  {gpu\_pf.jl} (NEW)}{7}{subsection.4.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Immutable target.}{7}{lstlisting.-2}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Public functions.}{7}{section*.20}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Internal helpers.}{8}{section*.21}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.7}\texttt  {FSAHighRes.jl} (NEW)}{8}{subsection.4.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {5}Data flow and computational graph}{8}{section.5}\protected@file@percent }
+\newlabel{sec:dataflow}{{5}{8}{Data flow and computational graph}{section.5}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.1}One closed-loop stride iteration}{8}{subsection.5.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.2}Filter dataflow (single \texttt  {gpu\_log\_density} call)}{9}{subsection.5.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3}Controller dataflow (one \texttt  {controller\_plan} call)}{10}{subsection.5.3}\protected@file@percent }
+\gdef \LT@i {\LT@entry 
+    {1}{103.7277pt}\LT@entry 
+    {1}{57.52718pt}\LT@entry 
+    {1}{41.23048pt}\LT@entry 
+    {1}{256.38564pt}}
+\gdef \LT@ii {\LT@entry 
+    {1}{109.4764pt}\LT@entry 
+    {1}{57.52718pt}\LT@entry 
+    {1}{37.39798pt}\LT@entry 
+    {1}{256.38564pt}}
+\@writefile{toc}{\contentsline {section}{\numberline {6}CLI flags reference for \texttt  {bench\_smc\_full\_mpc\_fsa\_gpu.jl}}{11}{section.6}\protected@file@percent }
+\newlabel{sec:flags}{{6}{11}{CLI flags reference for \texttt {bench\_smc\_full\_mpc\_fsa\_gpu.jl}}{section.6}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.1}Bench / filter flags}{11}{subsection.6.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.2}Controller flags (CLI-exposed, formerly hardcoded)}{11}{subsection.6.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.3}Example invocations}{12}{subsection.6.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Open-loop diagnostic (3--4 min wall, T=14d):}{12}{section*.22}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Closed-loop strong-controller (10--15 min wall, T=28d):}{12}{section*.23}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {7}Lean4-port mapping appendix}{12}{section.7}\protected@file@percent }
+\newlabel{sec:lean4}{{7}{12}{Lean4-port mapping appendix}{section.7}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.1}Side-by-side mappings}{12}{subsection.7.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{\texttt  {params\_v15\_to\_v1\_nt} — Dict | NamedTuple dispatch.}{12}{lstlisting.-3}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{\texttt  {\_reflect\_unit} — boundary reflection.}{13}{lstlisting.-4}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{\texttt  {\_to\_v15\_constrained\_nt} — vector destructure.}{13}{lstlisting.-5}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{\texttt  {gpu\_log\_density} — last-segment branch.}{13}{lstlisting.-6}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{\texttt  {parallel\_hmc\_one\_move} — accept/reject.}{13}{lstlisting.-7}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{\texttt  {apply\_prior} — \texttt  {:LogNormal} | \texttt  {:Normal} dispatch.}{14}{lstlisting.-8}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.2}Type-system gotchas for the future Lean4 port}{14}{subsection.7.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.3}Verification of the port (when it happens)}{14}{subsection.7.3}\protected@file@percent }
+\gdef \@abspage@last{14}

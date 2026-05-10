@@ -1,0 +1,41 @@
+\section{Error Data: Figure--Text Reconciliation Failure} \label{sec:error_data}
+
+The figures in Section \ref{sec:fsa-v4} do not reconcile with the text in several specific, concrete ways. Section 4 makes four narrative claims; the plots refute each one.
+
+\subsection{What the text claims}
+
+\begin{enumerate}
+    \item \textbf{K dynamics are active:} ``prolonged loading causes $K_{FB}$ and $K_{FS}$ to rise'' (caption + \S4.1).
+    \item \textbf{F approaches but is held below the collapse threshold $F_{\max}$.}
+    \item \textbf{Periodization emerges:} the MPC ``is forced to implement deload weeks or extended tapering phases\ldots temporarily dropping the stimulus $\Phi$ near zero'' (\S4.2).
+    \item \textbf{Composite objective $J = -(A+B+S)$ is being optimised} --- so $A$ should be preserved.
+\end{enumerate}
+
+\subsection{What the plots actually show (all four horizons: 8w, 12w, 16w, 20w)}
+
+\paragraph{(a) The K states are flat, not rising.}
+In the middle panel, $K_{FB}$ and $K_{FS}$ are the dashed lines hugging zero. They show no visible excursion above baseline across 56$\rightarrow$140 days. The ``meta-effect'' the section is built around is not detectable in the trajectory. So the caption's ``Notice how prolonged loading causes $K_{FB}$ and $K_{FS}$ to rise'' describes a phenomenon that simply isn't on the plot.
+
+\paragraph{(b) F has already blown through $F_{\max}$.}
+The dotted red $F_{\max}$ line sits near $\approx 0.3$. Actual $F$ climbs monotonically to $\approx 2.0$ --- roughly 6--7$\times$ the threshold --- within the first $\sim$30 days and stays there. The text says rising sensitivities will ``accelerate $F$ toward the collapse threshold''; in the figures the threshold is already long gone, with no collapse and no controller response.
+
+\paragraph{(c) There is no deload structure in the stimulus.}
+Bottom panel y-axis is $\approx 0.996$--$0.997$. The control is essentially pinned at its upper bound for the entire horizon. The only deflections are the U-shaped dips at $t=0$ and $t=T$, which are the standard terminal-time artefacts of finite-horizon optimal control (free initial/terminal conditions), not learned periodization. There are no deload weeks, no tapering phases, no ``near-zero $\Phi$'' intervals --- and crucially, the longer horizons (16w, 20w) show \emph{less} internal structure, not more, which is the opposite of the text's prediction.
+
+\paragraph{(d) Autonomic amplitude $A$ collapses immediately and is never recovered.}
+Top panel: $A$ (black) drops to $\sim 0$ within $\sim$10 days and stays at zero across all four horizons. If $A$ were really in the objective, the optimiser would be heavily penalised for this; instead it is content to leave $A$ at zero while $B$ and $S$ accrue. Either $A$ is not actually being optimised, the autonomic suppression is unrecoverable in the dynamics, or the controller is saturated at the stimulus upper bound and the objective is irrelevant.
+
+\subsection{Why this happens (most likely root cause)}
+
+The control is saturated at its upper bound (note the absurdly compressed stimulus y-range $\sim$0.996--0.997). When the optimiser sits on a box constraint, the interior dynamics --- including the entire $K$ feedback loop --- become irrelevant to the solution. Symptoms consistent with this:
+
+\begin{itemize}
+    \item $K_{FB}, K_{FS}$ never move because $\mu_K$ is either far too small relative to $\tau_K$, or the $K$ states are being clamped/scaled in a way that suppresses the $\mu_K \Phi$ term.
+    \item $F_{\max}$ is not being enforced as a constraint (no penalty, no barrier, or incorrect units between $F$ and $F_{\max}$).
+    \item $A$ collapsing to zero with no recovery suggests autonomic dynamics are decoupled from the cost, or weighted to $\sim 0$ in $J$.
+    \item The U-shape at the boundaries is purely from initial-condition relaxation and terminal-time freedom; it would appear even with $\mu_K = 0$ (i.e.\ FSA-v3).
+\end{itemize}
+
+\subsection{Bottom line}
+
+The figures are \emph{consistent with FSA-v3 with the $K$ states essentially turned off}, not with the FSA-v4 narrative. To make the plots reconcile with \S\ref{sec:fsa-v4} you'd need to see: visibly rising and falling $K_{FB}, K_{FS}$ correlated with stimulus phases; $F$ bounded by $F_{\max}$; non-trivial macroscale structure in $\Phi$ (deload blocks); and $A$ preserved above zero. None of those are present.

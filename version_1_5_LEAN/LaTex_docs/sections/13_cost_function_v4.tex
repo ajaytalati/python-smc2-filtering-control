@@ -1,0 +1,123 @@
+\section{Principled Cost-Function Design for FSA-v4} \label{sec:fsa-v4-cost}
+
+The basin geometry of Section \ref{sec:fsa-v4-stability} changes what the right cost function looks like. The cost functional currently used in Section \ref{sec:stability} (Equation 21) was designed against the FSA-v3 dynamics; in this section we argue that FSA-v4 invites a noticeably different, simpler, and more model-consistent design.
+
+\subsection{The current FSA-v3 cost functional and what it does well}
+
+For reference, Equation 21 of Section \ref{sec:stability} reads
+\begin{equation}
+J_{\rm v3}(\theta) = \mathbb{E}\!\left[\int_0^T -\big(A(t) + \gamma_B B(t) + \gamma_S S(t)\big)\, dt \;+\; \lambda_F \int_0^T \max\!\big(F(t) - F_{\max},\, 0\big)^2 \, dt\right].
+\label{eq:v3-cost}
+\end{equation}
+Three components, each playing a distinct role:
+\begin{itemize}
+  \item \textbf{Composite reward} $-(A + \gamma_B B + \gamma_S S)$: drives the optimiser toward simultaneous accrual of autonomic amplitude, aerobic fitness and strength.
+  \item \textbf{Hard fatigue ceiling} $\max(F-F_{\max},0)^2$: prevents the optimiser from exploiting the smooth interior of the cost by pushing $F$ above the ``cliff'' where $A^* = \sqrt{\mu/\eta}$ collapses to zero.
+  \item \textbf{Tunable trade-off via} $\gamma_B, \gamma_S, \lambda_F$: the practitioner balances autonomic safety against capacity targeting and against load tolerance.
+\end{itemize}
+For FSA-v3 this design is reasonable. The fatigue penalty performs a primarily \emph{numerical} role — without it, the optimiser would walk straight off the cliff because the gradient of $A^*$ with respect to $\Phi$ is zero on the wrong side of $F_{\rm crit}$, and gradient descent is blind to discontinuous reward changes. The penalty smooths the cliff into a ramp.
+
+\subsection{Why FSA-v4 changes the picture}
+
+Section \ref{sec:fsa-v4-stability} showed that under FSA-v4, the long-time behaviour is determined by a single scalar self-consistency equation $g(A;\Phi) = \bar\mu(A;\Phi) - \eta A^2 = 0$, and the basins of attraction in stimulus space partition into three regimes (mono-stable healthy, bistable, mono-stable collapsed). Two facts about the v4 dynamics matter for cost design:
+
+\paragraph{Fact 1 --- the autonomic state $A$ already encodes basin membership.}
+By construction:
+\begin{itemize}
+  \item Inside the collapsed basin, $A \to 0$.
+  \item Inside the healthy basin, $A \to A^*(\Phi) > 0$.
+  \item The deeper the basin (the larger the margin to bifurcation), the larger $A^*$.
+\end{itemize}
+Therefore the time-average of $A$ alone is already an unbiased indicator of which basin the system has settled in \emph{and} how robustly it sits there. Maximising $\mathbb{E}\!\left[\int_0^T A\, dt\right]$ simultaneously rewards (i) being in the healthy regime, (ii) being deep in it, and (iii) getting there quickly --- all three goals from a single integrand.
+
+\paragraph{Fact 2 --- the variable-dose $K$ states encode the v3 fatigue penalty natively.}
+In v3 the fatigue penalty was an ad-hoc constraint: ``don't let $F$ exceed $F_{\max}$''. In v4, the dynamic fatigue gains $K_{FB}, K_{FS}$ rise under sustained loading and amplify the F-equation, so the model itself penalises sustained overload --- but \emph{slowly}, on the time-scale $\tau_K \approx 21$ days. The hard ceiling on $F$ is no longer the cleanest way to encode this; what we really want to penalise is \emph{elevated training-induced fragility}, which is exactly $(K - K^0)$.
+
+\subsection{Recommended cost functional for FSA-v4}
+
+Combining Facts 1 and 2:
+\begin{equation}
+\boxed{\;
+J_{\rm v4}(\theta) \;=\; -\,\mathbb{E}\!\left[\int_0^T A(t)\, dt\right] \;+\; \lambda_\Phi\, \mathbb{E}\!\left[\int_0^T \|\Phi(t)\|^2\, dt\right] \;+\; \lambda_K\, \mathbb{E}\!\left[\int_0^T \|K(t) - K^0\|^2\, dt\right].
+\;}
+\label{eq:v4-cost}
+\end{equation}
+Each term has a precise role:
+\begin{itemize}
+  \item $-\int A\, dt$ \emph{is the entire performance objective.} It rewards the controller for putting the athlete into the healthy basin, deeply, fast, and keeping them there.
+  \item $\lambda_\Phi \int \|\Phi\|^2\, dt$ is a \emph{control-effort} (Tikhonov) regulariser. Among schedules that achieve the same autonomic outcome, it prefers the one that demands less from the athlete. This term replaces the v3 cost's reliance on $F_{\max}$ to discourage gratuitous overload.
+  \item $\lambda_K \int \|K - K^0\|^2\, dt$ is a \emph{fragility} penalty. It is the v4-native version of the v3 fatigue penalty, but it acts on the latent state that actually carries the v4 ``training memory'', not on the instantaneous fatigue $F$.
+\end{itemize}
+
+\subsection{How $J_{\rm v4}$ differs from $J_{\rm v3}$ in practice}
+
+The two functionals look superficially similar but encode different priorities. Table \ref{tab:cost_v3_vs_v4} compares them term-by-term.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{p{3.4cm}p{4.6cm}p{4.6cm}}
+\toprule
+& \textbf{$J_{\rm v3}$ (Equation \ref{eq:v3-cost})} & \textbf{$J_{\rm v4}$ (Equation \ref{eq:v4-cost})} \\
+\midrule
+Performance term       & $A + \gamma_B B + \gamma_S S$ (weighted composite) & $A$ alone (basin-membership proxy) \\
+Penalty term           & $\max(F - F_{\max}, 0)^2$ (hard ceiling, kinked) & $\|\Phi\|^2$ + $\|K - K^0\|^2$ (smooth quadratic) \\
+What constrains overload & Explicit barrier on $F$ & Implicit via $A \to 0$ when $F$ overshoots; explicit via $K$-penalty \\
+Relevant time-scale of penalty & Instantaneous ($F(t)$) & Slow / accumulating ($K(t)$, with $\tau_K = 21$d) \\
+Smoothness for gradient optimisation & Kink at $F = F_{\max}$ & Smooth everywhere \\
+Captures ``training-induced fragility'' & No --- $F$ is a fast variable & Yes --- $K$ \emph{is} the fragility state \\
+Aligned with model physics & Adequate for v3 (no $K$ states) & Native to v4 \\
+\bottomrule
+\end{tabular}
+\caption{Term-by-term comparison of the FSA-v3 and FSA-v4 cost functionals.}
+\label{tab:cost_v3_vs_v4}
+\end{table}
+
+The clearest behavioural difference: the v3 functional pushes the optimiser to find the highest possible $B, S$ that still keeps $F < F_{\max}$. The optimum tends to sit hard against the fatigue constraint, with $B, S$ close to saturation. Under v4, the same high-$\Phi$ schedule slowly raises $K$, the $\lambda_K$ penalty grows, and the autonomic reward eventually drops as $A$ collapses --- so the optimum sits comfortably interior, with smaller $\Phi$ and a more resilient autonomic profile. \textbf{The v4 optimum is conservative-by-design where the v3 optimum is aggressive-by-design.} Both are valid optima for their respective cost structures; the question is which one the practitioner wants.
+
+\subsection{What about $B$ and $S$?}
+
+A reasonable objection: if $J_{\rm v4}$ contains only $A$ as a performance term, why would the optimiser ever push $B$ or $S$ at all? Doesn't the recipe collapse to ``train as little as possible''?
+
+It does not, for two reasons:
+\begin{enumerate}
+  \item $A^*$ \emph{depends on} $B^*$ and $S^*$ through $\bar\mu$. From Equation \ref{eq:mu-bar}, $\partial \bar\mu/\partial B^* = \mu_B > 0$ and $\partial\bar\mu / \partial S^* = \mu_S > 0$. Higher $B$ and $S$ deepen the healthy basin and \emph{raise} $A^*$. So maximising $\int A\, dt$ does push $B$ and $S$ upward --- but only up to the point where the marginal gain in $A^*$ from a unit increase in $\Phi$ is matched by the marginal cost from $\lambda_\Phi \|\Phi\|^2$ and the eventual rise in $K$.
+  \item The optimum is therefore not at $\Phi = 0$, but at the ``Goldilocks'' interior point where the marginal benefit of training equals the marginal effort cost. This is the same Pareto interior that the FSA-v3 ``concurrent training'' analysis identified (Section \ref{sec:stability}, Figure \ref{fig:reward_surface}) --- but it is now reached without an explicit composite reward.
+\end{enumerate}
+
+If the practitioner additionally wants to set explicit performance targets on $B$ or $S$ (e.g.\ for a specific competitive demand), the simplest extension is
+\begin{equation}
+J_{\rm v4}^{\rm concurrent}(\theta) = -\,\mathbb{E}\!\left[\int_0^T \big(A + \gamma_B B + \gamma_S S\big) dt\right] + \lambda_\Phi \int \|\Phi\|^2 dt + \lambda_K \int \|K - K^0\|^2 dt,
+\label{eq:v4-cost-concurrent}
+\end{equation}
+which differs from Equation \ref{eq:v3-cost} only in replacing the $F_{\max}$ barrier with the smooth $\Phi$-and-$K$ penalties. This is the FSA-v4 analogue of the FSA-v3 concurrent objective.
+
+\subsection{The structurally correct formulation: chance constraints}
+
+The cleanest --- and most controller-agnostic --- statement of the basin-membership goal is a stochastic constraint:
+\begin{equation}
+\Pr\!\big[\,A_t < A_{\rm sep}(\Phi_t)\,\big] \;\le\; \alpha \qquad \forall\, t \in [0, T],
+\label{eq:chance-constraint}
+\end{equation}
+where $A_{\rm sep}(\Phi)$ is the unstable separatrix from Section \ref{sec:fsa-v4-stability} (the basin boundary in the bistable regime; $-\infty$ in the mono-stable healthy regime; $+\infty$ in the mono-stable collapsed regime, which is then infeasible). The cost functional pairs naturally with this constraint:
+\begin{equation}
+\min_\theta \; \lambda_\Phi \int \|\Phi\|^2\, dt \quad \text{subject to} \quad \mathbb{E}[\textstyle\int A\, dt] \ge A_{\rm target}, \;\;\Pr[A_t < A_{\rm sep}] \le \alpha.
+\label{eq:v4-chance-formulation}
+\end{equation}
+
+This formulation \emph{exactly} encodes the question: ``what is the minimum-effort training programme that keeps the athlete in the healthy basin with at least probability $1 - \alpha$, while delivering at least target autonomic exposure $A_{\rm target}$?'' Crucially:
+\begin{itemize}
+  \item Equation \ref{eq:v4-chance-formulation} is \emph{not} differentiable in any practical sense --- the chance constraint involves an expectation over indicator functions, which has no useful gradient.
+  \item It \emph{is} naturally implementable in the SMC$^2$-control framework of Section \ref{sec:smc2_vs_ot}: the constraint is enforced by re-weighting or rejecting parameter--state particles whose simulated trajectories violate $A_t \ge A_{\rm sep}(\Phi_t)$ at the prescribed rate. This was the central row of Table \ref{tab:ot_vs_smc2} (``Chance constraints --- Hard (no posterior) / Natural (resample $\theta$)'').
+\end{itemize}
+
+So the analysis closes a loop. Section \ref{sec:fsa-v4-stability} produced the basin map. The basin map identifies the relevant constraint --- separatrix-crossing probability. The constraint is structurally a chance constraint, which the smooth gradient OT controller of Section \ref{sec:open_loop_limitation} cannot represent and the SMC$^2$ controller of Section \ref{sec:smc2_vs_ot} can. The cost-function design reflects the controller capability: Equation \ref{eq:v4-cost} for gradient OT, Equation \ref{eq:v4-chance-formulation} for SMC$^2$.
+
+\subsection{Practical recommendation}
+
+\begin{itemize}
+  \item For \textbf{pure autonomic-resilience problems} (rehabilitation, recovery, return-to-play): use Equation \ref{eq:v4-cost}.
+  \item For \textbf{concurrent training problems} (race preparation, competitive performance): use Equation \ref{eq:v4-cost-concurrent}.
+  \item In \emph{either} case, the hard $F_{\max}$ ceiling can be removed; the $\lambda_K \|K - K^0\|^2$ penalty is the v4-native replacement and is structurally aligned with the variable-dose physics.
+  \item For \textbf{closed-loop deployment under uncertainty}, prefer the chance-constrained formulation (Equation \ref{eq:v4-chance-formulation}) and the SMC$^2$ controller --- the basin geometry of Section \ref{sec:fsa-v4-stability} is, in our view, the strongest argument for that pairing.
+\end{itemize}

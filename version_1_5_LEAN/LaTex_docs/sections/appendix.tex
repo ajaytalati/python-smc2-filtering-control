@@ -1,0 +1,46 @@
+\appendix
+\section{Reference: FSA-v2 Parameter List}
+
+This appendix lists the complete set of parameters for the FSA-v2 model in its G1-reparametrized form, as implemented in \path{models/fsa_high_res/_dynamics.py} and \path{estimation.py}.
+
+\subsection{Dynamics Parameters}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}llrl@{}}
+\toprule
+Group & Symbol & Value & Meaning \\
+\midrule
+Banister & $\tau_B$ & $42.0$ & chronic time constant (days) \\
+         & $\tau_F$ & $6.364$ & effective acute time constant (days) \\
+         & $\kappa_B$ & $0.01248$ & effective $B$-gain \\
+         & $\kappa_F$ & $0.030$ & $F$-gain \\
+\midrule
+Couplings & $\varepsilon_A$ & $0.40$ & residual $A$-boost on fitness accrual \\
+          & $\lambda_A$ & $1.00$ & residual $A$-coupling on fatigue clearance \\
+\midrule
+Oscillator & $\mu_0$ & $0.036$ & growth-rate intercept \\
+           & $\mu_B$ & $0.30$ & fitness effect on growth rate \\
+           & $\mu_F$ & $0.26$ & fatigue effect on growth rate (slope) \\
+           & $\mu_{FF}$ & $0.40$ & fatigue effect (curvature) \\
+           & $\eta$ & $0.20$ & cubic damping \\
+\midrule
+Diffusion & $\sigma_B$ & $0.010$ & Jacobi noise scale \\
+          & $\sigma_F$ & $0.012$ & CIR noise scale on $F$ \\
+          & $\sigma_A$ & $0.020$ & CIR noise scale on $A$ \\
+\bottomrule
+\end{tabular}
+\caption{Canonical truth parameters for the FSA-v2 dynamics.}
+\end{table}
+
+\subsection{Observation Parameters}
+
+The following parameters define the observation model and its response to the latent states:
+\begin{itemize}
+    \item \textbf{Heart Rate:} $\text{HR}_{\text{base}} \approx 62$ bpm, $\kappa_B^{HR} \approx 12$, $\alpha_A^{HR} \approx 3$.
+    \item \textbf{Sleep:} $k_C \approx 3$, $k_A \approx 2$, $\tilde{c} \approx 0.5$.
+    \item \textbf{Stress:} $S_{\text{base}} \approx 30$, $k_F \approx 20$, $k_A^S \approx 8$.
+    \item \textbf{Steps:} $\mu_0^{\text{step}} \approx 5.5$, $\sigma_{\text{st}} \approx 0.5$.
+\end{itemize}
+For a complete list and their prior distributions, refer to \path{PARAM_PRIOR_CONFIG} in \path{estimation.py}.

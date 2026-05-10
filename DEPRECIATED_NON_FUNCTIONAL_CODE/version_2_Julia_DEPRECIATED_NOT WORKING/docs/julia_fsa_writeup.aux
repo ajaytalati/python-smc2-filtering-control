@@ -1,0 +1,69 @@
+\relax 
+\providecommand\hyper@newdestlabel[2]{}
+\providecommand\HyField@AuxAddToFields[1]{}
+\providecommand\HyField@AuxAddToCoFields[2]{}
+\@writefile{toc}{\contentsline {section}{\numberline {1}The Julia FSA-v2 codebase}{1}{section.1}\protected@file@percent }
+\newlabel{sec:codebase}{{1}{1}{The Julia FSA-v2 codebase}{section.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.1}Repository layout}{1}{subsection.1.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Framework additions}{1}{section*.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.2}Dynamics}{2}{subsection.1.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.3}Plant}{2}{subsection.1.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.4}Estimation}{2}{subsection.1.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.5}GPU particle filter}{2}{subsection.1.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.6}GPU controller}{2}{subsection.1.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.7}Configuration and wall time}{3}{subsection.1.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {2}Bug hunt: what's been ruled out, what remains}{3}{section.2}\protected@file@percent }
+\newlabel{sec:bug-hunt}{{2}{3}{Bug hunt: what's been ruled out, what remains}{section.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.1}Hypothesis 1 (kept): RBF basis was row-normalised}{3}{subsection.2.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.2}Hypothesis 2 (kept): three small kernel mismatches vs Python}{3}{subsection.2.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.3}Hypothesis 3 (discarded): bursty / smooth $\Phi $ asymmetry between MPC and baseline plants}{3}{subsection.2.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.4}Hypothesis 4 (discarded): bug in the framework controller}{4}{subsection.2.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.5}Hypothesis 5 (discarded): HMC stuck in the wrong basin on FSA}{4}{subsection.2.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.6}Hypothesis 6 (kernel + decoder OK on monotone reward)}{4}{subsection.2.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Test cost.}{5}{section*.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Implementation.}{5}{section*.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Result.}{5}{section*.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Conclusion.}{5}{section*.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.7}Hypothesis 7 (root cause confirmed): fp32 cancellation in the G1 drift}{5}{subsection.2.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Test.}{6}{section*.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Result.}{6}{section*.8}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Hypothesis confirmed.}{6}{section*.9}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.8}Outstanding: production-grade fix}{6}{subsection.2.8}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Update 2026-05-07 (post-application).}{7}{section*.10}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.9}Summary of what was ruled out, and what fixed it}{8}{subsection.2.9}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.10}Hypothesis 8 (in progress): residual fp32 bias surviving \S  2.8 --- staged fp64 promotion}{9}{subsection.2.10}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Three candidate locations for the residual fp32 bias.}{9}{section*.11}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Staged methodology.}{9}{section*.12}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Verification target.}{10}{section*.13}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.11}Hypothesis 9 (real bug, partial fix): receding-horizon MPC was using the wrong horizon}{10}{subsection.2.11}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Verification by isolated open-loop test.}{11}{section*.14}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{The partial fix.}{11}{section*.15}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{What's still wrong.}{11}{section*.16}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{What was ruled out by getting here.}{11}{section*.17}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.12}Hypothesis 10 (root cause): bench was feeding the plant a re-bursted daily-average of the controller's smooth schedule}{11}{subsection.2.12}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Why this is the actual root cause.}{12}{section*.18}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Status.}{12}{section*.19}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Open-loop mode in the bench.}{12}{section*.20}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.13}Hypothesis 11 (open-loop matches; closed-loop oscillates): replanning is the residual issue}{13}{subsection.2.13}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Open-loop bench (\texttt  {-{}-open-loop true}).}{13}{section*.21}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Closed-loop bench at heavy config.}{13}{section*.22}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Why this is in the closed-loop bench but not the ground-truth driver.}{13}{section*.23}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.14}Performance: Julia under-utilises the RTX 5090 at large $n_{\rm  smc}$}{14}{subsection.2.14}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.15}Updated summary table}{15}{subsection.2.15}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {3}Outstanding}{15}{section.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {4}What is in the bench today}{16}{section.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {5}Running experiments}{16}{section.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.1}Prerequisites}{17}{subsection.5.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.2}The minimal invocation}{17}{subsection.5.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3}Reproducing Python's reference run (matched config)}{17}{subsection.5.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.4}Reproducing the ground-truth driver structurally}{17}{subsection.5.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.5}All CLI flags}{18}{subsection.5.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.6}Hard-coded controller knobs (not currently CLI-exposed)}{20}{subsection.5.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.7}What lands on disk after a run}{20}{subsection.5.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.8}Suggested experiments}{21}{subsection.5.8}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.9}Saturating the RTX 5090: which flags to push}{21}{subsection.5.9}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Recommended novice sweep.}{22}{section*.24}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{What to look for.}{23}{section*.25}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Don't bother trying these for saturation.}{23}{section*.26}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.10}Known gotchas}{23}{subsection.5.10}\protected@file@percent }
+\gdef \@abspage@last{23}

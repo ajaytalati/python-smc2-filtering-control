@@ -1,0 +1,51 @@
+{
+    "smc_cfg": {
+        "K_per_chain": 1000,
+        "hmc_step_size": 0.05,
+        "num_mcmc": 3,
+        "hmc_num_leapfrog": 4,
+        "N_smc": 512
+    },
+    "BINS_PER_DAY": 24,
+    "estimated_params": [
+        "tau_F",
+        "B_inf",
+        "F_inf",
+        "lambda_A",
+        "mu_0",
+        "mu_B",
+        "mu_F",
+        "sigma_B",
+        "sigma_F",
+        "sigma_A"
+    ],
+    "replan_K": 2,
+    "WINDOW_BINS": 24,
+    "pinned_dynamics": {
+        "mu_FF": 0.4,
+        "epsilon_A": 0.4,
+        "tau_B": 42,
+        "eta": 0.2
+    },
+    "n_strides": 83,
+    "device": "NVIDIA GeForce RTX 5090",
+    "wall_seconds": 2286.6395728588104,
+    "truth_params": {
+        "lambda_A": 1,
+        "sigma_B": 0.01,
+        "sigma_F": 0.012,
+        "mu_B": 0.3,
+        "tau_F": 7,
+        "B_inf": 0.504,
+        "F_inf": 0.21,
+        "mu_F": 0.1,
+        "sigma_A": 0.02,
+        "mu_0": 0.02
+    },
+    "T_total_days": 42,
+    "open_loop": false,
+    "STRIDE_BINS": 12,
+    "seed": 42,
+    "schema_version": "1.0-v15",
+    "step_minutes": 60
+}

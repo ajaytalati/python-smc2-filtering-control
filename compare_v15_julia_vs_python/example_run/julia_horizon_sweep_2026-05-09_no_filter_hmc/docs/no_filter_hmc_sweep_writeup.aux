@@ -1,0 +1,51 @@
+\relax 
+\providecommand\hyper@newdestlabel[2]{}
+\providecommand\HyField@AuxAddToFields[1]{}
+\providecommand\HyField@AuxAddToCoFields[2]{}
+\@writefile{toc}{\contentsline {section}{\numberline {1}Purpose}{2}{section.1}\protected@file@percent }
+\newlabel{sec:purpose}{{1}{2}{Purpose}{section.1}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {2}What was run}{2}{section.2}\protected@file@percent }
+\newlabel{sec:cli}{{2}{2}{What was run}{section.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.1}What each filter-side flag does}{2}{subsection.2.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.2}Hardware}{3}{subsection.2.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {3}Wall-time and closed-loop metrics}{3}{section.3}\protected@file@percent }
+\newlabel{sec:wall}{{3}{3}{Wall-time and closed-loop metrics}{section.3}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Per-horizon wall time, mean and final autonomic amplitude $A$ under MPC and under the constant-$\Phi =1$ baseline rollout, and fatigue-barrier ($F_{\max }=0.40$) violation count. Zero $F$ violations across all six horizons.}}{3}{table.caption.2}\protected@file@percent }
+\providecommand*\caption@xref[2]{\@setref\relax\@undefined{#1}}
+\newlabel{tab:wall}{{1}{3}{Per-horizon wall time, mean and final autonomic amplitude $A$ under MPC and under the constant-$\Phi =1$ baseline rollout, and fatigue-barrier ($F_{\max }=0.40$) violation count. Zero $F$ violations across all six horizons}{table.caption.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.1}GPU utilisation and memory}{3}{subsection.3.1}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Per-horizon GPU telemetry. Peak VRAM stays $\lesssim 6.1$\,GiB (versus the 32\,GiB on the RTX 5090).}}{3}{table.caption.3}\protected@file@percent }
+\newlabel{tab:gpu}{{2}{3}{Per-horizon GPU telemetry. Peak VRAM stays $\lesssim 6.1$\,GiB (versus the 32\,GiB on the RTX 5090)}{table.caption.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.2}Wall comparison vs the saturated-controller baseline}{3}{subsection.3.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {4}Controller-HMC measurements (new instrumentation)}{3}{section.4}\protected@file@percent }
+\newlabel{sec:ctrl_hmc}{{4}{3}{Controller-HMC measurements (new instrumentation)}{section.4}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Wall comparison. \textbf  {Both} the controller-config reduction (\texttt  {--ctrl-n-smc} $2048 \to 1024$, \texttt  {--ctrl-num-mcmc} $16 \to 8$) \textbf  {and} the filter-HMC removal contribute; the technical guide attributes the bulk of the ratio to the controller-config change alone.}}{4}{table.caption.4}\protected@file@percent }
+\newlabel{tab:wall_ratio}{{3}{4}{Wall comparison. \textbf {Both} the controller-config reduction (\texttt {--ctrl-n-smc} $2048 \to 1024$, \texttt {--ctrl-num-mcmc} $16 \to 8$) \textbf {and} the filter-HMC removal contribute; the technical guide attributes the bulk of the ratio to the controller-config change alone}{table.caption.4}{}}
+\newlabel{lst:ctrl_diag}{{1}{4}{Diagnostic columns recorded per tempering level}{lstlisting.1}{}}
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {1}{\ignorespaces Diagnostic columns recorded per tempering level.}}{4}{lstlisting.1}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces Cross-horizon controller-HMC summary (from \texttt  {docs/controller\_hmc\_summary.csv}). $L$ is the ChEES-picked leapfrog count from the candidate list $[16, 32, 64, 128, 256, 512]$; in this run the picker selects $L=16$ at every tempering level of every replan of every horizon.}}{4}{table.caption.5}\protected@file@percent }
+\newlabel{tab:ctrl_hmc}{{4}{4}{Cross-horizon controller-HMC summary (from \texttt {docs/controller\_hmc\_summary.csv}). $L$ is the ChEES-picked leapfrog count from the candidate list $[16, 32, 64, 128, 256, 512]$; in this run the picker selects $L=16$ at every tempering level of every replan of every horizon}{table.caption.5}{}}
+\@writefile{toc}{\contentsline {paragraph}{Filter-HMC accept-rate reference.}{4}{section*.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {5}Posterior parameter traces (per horizon)}{4}{section.5}\protected@file@percent }
+\newlabel{sec:param_traces}{{5}{4}{Posterior parameter traces (per horizon)}{section.5}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces $T = 14$ days. Posterior parameter traces.}}{5}{figure.caption.7}\protected@file@percent }
+\newlabel{fig:param_T14}{{1}{5}{$T = 14$ days. Posterior parameter traces}{figure.caption.7}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces $T = 28$ days. Posterior parameter traces.}}{5}{figure.caption.8}\protected@file@percent }
+\newlabel{fig:param_T28}{{2}{5}{$T = 28$ days. Posterior parameter traces}{figure.caption.8}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces $T = 42$ days. Posterior parameter traces.}}{5}{figure.caption.9}\protected@file@percent }
+\newlabel{fig:param_T42}{{3}{5}{$T = 42$ days. Posterior parameter traces}{figure.caption.9}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {4}{\ignorespaces $T = 56$ days. Posterior parameter traces.}}{5}{figure.caption.10}\protected@file@percent }
+\newlabel{fig:param_T56}{{4}{5}{$T = 56$ days. Posterior parameter traces}{figure.caption.10}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5}{\ignorespaces $T = 70$ days. Posterior parameter traces.}}{6}{figure.caption.11}\protected@file@percent }
+\newlabel{fig:param_T70}{{5}{6}{$T = 70$ days. Posterior parameter traces}{figure.caption.11}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {6}{\ignorespaces $T = 84$ days. Posterior parameter traces.}}{6}{figure.caption.12}\protected@file@percent }
+\newlabel{fig:param_T84}{{6}{6}{$T = 84$ days. Posterior parameter traces}{figure.caption.12}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {6}Other plots on disk (not embedded — for separate inspection)}{7}{section.6}\protected@file@percent }
+\newlabel{sec:other_plots}{{6}{7}{Other plots on disk (not embedded — for separate inspection)}{section.6}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {7}Source edits applied}{7}{section.7}\protected@file@percent }
+\newlabel{sec:edits}{{7}{7}{Source edits applied}{section.7}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {8}Conclusion}{7}{section.8}\protected@file@percent }
+\newlabel{sec:conclusion}{{8}{7}{Conclusion}{section.8}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {9}What this report does NOT claim}{7}{section.9}\protected@file@percent }
+\newlabel{sec:not_claimed}{{9}{7}{What this report does NOT claim}{section.9}{}}
+\gdef \@abspage@last{7}

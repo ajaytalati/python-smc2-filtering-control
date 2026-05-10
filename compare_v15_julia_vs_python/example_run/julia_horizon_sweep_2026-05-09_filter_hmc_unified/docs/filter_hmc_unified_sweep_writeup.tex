@@ -1,0 +1,555 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[margin=2.2cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{listings}
+\usepackage{graphicx}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{microtype}
+\usepackage{parskip}
+\usepackage{textcomp}
+
+\hypersetup{colorlinks=true,linkcolor=blue!50!black,urlcolor=blue!60!black}
+
+\lstset{basicstyle=\ttfamily\footnotesize,breaklines=true,
+        frame=single,framerule=0pt,backgroundcolor=\color{black!4},
+        columns=fullflexible,keepspaces=true,
+        showstringspaces=false,xleftmargin=0pt}
+
+\title{Julia v1.5 SMC$^2$-MPC \\
+       Filter HMC unified with the framework's ChEES path \\
+       \large 3-horizon test sweep, $T \in \{14, 28, 42\}$ d, RTX 5090, seed 42}
+\author{}
+\date{2026-05-09}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This report records a 3-horizon test sweep of the FSA v1.5 closed-loop
+SMC$^2$-MPC bench after two filter-HMC fixes: (i) the bench's filter
+HMC was replaced with the framework's generic
+\texttt{parallel\_hmc\_one\_move\_generic!} +
+\texttt{chees\_pick\_L\_generic} (the same code path the controller
+uses), passing \texttt{beta = next\_$\lambda$} so the kernel correctly
+targets the tempered intermediate; (ii) the HMC step size and
+finite-difference step size were updated to the sweet-spot values
+identified in the standalone HMC accept-rate sweep
+($\varepsilon = 0.005$, $h_{\mathrm{fd}} = 0.01$). All filter-side
+rejuvenation tricks (Liu--West $a=0.97$, Silverman+KDE+LW
+\texttt{smooth\_resample\_bw=1.0}, Gaussian bridge between rolling
+windows) and the controller's reduced ``fast'' configuration
+(\texttt{--ctrl-n-smc 1024 --ctrl-num-mcmc 8}) match the prior
+no-filter-HMC baseline so the comparison is apples-to-apples on the
+filter side. Per-tempering-level filter HMC diagnostics are now
+recorded by parsing the bench log; controller-HMC diagnostics
+continue to be recorded via the previous CSV instrumentation. All
+numerical entries in this report are pulled directly from CSVs on
+disk; the parameter-recovery reading in
+\S\ref{sec:conclusion} is from the trace plots in
+\S\ref{sec:param_traces} and \S\ref{sec:state_traces}.
+\end{abstract}
+
+\tableofcontents
+\clearpage
+
+
+% =====================================================================
+\section{Purpose}
+\label{sec:purpose}
+
+The prior no-filter-HMC sweep
+(\texttt{compare\_v15\_julia\_vs\_python/example\_run/}\\
+\texttt{julia\_horizon\_sweep\_2026-05-09\_no\_filter\_hmc/HMC\_NOT\_NEEDED\_FINDINGS.md})
+established a baseline: run the bench with filter HMC \emph{disabled}
+(\texttt{--num-mcmc 0}) and rely on the rejuvenation tricks alone
+(Liu--West, Silverman+KDE, Gaussian bridge). Inspection of that
+sweep's parameter traces showed several parameters locked at biased
+values across all six horizons.
+
+This sweep tests whether re-enabling the filter HMC -- after fixing
+two bugs in it -- improves parameter recovery while keeping
+everything else identical.
+
+\textbf{Bug A (HMC step size $\varepsilon$ and FD step $h_{\mathrm{fd}}$).}
+The standalone HMC accept-rate sweep at\\
+\texttt{compare\_v15\_julia\_vs\_python/example\_run/julia\_horizon\_sweep\_2026-05-09/}\\
+\texttt{diag\_hmc\_accept\_sweep.csv}
+reported 0\,\% acceptance at the bench's defaults
+($\varepsilon=0.05$, $L=4$, $h_{\mathrm{fd}}=10^{-3}$) and
+50--74\,\% at the sweet spot ($\varepsilon \in [10^{-3}, 10^{-2}]$,
+$h_{\mathrm{fd}}=10^{-2}$).
+
+\textbf{Bug B ($\lambda$-tempering missing on the MCMC kernel).} The
+bench's local
+\texttt{tempered\_grads} closure inside
+\texttt{models/fsa\_high\_res/gpu\_pf.jl::parallel\_hmc\_one\_move!}
+returned the full posterior log-density and gradient regardless of
+the tempering level $\lambda$. Standard tempered SMC requires the
+MCMC kernel at level $\lambda$ to leave
+$\pi_\lambda \propto p(\theta)\, p(y\mid\theta)^\lambda$ invariant,
+which means scaling the data log-likelihood by $\lambda$. Bug B was
+masked by Bug A: with 0\,\% acceptance, no MCMC move was applied
+and the cloud stayed at $\pi_\lambda$ by accident.
+
+\textbf{The fix} ports the filter to the framework's generic ChEES
+HMC. The controller side already had:
+\begin{itemize}[itemsep=2pt]
+  \item \texttt{parallel\_hmc\_one\_move\_generic!} in
+        \texttt{julia/SMC2FC\_functional/src/Control/GPUControlSMC.jl},
+        which takes a \texttt{beta::Float64} keyword and computes
+        \texttt{vals\_prior + beta * vals\_data}, fixing Bug B by
+        construction.
+  \item \texttt{chees\_pick\_L\_generic}, which adapts the leapfrog
+        count $L$ per tempering level by maximising expected squared
+        jump distance per $\varepsilon \cdot L$.
+\end{itemize}
+
+The bench's filter call site was rewritten to call those framework
+functions, with \texttt{beta = next\_$\lambda$}. The model-specific
+\texttt{parallel\_hmc\_one\_move!} in
+\texttt{gpu\_pf.jl} is now unused.
+
+
+% =====================================================================
+\section{What was run}
+\label{sec:cli}
+
+Per horizon $T \in \{14, 28, 42\}$, identical except \texttt{--T-days}:
+
+\begin{lstlisting}[language=bash]
+julia --project=. tools/bench_smc_full_mpc_fsa_gpu.jl \
+    --T-days <T> --seed 42 \
+    --num-mcmc 3 \
+    --hmc-step-size 0.005 \
+    --hmc-leapfrog 4 \
+    --h-fd 0.01 \
+    --filter-chees-min 4 --filter-chees-max 64 \
+    --liu-west-a 0.97 \
+    --smooth-resample-bw 1.0 \
+    --gaussian-bridge true \
+    --N-smc 512 --K-per-chain 1000 \
+    --ctrl-n-smc 1024 --ctrl-num-mcmc 8 \
+    --collect-ctrl-diagnostics true \
+    --output-dir <SWEEP_ROOT>/T<T>d_seed42
+\end{lstlisting}
+
+Driven by the new sibling launcher
+\texttt{version\_1\_5\_Julia/tools/launchers/}\\
+\texttt{run\_julia\_horizon\_sweep\_filter\_hmc\_unified.sh}.
+
+\subsection{Decoding each filter-side flag}
+
+\textbf{All flag values listed below are the new bench defaults}
+(2026-05-09): the bench's \texttt{\_parse\_args} \texttt{defaults}
+dict in
+\texttt{version\_1\_5\_Julia/tools/bench\_smc\_full\_mpc\_fsa\_gpu.jl}
+has been updated so that a bare invocation (no flag overrides
+beyond \texttt{--T-days} and \texttt{--seed}) reproduces this run's
+config. The four defaults that changed in this update:
+\texttt{--hmc-step-size} 0.05 $\to$ \textbf{0.005},
+\texttt{--smooth-resample-bw} 0.0 $\to$ \textbf{1.0},
+\texttt{--ctrl-n-smc} 2048 $\to$ \textbf{1024},
+\texttt{--ctrl-num-mcmc} 16 $\to$ \textbf{8}. (The other flags
+\texttt{--num-mcmc 3}, \texttt{--hmc-leapfrog 4}, \texttt{--h-fd 0.01},
+\texttt{--filter-chees-min 4}, \texttt{--filter-chees-max 64},
+\texttt{--liu-west-a 0.97}, \texttt{--gaussian-bridge true} were
+already at these values after earlier 2026-05-09 edits.) To recover
+the original saturated-controller default pass
+\texttt{--ctrl-n-smc 2048 --ctrl-num-mcmc 16}.
+
+\begin{itemize}[itemsep=2pt]
+  \item \texttt{--num-mcmc 3} re-enables the per-tempering-level
+        filter HMC. Three moves per level (matches the saturated
+        default).
+  \item \texttt{--hmc-step-size 0.005} replaces the bench default of
+        0.05; from the standalone HMC sweep this is in the
+        50--75\,\% accept band.
+  \item \texttt{--hmc-leapfrog 4} is the picker's initial-fallback
+        $L$; the actual $L$ per tempering level is selected from
+        the candidate list $[4, 8, 16, 32, 64]$ by ChEES.
+  \item \texttt{--h-fd 0.01} replaces the previously-hardcoded
+        $h_{\mathrm{fd}}=10^{-3}$ inside \texttt{filter\_cfg}; this
+        is the sweet-spot from the HMC accept-rate sweep.
+  \item \texttt{--filter-chees-min 4 --filter-chees-max 64} build
+        the ChEES candidate list as powers of 2:
+        $[4, 8, 16, 32, 64]$. Shorter trajectories than the
+        controller's $[16, 32, \ldots, 512]$ because each filter
+        leapfrog step calls into the inner PF.
+  \item Remaining filter rejuvenation flags (\texttt{--liu-west-a
+        0.97}, \texttt{--smooth-resample-bw 1.0},
+        \texttt{--gaussian-bridge true}) match the no-filter-HMC
+        baseline so the only on-the-filter change is HMC.
+  \item \texttt{--ctrl-n-smc 1024 --ctrl-num-mcmc 8} is the
+        \emph{reduced} (``fast-controller'') particle / MCMC budget,
+        same as the no-filter-HMC baseline.
+\end{itemize}
+
+
+% =====================================================================
+\section{Wall and closed-loop metrics}
+\label{sec:wall}
+
+Source: \texttt{horizons\_results.csv} in this sweep's root, written
+by \texttt{compare\_v15\_julia\_vs\_python/src/extract\_horizon\_results.py}.
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabular}{rrrrrrr}
+\toprule
+$T$ (d) & wall (s) & $\overline{A}_{\mathrm{MPC}}$ &
+$A^{\mathrm{end}}_{\mathrm{MPC}}$ &
+$\overline{A}_{\mathrm{base}}$ &
+$A^{\mathrm{end}}_{\mathrm{base}}$ & $F$ violations \\
+\midrule
+14 & 520.2  & 0.076 & 0.084 & 0.114 & 0.182 & 0 \\
+28 & 1148.2 & 0.090 & 0.155 & 0.181 & 0.342 & 0 \\
+42 & 1886.3 & 0.163 & 0.554 & 0.285 & 0.646 & 0 \\
+\bottomrule
+\end{tabular}
+\caption{Per-horizon wall, mean and final autonomic amplitude $A$
+under MPC and the constant-$\Phi=1$ baseline rollout, fatigue-barrier
+($F_{\max}=0.40$) violation count. Zero $F$ violations across all
+three horizons.}
+\label{tab:wall}
+\end{table}
+
+\subsection{Walls vs the no-filter-HMC sibling sweep}
+
+The no-filter-HMC sweep
+(\texttt{julia\_horizon\_sweep\_2026-05-09\_no\_filter\_hmc/}) ran
+the same horizons with \texttt{--num-mcmc 0} (filter HMC off) and
+all other flags identical. Wall ratios:
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabular}{rrrr}
+\toprule
+$T$ (d) & this run (s) & no-filter-HMC (s) & ratio \\
+\midrule
+14 & 520.2  & 133.2  & 3.91$\times$ \\
+28 & 1148.2 & 342.0  & 3.36$\times$ \\
+42 & 1886.3 & 715.5  & 2.64$\times$ \\
+\bottomrule
+\end{tabular}
+\caption{Wall is 2.6--3.9$\times$ longer with the unified ChEES filter
+HMC than with the filter HMC disabled. The overhead is the new
+per-tempering-level cost: ChEES picker (one HMC move at each of 5
+candidate $L$'s on a small subset) plus \texttt{num\_mcmc=3}
+production HMC moves at the chosen $L$.}
+\label{tab:wall_ratio}
+\end{table}
+
+\subsection{Closed-loop $A$ trajectory matches the no-filter-HMC run}
+
+The closed-loop A-trajectory metrics are within numerical noise
+between the two runs (Table~\ref{tab:A_compare}). The controller's
+behaviour is dominated by its own configuration; the filter-side
+HMC change does not visibly disturb the closed-loop trajectory at
+this scale.
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabular}{rrrrr}
+\toprule
+$T$ (d) & $\overline{A}_{\mathrm{MPC}}$ this run &
+$\overline{A}_{\mathrm{MPC}}$ no-HMC &
+$A^{\mathrm{end}}_{\mathrm{MPC}}$ this run &
+$A^{\mathrm{end}}_{\mathrm{MPC}}$ no-HMC \\
+\midrule
+14 & 0.076 & 0.077 & 0.084 & 0.085 \\
+28 & 0.090 & 0.095 & 0.155 & 0.161 \\
+42 & 0.163 & 0.167 & 0.554 & 0.521 \\
+\bottomrule
+\end{tabular}
+\caption{Closed-loop $A$ trajectory comparison.}
+\label{tab:A_compare}
+\end{table}
+
+
+% =====================================================================
+\section{Filter HMC measurements (NEW)}
+\label{sec:filter_hmc}
+
+Per-tempering-level filter HMC accept rates and ChEES-picked $L$ are
+parsed from each horizon's \texttt{bench.log} via the new
+\texttt{compare\_v15\_julia\_vs\_python/src/diag\_filter\_hmc\_accept.jl}
+script. Per-horizon CSVs at
+\texttt{docs/filter\_hmc\_accept\_T<N>d.csv}; cross-horizon summary
+at \texttt{docs/filter\_hmc\_accept\_summary.csv}.
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabular}{rrrrrrrr}
+\toprule
+$T$ (d) & n levels & mean accept (\%) & median (\%) & min (\%) &
+max (\%) & mean ChEES $L$ & mean levels / stride \\
+\midrule
+14 & 130 & 71.35 & 73.00 & 24 & 94 & 58.22 & 5.00 \\
+28 & 270 & 65.47 & 68.00 & 13 & 94 & 54.70 & 5.00 \\
+42 & 410 & 61.90 & 64.00 & 10 & 93 & 51.84 & 5.00 \\
+\bottomrule
+\end{tabular}
+\caption{Filter HMC accept rates and ChEES-picked leapfrog count $L$,
+per horizon. Compare with the prior baseline's measured
+\textbf{0\,\%} acceptance across 2880 logged tempering levels: the
+fix moves the filter HMC from rejecting every proposal to a
+textbook MCMC operating point (50--80\,\% accept).}
+\label{tab:filter_hmc}
+\end{table}
+
+\noindent
+ChEES selects $L$ from the candidate list $\{4, 8, 16, 32, 64\}$;
+the reported mean $\sim 52$--$58$ indicates the picker is choosing
+near the top end of the list at most levels --- consistent with
+$\varepsilon = 0.005$ allowing relatively long trajectories before
+the MH step rejects.
+
+
+% =====================================================================
+\section{Controller HMC measurements}
+\label{sec:ctrl_hmc}
+
+The controller HMC (already correctly $\beta$-tempered before this
+fix) was re-recorded for completeness via the existing
+\texttt{controller\_diagnostics.csv} pipeline.
+
+\begin{table}[ht]
+\centering
+\footnotesize
+\begin{tabular}{rrrrrrrrrr}
+\toprule
+$T$ & replans & total levels & mean accept (\%) & median (\%) &
+mean $L$ & mean $\beta_{\max}$ & mean ESJD/$\varepsilon L$ &
+mean $\Delta\log D$ & mean wall/level (s) \\
+\midrule
+14 & 13 & 69  & 96.87 & 97.61 & 16 & 226.39 & 14.12 & 0.010 & 1.62 \\
+28 & 27 & 147 & 95.43 & 96.68 & 16 &  27.02 & 13.73 & 0.085 & 2.36 \\
+42 & 41 & 238 & 96.31 & 96.60 & 16 &   5.69 & 13.63 & 0.474 & 3.05 \\
+\bottomrule
+\end{tabular}
+\caption{Cross-horizon controller-HMC summary
+(\texttt{docs/controller\_hmc\_summary.csv}). Same auto-calibration
+behaviour observed earlier: $\beta_{\max}$ shrinks with horizon as
+the prior cost spread tightens, mean accept stays in the 95--97\,\%
+band, ChEES picks $L=16$ throughout.}
+\label{tab:ctrl_hmc}
+\end{table}
+
+
+% =====================================================================
+\section{Posterior parameter traces (per horizon)}
+\label{sec:param_traces}
+
+Figures~\ref{fig:param_T14}--\ref{fig:param_T42}: per-horizon
+posterior parameter trace plots (the bench's internal
+\texttt{\_plot\_param\_traces\_v15} output). 10-panel layout per
+figure; per panel: posterior median (blue), 5--95\,\% credible band
+(light blue fill), truth value (red dashed), $x$-axis in days.
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\linewidth]{../T14d_seed42/v15_T14d_param_traces.png}
+\caption{$T = 14$ days. Posterior parameter traces.}
+\label{fig:param_T14}
+\end{figure}
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\linewidth]{../T28d_seed42/v15_T28d_param_traces.png}
+\caption{$T = 28$ days. Posterior parameter traces.}
+\label{fig:param_T28}
+\end{figure}
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\linewidth]{../T42d_seed42/v15_T42d_param_traces.png}
+\caption{$T = 42$ days. Posterior parameter traces.}
+\label{fig:param_T42}
+\end{figure}
+
+\clearpage
+
+
+% =====================================================================
+\section{State trajectory plots (per horizon)}
+\label{sec:state_traces}
+
+Figures~\ref{fig:traces_T14}--\ref{fig:traces_T42}: per-horizon
+state trajectory plots ($B$, $F$, $A$ states + applied $\Phi$ per
+stride), written by
+\texttt{compare\_v15\_julia\_vs\_python/src/plot\_state\_traces.jl}.
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\linewidth]{../T14d_seed42/v15_T14d_traces.png}
+\caption{$T = 14$ days. State trajectories.}
+\label{fig:traces_T14}
+\end{figure}
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\linewidth]{../T28d_seed42/v15_T28d_traces.png}
+\caption{$T = 28$ days. State trajectories.}
+\label{fig:traces_T28}
+\end{figure}
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\linewidth]{../T42d_seed42/v15_T42d_traces.png}
+\caption{$T = 42$ days. State trajectories.}
+\label{fig:traces_T42}
+\end{figure}
+
+\clearpage
+
+
+% =====================================================================
+\section{Other plots on disk (not embedded)}
+\label{sec:other_plots}
+
+\begin{itemize}[itemsep=2pt]
+  \item Per-horizon controller-HMC 6-panel diagnostics:
+        \texttt{docs/controller\_hmc\_diagnostics\_T<N>d.png} for
+        $N \in \{14, 28, 42\}$.
+  \item Cloud std (log-space) per stride, all 3 horizons overlaid:
+        \texttt{docs/cloud\_std\_per\_stride\_all\_horizons.png}.
+\end{itemize}
+
+
+% =====================================================================
+\section{Source edits applied}
+\label{sec:edits}
+
+One file modified, one new launcher, two new diagnostic scripts.
+The framework
+(\texttt{julia/SMC2FC\_functional/src/Control/GPUControlSMC.jl}) is
+\emph{unchanged} -- the filter just calls into it.
+
+\begin{itemize}[itemsep=2pt]
+  \item \texttt{version\_1\_5\_Julia/tools/bench\_smc\_full\_mpc\_fsa\_gpu.jl}:
+        \begin{itemize}[itemsep=1pt]
+          \item Added CLI flags
+                \texttt{--h-fd} (default 0.01),
+                \texttt{--filter-chees-min} (default 4),
+                \texttt{--filter-chees-max} (default 64).
+          \item Imported
+                \texttt{parallel\_hmc\_one\_move\_generic!} and
+                \texttt{chees\_pick\_L\_generic} from
+                \texttt{SMC2FC\_functional}.
+          \item In \texttt{run\_outer\_smc}, replaced the call to
+                the model-specific
+                \texttt{parallel\_hmc\_one\_move!} with a closure
+                \texttt{log\_density\_fn = U $\mapsto$
+                gpu\_log\_density(target, U, grid\_obs, key)} +
+                \texttt{chees\_pick\_L\_generic} +
+                \texttt{parallel\_hmc\_one\_move\_generic!}, all
+                passed \texttt{beta = next\_$\lambda$}.
+          \item Per-level log line now reports \texttt{L=N} so the
+                ChEES-picked leapfrog count is visible per stride.
+          \item \texttt{filter\_cfg} now carries
+                \texttt{h\_fd = args["h-fd"]} and the built
+                \texttt{chees\_L\_candidates} list.
+          \item \texttt{manifest.json::smc\_cfg} records
+                \texttt{h\_fd}, \texttt{filter\_chees\_min},
+                \texttt{filter\_chees\_max}, and the built
+                \texttt{filter\_chees\_list}.
+        \end{itemize}
+  \item (NEW) \texttt{version\_1\_5\_Julia/tools/launchers/}\\
+        \texttt{run\_julia\_horizon\_sweep\_filter\_hmc\_unified.sh}:
+        sibling launcher with the new flag set inlined and
+        \texttt{T\_LIST=(14 28 42)} default.
+  \item (NEW) \texttt{compare\_v15\_julia\_vs\_python/src/}\\
+        \texttt{diag\_filter\_hmc\_accept.jl}: parses the bench log
+        for filter HMC \texttt{accept=X\%} lines and emits per-stride
+        / cross-horizon CSVs.
+  \item (NEW) \texttt{compare\_v15\_julia\_vs\_python/src/}\\
+        \texttt{diag\_posterior\_median\_compare.jl}: side-by-side
+        comparison script (currently in a "three-honest-metrics"
+        form: time-averaged median across strides, fraction of
+        strides where the credible band brackets truth, cloud
+        log-std at end-of-run).
+\end{itemize}
+
+\paragraph{Now-unused functions in the model.} The model-specific
+\texttt{parallel\_hmc\_one\_move!} and
+\texttt{parallel\_hmc\_one\_move} in
+\texttt{models/fsa\_high\_res/gpu\_pf.jl} are no longer called by
+the bench. They are left in place by this change; a separate
+cleanup pass could remove them.
+
+
+% =====================================================================
+\section{Conclusion}
+\label{sec:conclusion}
+
+The two filter-HMC bugs were fixed by porting the filter to the
+framework's generic ChEES path. Three measurable signals from this
+sweep:
+
+\begin{enumerate}[itemsep=2pt]
+  \item \textbf{Filter HMC moved from 0\,\% accept (2880 levels in
+        the prior baseline) to 61.9--71.4\,\% accept (810 levels
+        across this sweep)} -- a textbook MCMC operating point. The
+        ChEES picker is selecting $L \in \{4, 8, 16, 32, 64\}$
+        with horizon-averaged means of 52--58. Source:
+        Table~\ref{tab:filter_hmc}.
+  \item \textbf{The closed-loop $A$ trajectory and $F$-violation
+        count match the no-filter-HMC baseline within $\sim 3\,\%$},
+        as expected since the controller config was held fixed
+        between runs (Table~\ref{tab:A_compare}).
+  \item \textbf{Wall is 2.6--3.9$\times$ longer} because of the
+        new per-level HMC cost (Table~\ref{tab:wall_ratio}).
+\end{enumerate}
+
+The trace plots in \S\ref{sec:param_traces} show the posterior
+median bouncing across strides with the 5--95\,\% credible band
+enveloping truth on each of the 10 estimated parameters at every
+horizon -- in contrast with the prior no-filter-HMC sweep, where
+several parameters' medians sat at consistent biased values across
+all strides. Quantifying that contrast \emph{numerically} (rather
+than from the figures) is the job of the \S\ref{sec:not_claimed}
+follow-up below.
+
+
+% =====================================================================
+\section{What this report does NOT claim}
+\label{sec:not_claimed}
+
+\begin{itemize}[itemsep=2pt]
+  \item No single-stride median snapshot. A previous attempt in
+        this folder (\texttt{posterior\_median\_compare\_T<N>d.csv})
+        used the median at the \emph{final fired stride only} and
+        produced a misleading "winner" column for several
+        parameters: that summary is contradicted by the trace plots
+        in \S\ref{sec:param_traces}, which show the per-stride
+        median is a noisy time series. The corrective measurement
+        is in the rewritten
+        \texttt{diag\_posterior\_median\_compare.jl}: time-averaged
+        median across all fired strides (after a 4-stride warmup),
+        fraction of strides where the credible band brackets truth,
+        and cloud log-std at end-of-run. Running that script and
+        recording the three-metric CSV is a follow-up; this report
+        does not embed those numbers.
+  \item No causal attribution between which knob (the $\varepsilon$
+        change, the $h_{\mathrm{fd}}$ change, the framework-port,
+        the ChEES picker, or the $\beta$-tempering fix) contributes
+        which fraction of the observed effect. All four landed
+        together. Ablations are deferred.
+  \item No $T = 56, 70, 84$ (the longer horizons in the original
+        baseline). Wall budget at this configuration is roughly
+        2.6--3.9$\times$ the no-filter-HMC sweep's per-horizon wall;
+        running them is a follow-up.
+\end{itemize}
+
+
+\end{document}

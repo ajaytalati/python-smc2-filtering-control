@@ -1,0 +1,45 @@
+[ Info: loading v5 model + framework (FSA_STEP_MINUTES=15)...
+[ Info: config: T=2d step=15min BINS_PER_DAY=96 WINDOW=96 STRIDE=48 n_strides=3  open_loop=false
+[ Info: GPU device: NVIDIA GeForce RTX 5090
+[ Info: init preset: TRAINED_ATHLETE_INIT
+[ Info: filter target: N_SMC=16 K_per_chain=100 d=37 M_max=1200
+[ Info: filter target: OT rescue DISABLED (fast path)
+[ Info: controller cfg: n_smc=64 n_inner=64 per-channel n_anchors=12 θ_dim=24 chees=[16, 32, 64, 128, 256, 512]
+[ Info: initial Φ (baseline + closed-loop init plan): B=0.3 S=0.3
+[ Info: [stride  1/ 3] 0.0s  warming up (hist=48/96) Φ̄_B=0.300 Φ̄_S=0.300 x̂=(B=0.501, S=0.449, F=0.196, A=0.479)
+[ Info:   [stride  1 phase walls (s)] slice=0.0000 plant=0.0001 acc=0.0001 grid=0.0000 filter=0.000 xhat=0.0000 replan=0.000 postlog=0.0000 total=0.202
+[ Info:     [ 1] λ 0.000 → 0.001 (Δλ=0.001) L=64 accept=98%
+[ Info:     [ 2] λ 0.001 → 0.004 (Δλ=0.003) L=64 accept=96%
+[ Info:     [ 3] λ 0.004 → 0.012 (Δλ=0.008) L=64 accept=100%
+[ Info:     [ 4] λ 0.012 → 0.026 (Δλ=0.014) L=64 accept=98%
+[ Info:     [ 5] λ 0.026 → 0.057 (Δλ=0.031) L=64 accept=98%
+[ Info:     [ 6] λ 0.057 → 0.137 (Δλ=0.081) L=64 accept=92%
+[ Info:     [ 7] λ 0.137 → 0.290 (Δλ=0.153) L=64 accept=98%
+[ Info:     [ 8] λ 0.290 → 0.490 (Δλ=0.200) L=64 accept=96%
+[ Info:     [ 9] λ 0.490 → 0.690 (Δλ=0.200) L=64 accept=94%
+[ Info:     [10] λ 0.690 → 0.890 (Δλ=0.200) L=64 accept=75%
+[ Info:     [11] λ 0.890 → 1.000 (Δλ=0.110) L=64 accept=83%
+[ Info: [stride  2/ 3] 31.9s  11 filter levels  Φ̄_B=0.300 Φ̄_S=0.300 x̂=(B=0.493, S=0.444, F=0.199, A=0.514)
+[ Info:   [replan @ stride  2] 5.3s  Φ̄_B_plan=0.475 Φ̄_S_plan=0.376  ctrl_n_temp=5
+[ Info:     [replan call-split] n_calls=5421  in=0.381s (7.1%)  kern+sync=1.364s (25.5%)  out+sum=2.958s (55.3%)  other=0.644s (12.0%)
+[ Info:   [stride  2 phase walls (s)] slice=0.0000 plant=0.0001 acc=0.0000 grid=0.0000 filter=31.609 xhat=0.2598 replan=5.346 postlog=0.1241 total=38.004
+[ Info:     [ 1] λ 0.000 → 0.175 (Δλ=0.175) L=64 accept=98%
+[ Info:     [ 2] λ 0.175 → 0.349 (Δλ=0.174) L=64 accept=92%
+[ Info:     [ 3] λ 0.349 → 0.549 (Δλ=0.200) L=64 accept=96%
+[ Info:     [ 4] λ 0.549 → 0.749 (Δλ=0.200) L=64 accept=85%
+[ Info:     [ 5] λ 0.749 → 0.949 (Δλ=0.200) L=64 accept=79%
+[ Info:     [ 6] λ 0.949 → 1.000 (Δλ=0.051) L=64 accept=85%
+[ Info: [stride  3/ 3] 14.1s  6 filter levels  Φ̄_B=0.212 Φ̄_S=0.145 x̂=(B=0.492, S=0.443, F=0.189, A=0.554)
+[ Info:   [stride  3 phase walls (s)] slice=0.0000 plant=0.0000 acc=0.0000 grid=0.0000 filter=14.104 xhat=0.0001 replan=0.000 postlog=0.0000 total=14.104
+[ Info: Total wall time: 57.4 s
+[ Info: wrote /home/ajay/Repos/python-smc2-filtering-control/compare_v15_julia_vs_python/example_run/julia_v5_T2d_2026-05-10/T2d_seed42/data.jld2
+[ Info: wrote /home/ajay/Repos/python-smc2-filtering-control/compare_v15_julia_vs_python/example_run/julia_v5_T2d_2026-05-10/T2d_seed42/per_stride.csv
+[ Info: wrote /home/ajay/Repos/python-smc2-filtering-control/compare_v15_julia_vs_python/example_run/julia_v5_T2d_2026-05-10/T2d_seed42/controller_diagnostics.csv
+[ Info: wrote manifest.json + experiment_run.md
+[ Info: plotting deferred for v5 (data.jld2 has all fields a future v5 plotter needs)
+Could not create decoration from factory! Running with no decorations.
+[ Info: wrote: /home/ajay/Repos/python-smc2-filtering-control/compare_v15_julia_vs_python/example_run/julia_v5_T2d_2026-05-10/T2d_seed42/v5_T2d_traces.png
+Could not create decoration from factory! Running with no decorations.
+[ Info: wrote: /home/ajay/Repos/python-smc2-filtering-control/compare_v15_julia_vs_python/example_run/julia_v5_T2d_2026-05-10/T2d_seed42/v5_T2d_param_traces.png
+Could not create decoration from factory! Running with no decorations.
+[ Info: wrote: /home/ajay/Repos/python-smc2-filtering-control/compare_v15_julia_vs_python/example_run/julia_v5_T2d_2026-05-10/T2d_seed42/v5_T2d_obs_channels.png

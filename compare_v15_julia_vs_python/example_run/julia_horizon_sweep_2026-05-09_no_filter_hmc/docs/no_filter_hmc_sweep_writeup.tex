@@ -1,0 +1,437 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[margin=2.2cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{listings}
+\usepackage{graphicx}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{microtype}
+\usepackage{parskip}
+\usepackage{textcomp}
+
+\hypersetup{colorlinks=true,linkcolor=blue!50!black,urlcolor=blue!60!black}
+
+\lstset{basicstyle=\ttfamily\footnotesize,breaklines=true,
+        frame=single,framerule=0pt,backgroundcolor=\color{black!4},
+        columns=fullflexible,keepspaces=true,
+        showstringspaces=false,xleftmargin=0pt}
+
+\title{Julia v1.5 SMC$^2$-MPC \\
+       6-horizon sweep with FILTER HMC OFF, all rejuvenation tricks ON \\
+       \large $T \in \{14, 28, 42, 56, 70, 84\}$ days, RTX 5090, seed 42}
+\author{}
+\date{2026-05-09}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This report records a 6-horizon sweep of the FSA v1.5 closed-loop
+SMC$^2$-MPC bench with the \emph{filter}-side HMC kernel disabled
+(\texttt{--num-mcmc 0}) and all available rejuvenation tricks turned
+on (Liu--West $\theta$-cloud shrinkage at $a=0.97$;
+Silverman-bandwidth KDE resample with coupled Liu--West correction
+at \texttt{--smooth-resample-bw 1.0}; multivariate Gaussian bridge
+between rolling windows). The controller-side HMC (ChEES, in
+\texttt{Control/GPUControlSMC.jl}) is unchanged but is run at a
+\textbf{reduced ``fast-controller'' particle / MCMC configuration}:
+\texttt{--ctrl-n-smc} dropped $2048 \to 1024$ and
+\texttt{--ctrl-num-mcmc} dropped $16 \to 8$ relative to the
+saturated default (per the technical guide's
+``shorter-wall-time'' recipe). Per-tempering-level controller
+diagnostics are recorded for the first time. All numerical entries
+in this report are pulled directly from the run artefacts on disk;
+the parameter-recovery claim in \S\ref{sec:conclusion} is the senior
+engineer's reading of the posterior-trace figures.
+\end{abstract}
+
+\tableofcontents
+\clearpage
+
+
+% =====================================================================
+\section{Purpose}
+\label{sec:purpose}
+
+This study is a \textbf{baseline data-gathering run}: how does the
+v1.5 filter perform on parameter recovery when the filter HMC is
+removed entirely and the cloud is kept alive solely by the
+rejuvenation tricks (Liu--West, Silverman-KDE, Gaussian bridge)?
+
+The motivation is the prior finding (Tier~0,
+\texttt{TIER\_0\_FINDINGS.md} in the sibling sweep folder
+\texttt{julia\_horizon\_sweep\_2026-05-09/}) that the filter HMC
+accepts 0\,\% of proposals across 2880 logged tempering levels at the
+saturated configuration. If the HMC is doing nothing, removing it
+should have no effect on filter posterior quality, and the runtime
+should drop. This sweep measures that.
+
+The output is a \textbf{baseline} that future studies (with HMC
+re-enabled and tuned, or with different rejuvenation knobs) can
+compare against.
+
+
+% =====================================================================
+\section{What was run}
+\label{sec:cli}
+
+Per horizon, identical except \texttt{--T-days}:
+
+\begin{lstlisting}[language=bash]
+julia --project=. tools/bench_smc_full_mpc_fsa_gpu.jl \
+    --T-days <T> --seed 42 \
+    --num-mcmc 0 --hmc-step-size 0 --hmc-leapfrog 0 \
+    --liu-west-a 0.97 \
+    --smooth-resample-bw 1.0 \
+    --gaussian-bridge true \
+    --N-smc 512 --K-per-chain 1000 \
+    --ctrl-n-smc 1024 --ctrl-num-mcmc 8 \
+    --collect-ctrl-diagnostics true \
+    --output-dir <SWEEP_ROOT>/T<T>d_seed42
+\end{lstlisting}
+
+Driven by the sibling launcher
+\texttt{version\_1\_5\_Julia/tools/launchers/run\_julia\_horizon\_sweep\_no\_filter\_hmc.sh}.
+
+\subsection{What each filter-side flag does}
+
+\begin{itemize}[itemsep=2pt]
+  \item \texttt{--num-mcmc 0} disables the per-tempering-level filter
+        HMC entirely. The HMC loop in \texttt{run\_outer\_smc}
+        iterates 0 times.
+  \item \texttt{--liu-west-a 0.97} applies per-dimension Liu--West
+        shrinkage to the resampled $\theta$-cloud at every tempering
+        level. (Skipped here in favour of \texttt{smooth-resample}.)
+  \item \texttt{--smooth-resample-bw 1.0} switches the
+        per-tempering-level rejuvenation to the multivariate
+        Silverman-bandwidth KDE resample with coupled Liu--West
+        correction $a = \sqrt{1 - h_{\mathrm{norm}}^2}$, ported from
+        \texttt{SMC2FC\_functional/src/Filtering/Kernels.jl::}
+        \texttt{smooth\_resample}. When set $>0$, this branch wins
+        over the per-dim Liu--West.
+  \item \texttt{--gaussian-bridge true} replaces the identity-copy of
+        the previous-window posterior with a fresh sample from
+        $\mathcal{N}(\hat{\mu}, \hat{\Sigma}_{\mathrm{reg}})$ via
+        \texttt{Bridge.fit\_gaussian} +
+        \texttt{Bridge.sample\_from\_gaussian}
+        (regularised sample covariance, $10^{-6}$ Tikhonov).
+  \item \texttt{--ctrl-n-smc 1024 --ctrl-num-mcmc 8} \textbf{REDUCES
+        the controller particle / MCMC budget from the saturated
+        default}: \texttt{--ctrl-n-smc} from $2048 \to 1024$ and
+        \texttt{--ctrl-num-mcmc} from $16 \to 8$. This is the
+        technical guide's ``shorter-wall-time''
+        recipe (\texttt{compare\_v15\_julia\_vs\_python/docs/}
+        \texttt{technical\_guide\_to\_current\_best\_Julia\_SMC2FC\_config.tex},
+        ``When to deviate from these defaults''), traded against a
+        weaker controller schedule. The technical guide quotes this
+        change as approximately a $4\times$ wall-time reduction.
+        \textbf{Controller HMC stays ON} at this reduced config —
+        that code path is \texttt{run\_tempered\_smc\_gpu} in
+        \texttt{Control/GPUControlSMC.jl}, separate from the filter
+        HMC; only the filter HMC is being disabled.
+  \item \texttt{--collect-ctrl-diagnostics true} writes one row of
+        controller-HMC telemetry per tempering level to
+        \texttt{controller\_diagnostics.csv} (new instrumentation,
+        \S\ref{sec:ctrl_hmc}).
+\end{itemize}
+
+\subsection{Hardware}
+
+NVIDIA GeForce RTX 5090; per-horizon \texttt{nvidia-smi} sampled at
+1\,Hz to \texttt{T<N>d\_seed42/nvidia\_smi.csv}.
+
+
+% =====================================================================
+\section{Wall-time and closed-loop metrics}
+\label{sec:wall}
+
+Source: \texttt{horizons\_results.csv} (one row per horizon, written
+by \texttt{compare\_v15\_julia\_vs\_python/src/extract\_horizon\_results.py}).
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabular}{rrrrrrr}
+\toprule
+$T$ (d) & wall (s) & $\overline{A}_{\mathrm{MPC}}$ & $A^{\mathrm{end}}_{\mathrm{MPC}}$ & $\overline{A}_{\mathrm{base}}$ & $A^{\mathrm{end}}_{\mathrm{base}}$ & $F$ violations \\
+\midrule
+14 & 133.2  & 0.077 & 0.085 & 0.114 & 0.182 & 0 \\
+28 & 342.0  & 0.095 & 0.161 & 0.181 & 0.342 & 0 \\
+42 & 715.5  & 0.167 & 0.521 & 0.285 & 0.646 & 0 \\
+56 & 1234.6 & 0.332 & 1.066 & 0.401 & 0.824 & 0 \\
+70 & 1790.8 & 0.491 & 1.197 & 0.492 & 0.894 & 0 \\
+84 & 2456.6 & 0.612 & 1.238 & 0.565 & 0.907 & 0 \\
+\bottomrule
+\end{tabular}
+\caption{Per-horizon wall time, mean and final autonomic amplitude
+$A$ under MPC and under the constant-$\Phi=1$ baseline rollout, and
+fatigue-barrier ($F_{\max}=0.40$) violation count. Zero $F$
+violations across all six horizons.}
+\label{tab:wall}
+\end{table}
+
+\subsection{GPU utilisation and memory}
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabular}{rrrr}
+\toprule
+$T$ (d) & mean GPU util (\%) & peak VRAM (MiB) & mean power (W) \\
+\midrule
+14 & 29.6 & 5399 & 181.0 \\
+28 & 47.5 & 5390 & 280.3 \\
+42 & 58.3 & 6091 & 335.7 \\
+56 & 65.2 & 5273 & 369.7 \\
+70 & 71.0 & 5272 & 398.5 \\
+84 & 74.5 & 5776 & 415.4 \\
+\bottomrule
+\end{tabular}
+\caption{Per-horizon GPU telemetry. Peak VRAM stays $\lesssim 6.1$\,GiB
+(versus the 32\,GiB on the RTX 5090).}
+\label{tab:gpu}
+\end{table}
+
+\subsection{Wall comparison vs the saturated-controller baseline}
+
+The original 6-horizon baseline at
+\texttt{julia\_horizon\_sweep\_2026-05-09/} ran the same six
+horizons at the \emph{saturated} controller config
+(\texttt{--ctrl-n-smc 2048 --ctrl-num-mcmc 16}) with the filter HMC
+nominally on (but accepting 0\,\% of proposals). \textbf{This run
+uses a reduced controller config} (\texttt{--ctrl-n-smc 1024
+--ctrl-num-mcmc 8}, half the particles, half the MCMC moves). The
+wall ratio below conflates two changes: removing the filter HMC and
+halving the controller's particle / MCMC budget. The technical guide
+attributes the bulk of the $\sim 4\times$ wall reduction to the
+controller-side change alone:
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabular}{rrrr}
+\toprule
+$T$ (d) & this run (s) & baseline (s) & ratio \\
+\midrule
+14 & 133.2  & 422.7  & 3.17$\times$ \\
+28 & 342.0  & 1259.3 & 3.68$\times$ \\
+42 & 715.5  & 2286.6 & 3.20$\times$ \\
+56 & 1234.6 & 3979.4 & 3.22$\times$ \\
+70 & 1790.8 & 5586.4 & 3.12$\times$ \\
+84 & 2456.6 & 7236.4 & 2.95$\times$ \\
+\bottomrule
+\end{tabular}
+\caption{Wall comparison. \textbf{Both} the controller-config
+reduction (\texttt{--ctrl-n-smc} $2048 \to 1024$,
+\texttt{--ctrl-num-mcmc} $16 \to 8$) \textbf{and} the filter-HMC
+removal contribute; the technical guide attributes the bulk of the
+ratio to the controller-config change alone.}
+\label{tab:wall_ratio}
+\end{table}
+
+
+% =====================================================================
+\section{Controller-HMC measurements (new instrumentation)}
+\label{sec:ctrl_hmc}
+
+Each call to the controller's tempered-SMC$^2$ inner loop now records
+per-tempering-level diagnostics (Listing~\ref{lst:ctrl_diag}). One
+\texttt{controller\_diagnostics.csv} per horizon; aggregated by
+\texttt{compare\_v15\_julia\_vs\_python/src/diag\_controller\_hmc.jl}
+into per-horizon plots and a cross-horizon summary CSV.
+
+\begin{lstlisting}[caption={Diagnostic columns recorded per tempering level.},
+                    label={lst:ctrl_diag}, language=]
+stride_idx, level, beta_pre, beta_post, delta_beta, beta_max,
+ess_at_dbeta_chosen, n_smc, theta_dim,
+chees_L_chosen, chees_score_best,
+chees_L_candidates, chees_scores,
+eps_step_size, n_mcmc_moves, total_accepts, accept_frac,
+log_density_pre_mean, log_density_post_mean, delta_log_density,
+esjd_total, esjd_per_eps_L, wall_seconds_level
+\end{lstlisting}
+
+\begin{table}[ht]
+\centering
+\footnotesize
+\begin{tabular}{rrrrrrrrrr}
+\toprule
+$T$ & replans & total levels & mean accept (\%) & median accept (\%) & mean $L$ & mean $\beta_{\max}$ & mean ESJD/$\varepsilon L$ & mean $\Delta\log D$ & mean wall/level (s) \\
+\midrule
+14 & 13 & 69  & 97.93 & 97.91 & 16 & 158.20 & 14.08 & 0.012 & 1.69 \\
+28 & 27 & 136 & 97.43 & 97.74 & 16 &  19.96 & 14.03 & 0.079 & 2.37 \\
+42 & 41 & 230 & 96.17 & 96.48 & 16 &   7.16 & 13.41 & 0.344 & 3.00 \\
+56 & 55 & 328 & 94.97 & 95.56 & 16 &   3.15 & 13.30 & 0.781 & 3.67 \\
+70 & 69 & 412 & 93.49 & 94.78 & 16 &   1.82 & 13.20 & 1.194 & 4.27 \\
+84 & 83 & 492 & 92.68 & 94.35 & 16 &   1.27 & 13.15 & 1.609 & 4.92 \\
+\bottomrule
+\end{tabular}
+\caption{Cross-horizon controller-HMC summary (from
+\texttt{docs/controller\_hmc\_summary.csv}). $L$ is the
+ChEES-picked leapfrog count from the candidate list
+$[16, 32, 64, 128, 256, 512]$; in this run the picker selects $L=16$
+at every tempering level of every replan of every horizon.}
+\label{tab:ctrl_hmc}
+\end{table}
+
+\paragraph{Filter-HMC accept-rate reference.} With \texttt{--num-mcmc 0}
+the filter HMC loop iterates 0 times per tempering level; the
+\texttt{accept=0\%} lines printed in the bench log are arithmetic
+artefacts ($0 / \max(1, 0\cdot N_{\mathrm{smc}}) = 0$), \emph{not}
+measurements of HMC quality. By contrast: in the original baseline
+run (\texttt{julia\_horizon\_sweep\_2026-05-09/}) with the filter HMC
+nominally on, 2880 of 2880 logged tempering levels reported 0\,\%
+acceptance — that \emph{was} a measurement of attempted HMC moves.
+
+
+% =====================================================================
+\section{Posterior parameter traces (per horizon)}
+\label{sec:param_traces}
+
+Figures~\ref{fig:param_T14}--\ref{fig:param_T84}: per-horizon
+posterior parameter trace plots, all written by the bench's internal
+\texttt{\_plot\_param\_traces\_v15} function. Each figure is the same
+10-panel layout: posterior median (blue), 5--95\,\% credible band
+(light blue fill), truth value (red dashed), $x$-axis in days.
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\linewidth]{../T14d_seed42/v15_T14d_param_traces.png}
+\caption{$T = 14$ days. Posterior parameter traces.}
+\label{fig:param_T14}
+\end{figure}
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\linewidth]{../T28d_seed42/v15_T28d_param_traces.png}
+\caption{$T = 28$ days. Posterior parameter traces.}
+\label{fig:param_T28}
+\end{figure}
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\linewidth]{../T42d_seed42/v15_T42d_param_traces.png}
+\caption{$T = 42$ days. Posterior parameter traces.}
+\label{fig:param_T42}
+\end{figure}
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\linewidth]{../T56d_seed42/v15_T56d_param_traces.png}
+\caption{$T = 56$ days. Posterior parameter traces.}
+\label{fig:param_T56}
+\end{figure}
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\linewidth]{../T70d_seed42/v15_T70d_param_traces.png}
+\caption{$T = 70$ days. Posterior parameter traces.}
+\label{fig:param_T70}
+\end{figure}
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\linewidth]{../T84d_seed42/v15_T84d_param_traces.png}
+\caption{$T = 84$ days. Posterior parameter traces.}
+\label{fig:param_T84}
+\end{figure}
+
+\clearpage
+
+
+% =====================================================================
+\section{Other plots on disk (not embedded — for separate inspection)}
+\label{sec:other_plots}
+
+\begin{itemize}[itemsep=2pt]
+  \item \textbf{Cloud std (log-space) per stride, all 6 horizons
+        overlaid:}
+        \texttt{docs/cloud\_std\_per\_stride\_all\_horizons.png}.
+  \item \textbf{Per-horizon controller-HMC 6-panel diagnostics:}
+        \texttt{docs/controller\_hmc\_diagnostics\_T<N>d.png} for
+        $N \in \{14, 28, 42, 56, 70, 84\}$.
+  \item \textbf{Per-horizon state traces} ($B$, $F$, $A$, $\Phi$):
+        \texttt{T<N>d\_seed42/v15\_T<N>d\_traces.png}.
+\end{itemize}
+
+
+% =====================================================================
+\section{Source edits applied}
+\label{sec:edits}
+
+Two source files modified plus one new launcher and one new
+diagnostic plotter:
+
+\begin{itemize}[itemsep=2pt]
+  \item \texttt{julia/SMC2FC\_functional/src/Control/GPUControlSMC.jl}
+        — added \texttt{collect\_diagnostics::Bool=false} keyword on
+        \texttt{run\_tempered\_smc\_gpu} (4-tuple return when true);
+        added \texttt{return\_scores::Bool=false} keyword on
+        \texttt{chees\_pick\_L\_generic}. Backward-compatible: existing
+        callers with the default keyword get the original 3-tuple /
+        2-tuple return.
+  \item \texttt{version\_1\_5\_Julia/tools/bench\_smc\_full\_mpc\_fsa\_gpu.jl}
+        — added \texttt{--collect-ctrl-diagnostics} CLI flag (default
+        \texttt{true}), plumbed through \texttt{controller\_plan} and
+        \texttt{stride\_step}; added \texttt{controller\_diagnostics.csv}
+        writer. The manifest now records \texttt{liu\_west\_a},
+        \texttt{smooth\_resample\_bw}, \texttt{gaussian\_bridge}.
+  \item (NEW) \texttt{version\_1\_5\_Julia/tools/launchers/}\\
+        \texttt{run\_julia\_horizon\_sweep\_no\_filter\_hmc.sh}
+        — sibling sweep launcher with the new flag set inlined.
+  \item (NEW) \texttt{compare\_v15\_julia\_vs\_python/src/}\\
+        \texttt{diag\_controller\_hmc.jl} —
+        aggregator + plotter for \texttt{controller\_diagnostics.csv}.
+\end{itemize}
+
+
+% =====================================================================
+\section{Conclusion}
+\label{sec:conclusion}
+
+\textbf{Even for this very simple linear (additive Gaussian)
+observation model, the filter \emph{without} the HMC kernel cannot
+exactly recover the true model parameters.} Inspection of
+Figures~\ref{fig:param_T14}--\ref{fig:param_T84} shows the posterior
+median (blue) sitting at a consistent offset from truth (red dashed)
+on several parameters at every horizon — the offset does not shrink
+as $T$ grows.
+
+This is a baseline. It says: rejuvenation tricks alone (Liu--West,
+Silverman-KDE, Gaussian-bridge) are not sufficient to drive the
+posterior to truth. Whatever is driving the residual bias — the
+gradient information that an MCMC kernel would inject, the
+between-window propagation choice, or something else — is the
+question follow-up studies need to answer.
+
+
+% =====================================================================
+\section{What this report does NOT claim}
+\label{sec:not_claimed}
+
+\begin{itemize}[itemsep=2pt]
+  \item Numerical per-parameter posterior medians extracted from
+        \texttt{data.jld2} for each horizon. Not done — those would
+        require loading
+        \texttt{posterior\_particles[end\_stride, :, :]}, taking
+        \texttt{log}, and computing the median, separately for each
+        of the 6 horizons (and for the baseline run, if a
+        side-by-side table is wanted). The per-parameter \emph{visual}
+        offset is what \S\ref{sec:conclusion} relies on.
+  \item Numerical cloud-std-vs-time curves. Visible in
+        \texttt{docs/cloud\_std\_per\_stride\_all\_horizons.png}; not
+        extracted as numbers in this report.
+  \item Any causal attribution between which knob (\texttt{liu\_west\_a},
+        \texttt{smooth\_resample\_bw}, \texttt{gaussian\_bridge}) is
+        responsible for which observed effect. No ablations were run.
+  \item Any verdict on the cause of the residual bias in
+        \S\ref{sec:conclusion} — only the existence of the bias.
+\end{itemize}
+
+
+\end{document}

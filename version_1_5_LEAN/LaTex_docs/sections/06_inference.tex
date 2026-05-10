@@ -1,0 +1,57 @@
+\section{The SMC${}^2$ Inference Framework}
+
+The standalone FSA sandbox is designed to support development for the SMC${}^2$ algorithm, a state-of-the-art method for Bayesian inference in state-space models where both parameters and latent states are unknown.
+
+\subsection{Sequential Monte Carlo in Two Layers}
+
+The algorithm (Chopin et al., 2013) employs two nested layers of particle filtering:
+\begin{enumerate}
+    \item \textbf{Outer Filter (Parameter Space):} A tempered SMC filter over the parameter vector $\thetadyn$. Each particle in the outer filter represents a hypothesis for the static physiological parameters.
+    \item \textbf{Inner Filter (State Space):} For each parameter particle, a bootstrap particle filter (BPF) estimates the latent trajectories $(B_{1:n}, F_{1:n}, A_{1:n})$.
+\end{enumerate}
+
+The sandbox artifacts (\texttt{estimation.py}) provide the JAX-native transition kernels and observation weights required to execute these filters with high efficiency.
+
+\subsection{Parameter Resampling and MCMC Moves}
+
+To prevent particle degeneracy in the parameter space, SMC${}^2$ uses Markov Chain Monte Carlo (MCMC) moves. The JAX-native implementation in the main repository uses Hamiltonian Monte Carlo (HMC) with a mass matrix estimated from the particle cloud. The sandbox allows researchers to tune the priors and dynamics to ensure that the HMC transitions are well-mixed and that the posterior surface is sufficiently smooth.
+
+\subsection{Closed-Loop Control under Uncertainty}
+
+The \texttt{ControlSpec} enables Model Predictive Control (MPC) where the optimization is performed over the posterior mean of the parameters. The cost functional $J(\theta)$ is evaluated by rolling out the SDE under common random numbers (CRN), ensuring a low-variance gradient for the schedule optimization. The standalone repo facilitates the design of new cost functions (e.g., maximizing autonomic amplitude while minimizing fatigue) before they are deployed in the full rolling-window MPC pipeline.
+
+\subsection{Why Tempered SMC$^2$ Control Beats Open-Loop Trajectory Optimisation} \label{sec:smc2_vs_ot}
+
+The deficiencies catalogued in Sections \ref{sec:error_data} and \ref{sec:open_loop_limitation} are not accidents of the particular settings used in \texttt{tools/optimize\_dynamic\_plan\_v4.py}; they are structural consequences of solving the FSA-v4 control problem with a single deterministic optimal-trajectory (OT) engine driven by gradient descent. The \texttt{smc2fc} repository takes a fundamentally different approach: rather than searching for one $\theta^\star$ on a smooth surrogate of the cost, it carries a tempered population of $\theta$-particles through the same SMC machinery used for posterior inference, and re-samples them at each control window. The relative properties of the two approaches are summarised in Table \ref{tab:ot_vs_smc2}.
+
+\begin{table}[h]
+    \centering
+    \begin{tabular}{lll}
+        \toprule
+         & \textbf{OT-Control engine} & \textbf{Tempered SMC$^2$ control} \\
+        \midrule
+        Optimiser           & Adam, gradient          & SMC, sampling             \\
+        Cost surface        & Smooth required         & Non-smooth fine           \\
+        Multimodality       & Picks one mode          & Explores all              \\
+        Per-window cost     & Cheap                   & More expensive            \\
+        Reuses filter       & No                      & Yes (the point)           \\
+        Chance constraints  & Hard (no posterior)     & Natural (resample $\theta$) \\
+        \bottomrule
+    \end{tabular}
+    \caption{Comparison of the open-loop optimal-trajectory (OT) approach used in \texttt{tools/optimize\_dynamic\_plan\_v4.py} versus the tempered SMC$^2$ control engine in \texttt{smc2fc}.}
+    \label{tab:ot_vs_smc2}
+\end{table}
+
+\paragraph{Optimiser (gradient vs.\ sampling).} Gradient descent on $\theta$ requires $\nabla_\theta J$ to be informative everywhere on the path from initialisation to the optimum. The SMC$^2$ engine instead carries a weighted ensemble $\{\theta^{(i)}, w^{(i)}\}$ and updates it via importance-tempered resampling, which makes no use of gradients and is unaffected by gradient pathologies (saturation, clipping artefacts, vanishing signal at the L2 minimum).
+
+\paragraph{Cost surface (smooth vs.\ non-smooth).} Adam-style optimisation degrades sharply on cost surfaces with kinks, hard constraints, or discrete switches. The FSA-v4 cost has all of these latent --- $F_{\max}$ barriers, capacity boundaries, autonomic absorbing states. SMC re-weighting tolerates non-smooth $J(\theta)$ trivially because it only ever evaluates point values, never derivatives.
+
+\paragraph{Multimodality (one mode vs.\ all modes).} The reward landscape for concurrent training is multimodal: aerobic-dominant, strength-dominant, and balanced periodisation strategies can all be local optima with comparable cost. A single gradient run lands in whichever basin its initialisation lies in. The tempered particle population covers all surviving modes and reports a posterior-like distribution over plans, not a point estimate.
+
+\paragraph{Per-window cost (cheap vs.\ expensive).} Honest accounting: the SMC$^2$ control engine is more expensive per planning window because it propagates many $\theta$-particles instead of one $\theta$. This is the price paid for the four advantages above and the two below.
+
+\paragraph{Reuses the filter --- the central point.} In a closed-loop deployment the parameter posterior is already being maintained by the SMC$^2$ inference layer for state estimation. The control engine reuses the same particle population: each $\theta$-particle simultaneously serves inference (via its inner BPF) and control (as a candidate plan). The OT engine in \texttt{optimize\_dynamic\_plan\_v4.py} cannot do this --- it has no posterior, only a gradient-found point estimate, so it has nothing to ``reuse''.
+
+\paragraph{Chance constraints (hard vs.\ natural).} Constraints of the form $\Pr[F(t) > F_{\max}] \le \alpha$ are the physiologically meaningful version of the soft barrier in [control.py:138]. Enforcing them with the OT engine requires constructing a differentiable surrogate (the soft quadratic penalty) and tuning $\lambda_{\text{barrier}}$ --- with no guarantee of feasibility. Under SMC$^2$, chance constraints are imposed by simply re-weighting or rejecting $\theta$-particles whose simulated trajectories violate the constraint at the prescribed rate. Feasibility becomes a sampling property of the particle cloud, not a numerical property of a penalty term.
+
+In short: the OT engine is the right tool for offline schedule design on a smooth, unimodal, deterministic cost surface; it is the wrong tool for FSA-v4, where the cost is non-smooth, the posterior is multimodal, and the operational requirement is closed-loop control under chance constraints. The \texttt{smc2fc} engine is built precisely for the latter regime.

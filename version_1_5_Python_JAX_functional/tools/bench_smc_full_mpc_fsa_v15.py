@@ -39,8 +39,15 @@ CLI:
 from __future__ import annotations
 
 import os
+from pathlib import Path as _BootPath
 os.environ.setdefault('JAX_ENABLE_X64', 'True')
 os.environ.setdefault('XLA_PYTHON_CLIENT_PREALLOCATE', 'false')
+# Persistent on-disk JAX compile cache so the first run's HLO is
+# reused across processes (matches CLAUDE.md's bench-driver convention).
+os.environ.setdefault(
+    'JAX_COMPILATION_CACHE_DIR',
+    str(_BootPath.home() / '.jax_compilation_cache'),
+)
 
 import argparse
 import csv
@@ -79,6 +86,8 @@ class BenchConfig(NamedTuple):
         ctrl_max_levels: Controller hard cap on tempering levels per replan.
         ctrl_max_lambda_inc: Controller max λ increment per tempering bisection.
         ctrl_sigma_prior: Controller prior std on θ_ctrl RBF coefficients.
+        ctrl_n_anchors: Number of RBF anchors in the controller's
+            schedule basis (controller posterior dimension).
         seed: Top-level seed; per-stride keys are derived deterministically.
         smoke: If True, run only one stride end-to-end as a sanity check.
         out_dir: Output directory for trajectory.npz / manifest.json /
@@ -97,6 +106,7 @@ class BenchConfig(NamedTuple):
     ctrl_max_levels: int
     ctrl_max_lambda_inc: float
     ctrl_sigma_prior: float
+    ctrl_n_anchors: int
     seed: int
     smoke: bool
     out_dir: str
@@ -140,6 +150,9 @@ def parse_args(argv: Optional[list[str]] = None) -> BenchConfig:
                     help='controller max λ increment per tempering bisection')
     ap.add_argument('--ctrl-sigma-prior', type=float, default=1.5,
                     help='controller prior std on θ_ctrl RBF coefficients')
+    ap.add_argument('--ctrl-n-anchors', type=int, default=12,
+                    help='controller RBF basis cardinality (default 12, '
+                         'matches Julia best-config)')
     ap.add_argument('--seed', type=int, default=42)
     ap.add_argument('--smoke', action='store_true',
                     help='single stride only — sanity check that imports + '
@@ -157,6 +170,7 @@ def parse_args(argv: Optional[list[str]] = None) -> BenchConfig:
         ctrl_max_levels=a.ctrl_max_levels,
         ctrl_max_lambda_inc=a.ctrl_max_lambda_inc,
         ctrl_sigma_prior=a.ctrl_sigma_prior,
+        ctrl_n_anchors=a.ctrl_n_anchors,
         seed=a.seed, smoke=a.smoke, out_dir=a.out_dir,
     )
 
@@ -189,6 +203,12 @@ class BenchEnv(NamedTuple):
         n_params: Number of estimated parameters (= len(param_names)).
         DEFAULT_PARAMS: Truth `ParamsV15` NamedTuple from the model.
         cold_start_init: Cold-start latent init `(B, F, A)` array.
+        ctrl_spec_factory: Compile-once controller factory built from
+            `build_control_spec_compileonce`. Per-replan dynamic data
+            (`params_v15`, `init_state`) is bound via Partial inside
+            this factory; the underlying JIT'd `cost_kernel` is
+            traced ONCE and reused across all replans, eliminating
+            the per-replan XLA recompile that dominated wall time.
     """
     em: Any
     smc_cfg: Any
@@ -204,6 +224,7 @@ class BenchEnv(NamedTuple):
     n_params: int
     DEFAULT_PARAMS: Any
     cold_start_init: Any
+    ctrl_spec_factory: Any
 
 
 class BenchState(NamedTuple):
@@ -291,6 +312,13 @@ class BenchAccumulators(NamedTuple):
             `(n_smc, n_params)` constrained-posterior particle cloud.
         posterior_mask: Tuple of bools, parallel to `posterior_chunks`,
             True iff the filter actually fired on that stride.
+        A_sum: Running sum of A across every plant-rollout bin so far.
+            Used to compute the per-stride telemetry's
+            `A_mean_so_far` in O(1) (instead of re-concatenating the
+            full trajectory every stride and re-meaning, which was
+            O(n²) and forced a device→host sync per stride).
+        n_bins_so_far: Total bins of plant rollout accumulated so far.
+            Pairs with `A_sum` for the running mean.
     """
     traj_chunks: Tuple[np.ndarray, ...]
     obs_B_chunks: Tuple[np.ndarray, ...]
@@ -302,6 +330,8 @@ class BenchAccumulators(NamedTuple):
     per_stride_log: Tuple[StrideTelemetry, ...]
     posterior_chunks: Tuple[Optional[np.ndarray], ...]
     posterior_mask: Tuple[bool, ...]
+    A_sum: float
+    n_bins_so_far: int
 
 
 def _empty_accumulators() -> BenchAccumulators:
@@ -311,6 +341,7 @@ def _empty_accumulators() -> BenchAccumulators:
         obs_A_chunks=(), Phi_chunks=(),
         daily_phi_per_stride=(), replan_records=(),
         per_stride_log=(), posterior_chunks=(), posterior_mask=(),
+        A_sum=0.0, n_bins_so_far=0,
     )
 
 
@@ -390,6 +421,18 @@ def _build_env(cfg: BenchConfig) -> BenchEnv:
         dt=DT_BIN_DAYS, t_steps=WINDOW_BINS,
     )
 
+    # Compile-once controller factory. The JIT'd cost kernel is
+    # traced ONCE here; per-replan dynamic data (params_v15,
+    # init_state) is bound via Partial inside the factory at call
+    # time, and JAX's trace cache reuses the same HLO across replans.
+    from models.fsa_high_res.control import build_control_spec_compileonce
+    ctrl_spec_factory = build_control_spec_compileonce(
+        T_total=float(cfg.T_days), dt_days=DT_BIN_DAYS,
+        n_anchors=cfg.ctrl_n_anchors, n_inner=cfg.ctrl_n_inner,
+        sigma_prior=cfg.ctrl_sigma_prior,
+        seed=cfg.seed,
+    )
+
     return BenchEnv(
         em=em, smc_cfg=smc_cfg, ctrl_cfg=ctrl_cfg,
         log_density_factory=log_density_factory,
@@ -401,6 +444,7 @@ def _build_env(cfg: BenchConfig) -> BenchEnv:
         n_params=em.n_params,
         DEFAULT_PARAMS=DEFAULT_PARAMS,
         cold_start_init=COLD_START_INIT,
+        ctrl_spec_factory=ctrl_spec_factory,
     )
 
 
@@ -492,6 +536,12 @@ def _advance_plant_one_stride(env: BenchEnv, cfg: BenchConfig,
         env.DEFAULT_PARAMS, env.DT_BIN_DAYS, plant_key,
     )
     new_state = state._replace(plant_state=rollout.final_state, key=key)
+    # Compute the running A_sum increment as a single device→host
+    # scalar instead of re-meaning the whole accumulated trajectory
+    # in the telemetry path (which was O(n²) and forced a sync per
+    # stride). One scalar transfer per stride, constant cost.
+    A_sum_inc = float(jnp.sum(rollout.trajectory[:, 2]))
+    n_bins_inc = int(rollout.trajectory.shape[0])
     new_acc = acc._replace(
         traj_chunks=acc.traj_chunks + (np.asarray(rollout.trajectory),),
         obs_B_chunks=acc.obs_B_chunks + (np.asarray(rollout.obs_B),),
@@ -499,6 +549,8 @@ def _advance_plant_one_stride(env: BenchEnv, cfg: BenchConfig,
         obs_A_chunks=acc.obs_A_chunks + (np.asarray(rollout.obs_A),),
         Phi_chunks=acc.Phi_chunks + (Phi_subdaily,),
         daily_phi_per_stride=acc.daily_phi_per_stride + (Phi_today,),
+        A_sum=acc.A_sum + A_sum_inc,
+        n_bins_so_far=acc.n_bins_so_far + n_bins_inc,
     )
     return new_state, new_acc, {'daily_phi': Phi_today}
 
@@ -598,12 +650,12 @@ def _filter_one_stride(env: BenchEnv, cfg: BenchConfig,
             seed=cfg.seed + s * 1000,
         )
 
-    # Snapshot the constrained posterior cloud for the param-traces plot.
-    particles_np = np.asarray(particles)
-    samp_constrained = np.array([
-        np.asarray(unconstrained_to_constrained(jnp.asarray(p), env.T_arr))
-        for p in particles_np
-    ])
+    # Snapshot the constrained posterior cloud for the param-traces
+    # plot. Vectorised: one batched GPU call instead of N sequential
+    # per-particle launches.
+    samp_constrained = np.asarray(jax.vmap(
+        lambda p: unconstrained_to_constrained(p, env.T_arr)
+    )(jnp.asarray(particles)))
     # Pad to (n_smc, n_params) — early SMC tempering may return fewer
     # rows than n_smc (rare but possible); the plot-fill code expects
     # uniform shape.
@@ -685,14 +737,17 @@ def _replan_one_stride(env: BenchEnv, cfg: BenchConfig,
     from models.fsa_high_res.simulation import (
         EstimatedDynParams, InitState, fill_pinned,
     )
-    from models.fsa_high_res.control import build_control_spec
     from smc2fc.control.tempered_smc_loop import run_tempered_smc_loop_native
     from smc2fc.transforms.unconstrained import unconstrained_to_constrained
 
-    samp = np.array([
-        np.asarray(unconstrained_to_constrained(jnp.asarray(p), env.T_arr))
-        for p in np.asarray(state.prev_particles)
-    ])
+    # Vectorised constrained-space mapping over the whole posterior
+    # cloud — one batched GPU call instead of N sequential per-particle
+    # launches.
+    prev_particles_jnp = jnp.asarray(state.prev_particles)
+    samp = np.asarray(jax.vmap(
+        lambda p: unconstrained_to_constrained(p, env.T_arr)
+    )(prev_particles_jnp))
+
     posterior_mean = {n: float(samp[:, i].mean())
                       for i, n in enumerate(env.param_names)}
     estimated = EstimatedDynParams(**{
@@ -704,10 +759,12 @@ def _replan_one_stride(env: BenchEnv, cfg: BenchConfig,
     init_state_named = InitState(B=float(xhat[0]),
                                  F=float(xhat[1]),
                                  A=float(xhat[2]))
-    ctrl_spec = build_control_spec(
-        T_total=float(cfg.T_days), dt_days=env.DT_BIN_DAYS,
+    # Use the compile-once factory: binds runtime params + init via
+    # Partial; the underlying JIT'd cost_kernel is reused (NO
+    # XLA recompile) across replans. Closes the dominant GPU-idle gap.
+    ctrl_spec = env.ctrl_spec_factory(
         params_v15=params_v15, init_state=init_state_named,
-        n_inner=cfg.ctrl_n_inner,
+        sigma_prior=cfg.ctrl_sigma_prior,
     )
 
     # Advance the master key for stylistic parity with Julia's hash-keyed
@@ -753,6 +810,7 @@ def _replan_one_stride(env: BenchEnv, cfg: BenchConfig,
 
 
 def _stride_telemetry(s: int, t_wall_s: float,
+                      state: BenchState,
                       acc: BenchAccumulators,
                       plant_tel: dict, filter_tel: dict, replan_tel: dict
                       ) -> StrideTelemetry:
@@ -761,8 +819,14 @@ def _stride_telemetry(s: int, t_wall_s: float,
     Args:
         s: Zero-based stride index.
         t_wall_s: Total wall-clock for this stride.
-        acc: Accumulators *after* this stride's plant step has appended
-            (so `traj_chunks` includes the latest stride's bins).
+        state: Current threaded state. Used to read end-of-stride
+            latents directly from `state.plant_state.bfa` (one
+            scalar device→host sync per dim) instead of concatenating
+            the full trajectory history.
+        acc: Accumulators *after* this stride's plant step has appended.
+            `acc.A_sum` and `acc.n_bins_so_far` provide an O(1)
+            running mean of A (replaces the previous O(n²) full-
+            history `np.concatenate(...).mean()`).
         plant_tel: Plant-step telemetry (`daily_phi`).
         filter_tel: Filter-step telemetry (`n_temp_filter`,
             `filter_elapsed_s`).
@@ -773,12 +837,12 @@ def _stride_telemetry(s: int, t_wall_s: float,
         A `StrideTelemetry` row ready to be tuple-appended to
         `acc.per_stride_log`.
     """
-    if acc.traj_chunks:
-        full_so_far = np.concatenate(acc.traj_chunks, axis=0)
-        A_mean_so_far = float(np.mean(full_so_far[:, 2]))
-        B_end = float(full_so_far[-1, 0])
-        F_end = float(full_so_far[-1, 1])
-        A_end = float(full_so_far[-1, 2])
+    if acc.n_bins_so_far > 0:
+        A_mean_so_far = acc.A_sum / acc.n_bins_so_far
+        bfa = state.plant_state.bfa
+        B_end = float(bfa[0])
+        F_end = float(bfa[1])
+        A_end = float(bfa[2])
     else:
         A_mean_so_far = B_end = F_end = A_end = float('nan')
 
@@ -817,7 +881,7 @@ def _stride_body(env: BenchEnv, cfg: BenchConfig,
     state, acc, filter_tel = _filter_one_stride(env, cfg, state, acc, s)
     state, acc, replan_tel = _replan_one_stride(env, cfg, state, acc, s)
     elapsed = time.time() - t0
-    tel = _stride_telemetry(s, elapsed, acc, plant_tel, filter_tel, replan_tel)
+    tel = _stride_telemetry(s, elapsed, state, acc, plant_tel, filter_tel, replan_tel)
     return state, acc._replace(per_stride_log=acc.per_stride_log + (tel,))
 
 
@@ -1258,6 +1322,7 @@ def _save_artifacts(env: BenchEnv, cfg: BenchConfig,
         ctrl_max_levels=cfg.ctrl_max_levels,
         ctrl_max_lambda_inc=cfg.ctrl_max_lambda_inc,
         ctrl_sigma_prior=cfg.ctrl_sigma_prior,
+        ctrl_n_anchors=cfg.ctrl_n_anchors,
         smoke=cfg.smoke,
         seed=cfg.seed,
         device=jax.devices()[0].platform,

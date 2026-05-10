@@ -1,0 +1,934 @@
+\documentclass[11pt,a4paper]{article}
+\input{preamble.tex}
+
+% Packages needed by this document but not in the shared preamble.
+\usepackage{enumitem}            % itemize/enumerate options like [itemsep=2pt]
+\usepackage{tikz}                % flow diagram in §7
+\usetikzlibrary{positioning, arrows.meta}
+
+\title{Practical pipeline documentation:\\
+       \large LaTeX $\to$ Lean4 $\to$ Julia for FSA v1.5}
+\author{Ajay Talati \quad+\quad Claude}
+\date{2026-05-09}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This is the evidence-based, file-and-line-cited companion to the
+\emph{LEAN4-First Charter} (\texttt{lean4\_first\_charter.pdf} in this
+directory). The charter is the policy doc; this is the implementation
+doc. Sections~\ref{sec:model}--\ref{sec:functional} reproduce the FSA
+v1.5 mathematics, SMC$^2$-MPC pipeline, study CLI, and functional-Julia
+rationale exactly as written in the source documents on disk so this
+PDF is self-contained and verifiable in isolation.
+Sections~\ref{sec:lean4}--\ref{sec:gap} are new: they document the
+build, the JSON dispatch protocol, the Lean4 $\leftrightarrow$ Julia
+function map, the differential test harness, and the verification gap
+on the GPU files \texttt{gpu\_pf.jl} and \texttt{gpu\_control.jl}. Every
+claim is tagged with a source file path and line range so a future
+reader (human or agent) can trace the data and information flow without
+guessing.
+\end{abstract}
+
+\tableofcontents
+\clearpage
+
+
+% =====================================================================
+\section{The FSA v1.5 model}
+\label{sec:model}
+
+\subsection{State variables}
+
+FSA (Fitness--Stress--Autonomic) is a 3-state stochastic differential
+equation model for an athlete's response to training. State
+$y = (B, F, A)$:
+
+\begin{itemize}[itemsep=2pt]
+  \item $B$ --- aerobic fitness (Banister chronic; bounded $[0, 1]$,
+        Jacobi-style state-dependent diffusion).
+  \item $F$ --- unified fatigue (Banister acute; $\geq 0$, CIR-style
+        diffusion).
+  \item $A$ --- autonomic amplitude (Stuart--Landau; $\geq 0$, CIR-style
+        diffusion).
+\end{itemize}
+
+\subsection{Drift}
+
+In \texttt{/day} units:
+\begin{align}
+  \mu(B, F)        &= \mu_0 + \mu_B B - \mu_F F - \mu_{FF} F^2 \\
+  dB/dt            &= \kappa_B \, (1 + \varepsilon_A A) \, \Phi(t) - B / \tau_B \\
+  dF/dt            &= \kappa_F \, \Phi(t) - (1 + \lambda_A A) / \tau_F \, F \\
+  dA/dt            &= \mu(B, F) \cdot A - \eta A^3
+\end{align}
+
+The single exogenous control is $\Phi(t)$, the training-strain rate
+($\geq 0$).
+
+\subsection{State-dependent diffusion (It\^o)}
+
+\begin{align}
+  \sigma_B(B) \, dW_B &= \sigma_B \sqrt{B(1-B)} \, dW_B  & \text{(Jacobi, $[0,1]$)} \\
+  \sigma_F(F) \, dW_F &= \sigma_F \sqrt{F} \, dW_F        & \text{(CIR, $\geq 0$)} \\
+  \sigma_A(A) \, dW_A &= \sigma_A \sqrt{A} \, dW_A        & \text{(CIR, $\geq 0$)}
+\end{align}
+
+The diffusion vanishes at each domain boundary so the SDE keeps the
+state in its physiological range without clipping.
+
+\subsection{Observation channels}
+
+Three direct-Gaussian observation channels:
+\begin{equation}
+  y^{\mathrm{obs}}_B = B + \mathcal{N}(0, \sigma_{B,\mathrm{obs}}^2),
+  \qquad
+  y^{\mathrm{obs}}_F = F + \mathcal{N}(0, \sigma_{F,\mathrm{obs}}^2),
+  \qquad
+  y^{\mathrm{obs}}_A = A + \mathcal{N}(0, \sigma_{A,\mathrm{obs}}^2).
+\end{equation}
+No HR / sleep / stress / steps channels (that is the v2 surface). No
+circadian forcing. All three obs noise scales pinned at $0.005$.
+
+\subsection{Time grid}
+
+60 minutes per bin (24 bins per day); $\Phi(t)$ is constant within a
+bin. The closed-loop bench's stride is 12 bins (12 hours) and its
+filter window is 24 bins (1 day).
+
+\subsection{Parameters: 14 dynamics + 3 obs noise; 10 estimated, 7 pinned}
+
+The 14 dynamics parameters use the v1.5 basis: $\kappa_B$ is replaced
+by $B_\infty = \kappa_B \tau_B$ and $\kappa_F$ by
+$F_\infty = \kappa_F \tau_F$ (steady-state fitness / fatigue at
+$\Phi = 1$, no $A$-coupling) for better identifiability under the
+direct-Gaussian observation model. The basis-rotation adapter is at
+\texttt{simulation.params\_v15\_to\_v1\_nt} (Julia) /
+\texttt{simulation.params\_v15\_to\_v1} (Python+JAX).
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabular}{lllrl}
+\toprule
+Symbol & Role & Truth value & Pinned & Prior (estimated only) \\
+\midrule
+$\tau_B$            & chronic-$B$ time constant   & 42.0    & yes & --- \\
+$\tau_F$            & acute-$F$ time constant     & 7.0     & no  & LogNormal($\log 7.0,\ 0.30$) \\
+$B_\infty$          & steady-state $B$ at $\Phi=1$ & 0.504   & no  & LogNormal($\log 0.504,\ 0.30$) \\
+$F_\infty$          & steady-state $F$ at $\Phi=1$ & 0.21    & no  & LogNormal($\log 0.21,\ 0.30$) \\
+$\varepsilon_A$     & $A$-on-$B$ multiplicative coupling & 0.40 & yes & --- \\
+$\lambda_A$         & $A$-on-$F$ recovery coupling & 1.00    & no  & LogNormal($\log 1.0,\ 0.30$) \\
+$\mu_0$             & Stuart--Landau bias         & 0.02    & no  & LogNormal($\log 0.02,\ 0.30$) \\
+$\mu_B$             & SL slope on $B$             & 0.30    & no  & LogNormal($\log 0.30,\ 0.30$) \\
+$\mu_F$             & SL slope on $F$             & 0.10    & no  & LogNormal($\log 0.10,\ 0.30$) \\
+$\mu_{FF}$          & SL curvature on $F^2$       & 0.40    & yes & --- \\
+$\eta$              & SL cubic damping            & 0.20    & yes & --- \\
+$\sigma_B$          & dynamics noise scale on $B$ & 0.010   & no  & LogNormal($\log 0.010,\ 0.30$) \\
+$\sigma_F$          & dynamics noise scale on $F$ & 0.012   & no  & LogNormal($\log 0.012,\ 0.30$) \\
+$\sigma_A$          & dynamics noise scale on $A$ & 0.020   & no  & LogNormal($\log 0.020,\ 0.30$) \\
+\midrule
+$\sigma_{B,\mathrm{obs}}$ & obs noise on $B$ channel & 0.005 & yes & --- \\
+$\sigma_{F,\mathrm{obs}}$ & obs noise on $F$ channel & 0.005 & yes & --- \\
+$\sigma_{A,\mathrm{obs}}$ & obs noise on $A$ channel & 0.005 & yes & --- \\
+\bottomrule
+\end{tabular}
+\caption{All 17 v1.5 parameters. 10 are estimated by the filter
+(LogNormal priors centred on $\log(\text{truth})$ with scale $0.30$);
+7 are pinned at truth (per the FIM-rank decision: option B + pin
+$\{\tau_B, \eta, \varepsilon_A, \mu_{FF}\}$, plus the 3 obs-noise
+scales). Truth values read from \texttt{T28d\_seed42/manifest.json}
+fields \texttt{truth\_params} and \texttt{pinned\_dynamics}; the prior
+specification is at
+\texttt{version\_1\_5\_Julia/models/fsa\_high\_res/estimation.jl},
+\texttt{PARAM\_PRIOR\_CONFIG}.}
+\label{tab:params}
+\end{table}
+
+\subsection{Initial state}
+
+Canonical $y_0 = (B_0, F_0, A_0) = (0.05, 0.30, 0.10)$ for the plant.
+For the closed-loop replan path, the controller is fed the
+\emph{filter-derived} smoothed end-of-window state $\hat y$ (not the
+plant's true state) so the controller is operating on the same
+information the filter has.
+
+
+% =====================================================================
+\section{SMC$^2$-MPC pipeline and cost functional}
+\label{sec:smc2}
+
+\subsection{The three-stage pipeline}
+
+\begin{enumerate}[itemsep=2pt]
+  \item \textbf{Outer SMC$^2$ filter.} Tempered sequential Monte Carlo
+        over the 10-dim unconstrained parameter cloud $\theta$. At
+        each tempering level $\lambda \in [0, 1]$ the targets graduate
+        from prior to posterior. Resample (systematic) $\to$
+        Hamiltonian Monte Carlo (HMC) moves with finite-difference
+        gradients $\to$ next $\lambda$. Returns a posterior cloud over
+        $\theta$ for each rolling filter window.
+  \item \textbf{Inner particle filter (PF).} Per $\theta$ candidate,
+        an inner PF computes $\log p(y_{1:T} \mid \theta)$ by
+        propagating a state-particle cloud forward through the SDE
+        and reweighting by the observation likelihood. This is the
+        marginal log-likelihood the outer SMC$^2$ uses.
+  \item \textbf{Forward-simulation controller (NOT a particle filter).}
+        The controller takes the filter-derived posterior mean
+        parameters $\hat\theta$ and the filter-derived smoothed
+        end-of-window state $\hat y$. It runs an SMC$^2$ over a
+        low-dimensional schedule parameterisation $\theta_{\mathrm{ctrl}}
+        \in \mathbb{R}^{n_{\mathrm{anchors}}}$ (here
+        $n_{\mathrm{anchors}} = 12$): for each candidate
+        $\theta_{\mathrm{ctrl}}$, decode the 12 RBF anchors into a
+        per-bin $\Phi$ schedule, simulate the SDE forward
+        $n_{\mathrm{inner}} = 64$ times under common-random-numbers
+        (CRN) noise, accumulate the cost
+        \begin{equation}
+          J(\Phi) = -\!\int_0^{T_{\mathrm{plan}}} A(t) \, dt
+                    + \lambda_F \!\int_0^{T_{\mathrm{plan}}}
+                      \big(F(t) - F_{\max}\big)_+^2 \, dt
+          \label{eq:cost}
+        \end{equation}
+        with $F_{\max} = 0.40$ and $\lambda_F = 1.0$, and use the
+        negative cost as the tempering target. Output is the
+        posterior-mean $\theta_{\mathrm{ctrl}}^\star$, decoded to a
+        $\Phi$-schedule for the plant's next stride.
+\end{enumerate}
+
+\textbf{Critical: the controller does not run a particle filter
+internally. It runs deterministic forward simulations
+($n_{\mathrm{inner}}$ noise trials per $\theta_{\mathrm{ctrl}}$)
+using $\hat\theta$ and $\hat y$.}
+
+\subsection{Schedule parameterisation}
+
+The per-bin $\Phi$ schedule is a sigmoid of an RBF combination:
+\begin{equation}
+  \Phi(t) = \Phi_{\max} \cdot \mathrm{sigmoid}\!\left(c_\Phi
+            + \sum_{a=1}^{n_{\mathrm{anchors}}} \theta_{\mathrm{ctrl},a}
+              \cdot \mathrm{rbf}_a(t)\right)
+\end{equation}
+with $\Phi_{\max} = 3.0$, $\Phi_{\mathrm{default}} = 1.0$, and
+$c_\Phi = \mathrm{logit}(\Phi_{\mathrm{default}} / \Phi_{\max})$ so
+that $\theta_{\mathrm{ctrl}} = 0$ produces $\Phi \equiv
+\Phi_{\mathrm{default}} = 1.0$ (the canonical Banister training rate
+prior).
+
+\subsection{Per-tempering-level kernel}
+
+ChEES (Cascading Hamiltonian-augmented Equi-Energy Sampler) with
+adaptive leapfrog count picked from the candidate list
+$[16, 32, 64, \ldots, n_{\mathrm{ChEES,max}}]$ at
+$n_{\mathrm{ChEES,max}} = 512$, and $n_{\mathrm{HMC}} = 16$ moves per
+level.
+
+\subsection{Replan cadence and rolling windows}
+
+Filter strides are 12 bins (12 hours) wide; each new stride
+incorporates 12 new bins of observation. Replans fire every
+$K_{\mathrm{replan}} = 2$ strides, so once per simulated day. At each
+replan the controller plans the \emph{full} $T$-day horizon (not the
+remaining horizon); when applied to the plant only the next stride's
+$\Phi$ is consumed before the next replan computes a fresh
+$T$-day-ahead schedule.
+
+
+% =====================================================================
+\section{Study configuration and CLI}
+\label{sec:cli}
+
+\subsection{Hardware and software}
+
+\begin{itemize}[itemsep=2pt]
+  \item GPU: NVIDIA GeForce RTX 5090 (read at run time from
+        \texttt{manifest.json::device}).
+  \item Framework: \texttt{julia/SMC2FC\_functional/} (the default;
+        the previous \texttt{julia/SMC2FC/} has been renamed to
+        \texttt{julia/SMC2FC\_DEPRECIATED\_USE\_FUNCTIONAL/} and is
+        not used by this study). Per the technical guide
+        \cite{techguide}, numerics on the GPU bench are bit-identical
+        to the deprecated framework at the saturated config.
+\end{itemize}
+
+\subsection{Minimal CLI}
+
+The bench's defaults are the saturated-tier settings; the only flag
+that varies between horizons is \texttt{--T-days}. The minimal
+invocation per horizon (used by the launcher in
+\S\ref{sec:launcher}):
+
+\begin{lstlisting}[language=bash]
+cd /home/ajay/Repos/python-smc2-filtering-control/version_1_5_Julia
+julia --project=. tools/bench_smc_full_mpc_fsa_gpu.jl \
+    --T-days <N> --seed 42 --output-dir <DIR>
+\end{lstlisting}
+
+\subsection{Full-flag CLI (for reproducibility)}
+
+Every flag explicit, equivalent to the minimal invocation at the
+time of writing:
+
+\begin{lstlisting}[language=bash]
+julia --project=. tools/bench_smc_full_mpc_fsa_gpu.jl \
+    --T-days <N> --replan-K 2 --seed 42 \
+    --N-smc 512 --K-per-chain 1000 \
+    --num-mcmc 3 --max-temp-levels 30 \
+    --ctrl-n-smc 2048 --ctrl-num-mcmc 16 \
+    --ctrl-chees-max 512 --ctrl-n-anchors 12 \
+    --ctrl-max-levels 40 \
+    --output-dir <DIR>
+\end{lstlisting}
+
+\subsection{Filter-side flags}
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabular}{lll}
+\toprule
+flag & value & what it controls \\
+\midrule
+\texttt{--N-smc}              & 512   & outer SMC$^2$ posterior particles over $\theta$ (10-D filter parameters) \\
+\texttt{--K-per-chain}        & 1000  & inner-PF state particles per chain (latent state cloud size) \\
+\texttt{--num-mcmc}           & 3     & HMC moves per outer tempering level \\
+\texttt{--max-temp-levels}    & 30    & cap on outer tempering levels (typically 5--6 are used) \\
+\texttt{--ot-max-weight}      & 0.0   & OT rescue OFF (turning it on gives ${\sim}12\times$ slowdown) \\
+\texttt{--liu-west-a}         & 0.0   & Liu--West $\theta$-cloud shrinkage OFF (original bootstrap path) \\
+\bottomrule
+\end{tabular}
+\caption{Filter-side configuration. All values are bench defaults.}
+\label{tab:filter_cfg}
+\end{table}
+
+\subsection{Controller-side flags}
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabular}{lll}
+\toprule
+flag & value & what it controls \\
+\midrule
+\texttt{--ctrl-n-smc}         & 2048    & outer SMC$^2$ particles over $\theta_{\mathrm{ctrl}}$ (RBF coefficients) \\
+\texttt{--ctrl-num-mcmc}      & 16      & ChEES-HMC moves per controller tempering level \\
+\texttt{--ctrl-chees-max}     & 512     & ChEES picker upper bound; candidate list = $[16, 32, 64, \ldots, 512]$ \\
+\texttt{--ctrl-n-anchors}     & 12      & RBF basis cardinality (controller posterior dimension) \\
+\texttt{--ctrl-max-levels}    & 40      & cap on controller tempering levels (typically 5--6 are used) \\
+\texttt{--ctrl-n-inner}       & 64      & inner CRN-MC trajectories per cost evaluation \\
+\texttt{--ctrl-target-nats}   & 8.0     & auto-calibration target entropy (nats) \\
+\texttt{--ctrl-sigma-prior}   & 1.5     & prior std on the RBF coefficient vector \\
+\texttt{--ctrl-hmc-step}      & 0.2     & base leapfrog step size $\varepsilon$ \\
+\texttt{--ctrl-hmc-leap}      & 16      & base leapfrog count (overridden adaptively by ChEES) \\
+\bottomrule
+\end{tabular}
+\caption{Controller-side configuration. All values are bench
+defaults.}
+\label{tab:ctrl_cfg}
+\end{table}
+
+\subsection{Sweep launcher}
+\label{sec:launcher}
+
+The full sweep was driven by the bash launcher at
+\texttt{version\_1\_5\_Julia/tools/launchers/run\_julia\_horizon\_sweep.sh},
+which loops over the requested horizons, runs the bench with
+\texttt{--T-days <N> --seed 42 --output-dir <\$SWEEP\_ROOT/T<N>d\_seed42>},
+samples \texttt{nvidia-smi} at 1\,Hz into a per-horizon
+\texttt{nvidia\_smi.csv}, calls the canonical state-traces plotter at
+\texttt{compare\_v15\_julia\_vs\_python/src/plot\_state\_traces.jl}
+explicitly (the bench's internal auto-plot path resolves under the
+deprecated \texttt{version\_2\_Julia} tree and is not used), and
+calls the headline-metrics extractor
+\texttt{compare\_v15\_julia\_vs\_python/src/extract\_horizon\_results.py}
+to populate \texttt{results.json} per horizon and append a row to the
+sweep-level \texttt{horizons\_results.csv}.
+
+The exact T-days values for the published sweep:
+\[ T \in \{14, 28, 42, 56, 70, 84\} \quad \text{days,} \quad \text{seed = 42}. \]
+
+
+% =====================================================================
+\section{Functional programming paradigm in Julia}
+\label{sec:functional}
+
+\subsection{Why we moved to functional}
+
+The \texttt{version\_3\_julia/} stack was a Python-port-style Julia
+implementation: mutable structs, \texttt{!}-suffix mutating methods,
+threaded \texttt{MersenneTwister} state, history dicts pushed onto
+across stride boundaries. It accumulated subtle bugs that were hard
+to trace, and the user explicitly rejected it (``too much for a
+human to understand'').
+
+\texttt{version\_1\_5\_Julia/} is a clean re-design. The five rules:
+
+\begin{enumerate}[itemsep=2pt]
+  \item \textbf{No mutable structs in the public API.} v1.5 has
+        exactly one struct, \texttt{PlantState}, with two fields:
+        an \texttt{SVector\{3, Float64\}} and an \texttt{Int}. State
+        updates produce a NEW \texttt{PlantState}, not a mutation
+        of the old one.
+  \item \textbf{No \texttt{!}-suffix mutating methods.} Every public
+        function returns new values. \texttt{plant\_step(state,
+        Phi\_t, params, dt, key)} returns
+        \texttt{(state=new\_state, obs=...)}; the caller can build
+        history by collecting returned values.
+  \item \textbf{Explicit RNG keys, JAX-style.} Pass an explicit
+        \texttt{key::UInt64} to every randomised function. Internal
+        sub-keys are derived deterministically via
+        \texttt{hash((key, :sub\_purpose))}. Two callers with the
+        same \texttt{(state, key)} get the same answer, period.
+  \item \textbf{Pure facade over the inherently imperative GPU
+        kernel.} KernelAbstractions kernels mutate preallocated
+        \texttt{CuArrays} by design. v1.5 wraps every kernel-touching
+        public function in a pure facade: \texttt{gpu\_log\_density(
+        target, U, grid\_obs, key) $\to$ Vector\{Float64\}} allocates
+        a fresh output, dispatches the kernel, returns. Mutation is
+        encapsulated; callers never see the \texttt{CuArray}.
+  \item \textbf{I/O isolated to the bench's top-level
+        \texttt{main()}.} JLD2 + PNG writes happen exactly once at
+        the end of the bench. Logging at the bench level, not inside
+        \texttt{plant\_step} / \texttt{propagate} /
+        \texttt{obs\_log\_weight}.
+\end{enumerate}
+
+\subsection{The \texttt{SMC2FC\_functional} library --- now the default}
+
+\textbf{Status update (2026-05-08):} the functional rewrite at
+\texttt{julia/SMC2FC\_functional/} is now \emph{the default Julia
+framework}. The original port has been renamed to
+\texttt{julia/SMC2FC\_DEPRECIATED\_USE\_FUNCTIONAL/} (kept as a
+back-compat reference for the three-library comparison harness only).
+A bit-identical migration test is recorded in
+\texttt{julia/SMC2FC\_functional/docs/MIGRATION\_RESULT.md}.
+
+The functional library has the same algorithmic contract as the
+deprecated port, but:
+
+\begin{itemize}[itemsep=2pt]
+  \item Top-level functions take immutable inputs and return
+        immutable outputs.
+  \item Pre-allocated buffers live behind an immutable
+        \texttt{Workspace} container.
+  \item No \texttt{!}-mutating functions exposed publicly.
+  \item Multiple-dispatch-driven specialisation; idiomatic Julian.
+  \item Google-style docstrings on every file and every function.
+\end{itemize}
+
+The drop-in bench at\\
+\texttt{julia/SMC2FC\_functional/benchmarks/gpu\_drop\_in/bench\_dropin.jl}\\
+is byte-equivalent to the v1.5 GPU bench except for one import line
+(\texttt{using SMC2FC\_functional: run\_tempered\_smc\_gpu}). The
+three-library cross-check harness lives at\\
+\texttt{julia/SMC2FC\_functional/benchmarks/compare\_three\_libraries.jl}
+and the seven verification gates are written up in
+\texttt{julia/SMC2FC\_functional/docs/GATE\_RESULTS.md}.
+
+
+% =====================================================================
+\section{From LaTeX to Lean4 --- the formal specification layer}
+\label{sec:lean4}
+
+This section documents the first half of the pipeline:
+LaTeX maths $\to$ Lean4 typed definitions $\to$ Lean4 native binary.
+
+\subsection{LaTeX source of truth}
+
+The canonical mathematical specification of FSA v1.5 is
+\textbf{\S\ref{sec:model} of this document}. It defines: state
+$y = (B, F, A)$, the three drift equations $(dB/dt, dF/dt, dA/dt)$
+(with the Stuart--Landau slope $\mu(B, F)$ appearing as an auxiliary
+scalar inside the $dA/dt$ equation), the state-dependent diffusion
+(Jacobi / CIR / CIR), the three direct-Gaussian observation channels,
+the parameter list (Table~\ref{tab:params}), and the time grid. The Lean4 modules below transcribe those equations one-to-one,
+in the same order, with no further interpretation step. If
+\S\ref{sec:model} changes, the corresponding Lean4 file changes; the
+maths and the typed reference live in lock-step.
+
+\subsection{Lean4 module layout}
+
+The Lean4 source tree lives at
+\texttt{version\_1\_5\_LEAN/}. The modules that encode FSA v1.5 are
+in \texttt{Fsa/V15/}:
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabular}{p{30mm}p{65mm}p{50mm}}
+\toprule
+File (in \texttt{Fsa/V15/}) & Defines & Maps to (in \S\ref{sec:model}) \\
+\midrule
+\texttt{Types.lean}        & \texttt{PlantState}, \texttt{ParamsV15}, \texttt{ParamsV1} & state $y$, the two parameter bases \\
+\texttt{Truth.lean}        & \texttt{DEFAULT\_PARAMS}, \texttt{INIT\_STATE}              & truth values in Table~\ref{tab:params}, $y_0$ \\
+\texttt{Adapters.lean}     & \texttt{paramsV15ToV1}                                      & v1.5 $\to$ v1 basis rotation \\
+\texttt{Dynamics.lean}     & \texttt{drift}, \texttt{diffusion\_state\_dep}, \texttt{em\_step\_substepped}, \texttt{reflect\_unit} & drift, diffusion, EM step, $[0,1]$ reflection \\
+\texttt{Plant.lean}        & \texttt{plantStep}                                          & one Euler--Maruyama step + obs sample \\
+\texttt{Estimation.lean}   & \texttt{obsLogWeightOne}, \texttt{applyPrior}               & observation log-likelihood, prior transform \\
+\bottomrule
+\end{tabular}
+\caption{Lean4 modules and the LaTeX they correspond to. Each module
+is a straight transcription, no novel mathematics. Full path is
+\texttt{version\_1\_5\_LEAN/Fsa/V15/}.}
+\label{tab:lean4_modules}
+\end{table}
+
+The CLI entry point is \texttt{version\_1\_5\_LEAN/Main.lean}, which
+imports \texttt{Fsa.V15} and dispatches JSON-on-stdin to the
+appropriate module function.
+
+\subsection{Build}
+
+From the project root:
+
+\begin{lstlisting}[language=bash]
+cd /home/ajay/Repos/python-smc2-filtering-control/version_1_5_LEAN
+lake build
+\end{lstlisting}
+
+This produces the native binary at\\
+\texttt{version\_1\_5\_LEAN/.lake/build/bin/fsa\_v15\_cli}\\
+which is what the differential-test harness in
+\S\ref{sec:diff-test} talks to.
+
+\subsection{JSON dispatch protocol}
+
+\texttt{Main.lean} reads one JSON object per line on stdin, dispatches
+on the \texttt{"fn"} field, and writes one JSON object per line on
+stdout. The eight tags it accepts:
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabular}{lll}
+\toprule
+\texttt{"fn"} tag       & Lean4 handler                         & Inputs $\to$ outputs \\
+\midrule
+\texttt{drift}          & \texttt{Dynamics.drift}               & $(state, \phi, params_{v1}) \to deriv$ \\
+\texttt{diffusion}      & \texttt{Dynamics.diffusion\_state\_dep} & $(state, params_{v1}) \to \sigma$ \\
+\texttt{emStep}         & \texttt{Dynamics.em\_step\_substepped} & $(state, params_{v1}, noise, \phi, dt, n_{sub}) \to next$ \\
+\texttt{reflectUnit}    & \texttt{Dynamics.reflect\_unit}       & $x \to x'$ \\
+\texttt{plantStep}      & \texttt{Plant.plantStep}              & $(state, \phi, params_{v15}, obs\_params, dt, sde\_n, obs\_n) \to (next, obs)$ \\
+\texttt{obsLogWeight}   & \texttt{Estimation.obsLogWeightOne}   & $(B, F, A, obs, obs\_params) \to \log w$ \\
+\texttt{paramsV15ToV1}  & \texttt{Adapters.paramsV15ToV1}       & $params_{v15} \to params_{v1}$ \\
+\texttt{applyPrior}     & \texttt{Estimation.applyPrior}        & $(kind, \mu, \sigma, u) \to x$ \\
+\bottomrule
+\end{tabular}
+\caption{The eight JSON dispatch tags accepted by \texttt{fsa\_v15\_cli}.
+Handlers are wired in \texttt{Main.lean:166--218}; each delegates to a
+single function in the corresponding module.}
+\label{tab:dispatch}
+\end{table}
+
+\paragraph{Worked example.} A single \texttt{drift} call:
+
+\begin{lstlisting}[language=bash]
+$ echo '{"fn":"drift","state":[0.5,0.3,0.1],"phi":1.0,
+  "params":{"tau_B":42.0,"tau_F":7.0,"kappa_B":0.012,"kappa_F":0.030,
+   "epsilon_A":0.40,"lambda_A":1.00,"mu_0":0.02,"mu_B":0.30,
+   "mu_F":0.10,"mu_FF":0.40,"eta":0.20,"sigma_B":0.010,
+   "sigma_F":0.012,"sigma_A":0.020}}' | fsa_v15_cli
+
+{"deriv":[<dB/dt>,<dF/dt>,<dA/dt>]}
+\end{lstlisting}
+
+The reply contains exactly the three-vector that the LaTeX equation
+\\($dB/dt$, $dF/dt$, $dA/dt$ in \S\ref{sec:model}) prescribes,
+evaluated at the requested $(B, F, A)$ and $\phi$. No state is kept
+across requests; the binary is purely functional in/out and the
+process can be left running for the duration of the diff test
+(\S\ref{sec:diff-test}).
+
+\paragraph{Note on parameter bases.} \texttt{drift}, \texttt{diffusion},
+and \texttt{emStep} accept the v1 NamedTuple
+($\kappa_B$, $\kappa_F$, $\tau_B$, $\tau_F$, \ldots; 14 fields).
+\texttt{plantStep} accepts the v1.5 form ($B_\infty$, $F_\infty$ in
+place of $\kappa_B$, $\kappa_F$). \texttt{paramsV15ToV1} is the
+adapter between them. This split mirrors the Julia-side convention.
+
+
+% =====================================================================
+\section{From Lean4 to Julia --- the executable port layer}
+\label{sec:julia-port}
+
+This section documents the second half: Lean4 reference $\leftrightarrow$
+Julia implementation. The Julia model code lives at
+\texttt{version\_1\_5\_Julia/models/fsa\_high\_res/} in seven files;
+five of those have a Lean4 twin, two do not (the GPU layer; see
+\S\ref{sec:gap}).
+
+\subsection{One-to-one function map}
+
+Each Lean4 function is exercised by the differential test
+(\S\ref{sec:diff-test}) against its Julia twin. The pairing:
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabular}{lllc}
+\toprule
+Lean4 function & Julia function & Tested at tolerance & \\
+\midrule
+\texttt{Dynamics.drift}                 & \texttt{Dynamics.drift} (\path{_dynamics.jl})        & $10^{-6}$ & Y \\
+\texttt{Dynamics.diffusion\_state\_dep} & \texttt{Dynamics.diffusion\_state\_dep} (\path{_dynamics.jl}) & $10^{-6}$ & Y \\
+\texttt{Dynamics.em\_step\_substepped}  & \texttt{Dynamics.em\_step\_substepped} (\path{_dynamics.jl})  & $10^{-4}$ & Y \\
+\texttt{Dynamics.reflect\_unit}         & inlined boundary check (\path{_plant.jl})        & $10^{-6}$ & Y \\
+\texttt{Plant.plantStep}                & \texttt{Plant.plant\_step} (\path{_plant.jl})    & $10^{-6}$ & Y \\
+\texttt{Estimation.obsLogWeightOne}     & \texttt{Estimation.obs\_log\_weight} (per-particle slice, \path{estimation.jl})  & $10^{-6}$ & Y \\
+\texttt{Adapters.paramsV15ToV1}         & \texttt{Simulation.params\_v15\_to\_v1\_nt} (\path{simulation.jl}) & $10^{-6}$ & Y \\
+\texttt{Estimation.applyPrior}          & \texttt{apply\_prior} (\path{gpu_pf.jl}, \path{estimation.jl})  & $10^{-6}$ & Y \\
+\bottomrule
+\end{tabular}
+\caption{Lean4 $\leftrightarrow$ Julia function map. The
+$10^{-4}$-tolerance row is the only one that integrates noise (4-substep
+Euler--Maruyama); the rest are single-step deterministic operations.
+File:line references are tracked in the diff-test source
+(\texttt{version\_1\_5\_Julia/diff\_test/test\_lean\_diff\_v15.jl}).}
+\label{tab:lean_julia_map}
+\end{table}
+
+\subsection{The three high-risk transitions: \texttt{@match} sites}
+
+The diff test calls out three \texttt{@match} sites by name in its
+testset comments:
+
+\begin{enumerate}[itemsep=2pt]
+  \item \texttt{paramsV15ToV1} (\texttt{Simulation.params\_v15\_to\_v1\_nt})
+        --- the basis rotation. Two parameterisations of the same
+        14-field struct meet here. The diff test compares all 14
+        output fields field-by-field at $10^{-6}$.
+  \item \texttt{reflectUnit} (inlined in \texttt{Plant.plant\_step})
+        --- the $[0, 1]$ boundary reflection on $B$. Tested with 10
+        corner cases (boundaries, just-outside, deep-outside) plus 5
+        random uniform draws.
+  \item \texttt{applyPrior} (\texttt{apply\_prior}) --- the LogNormal /
+        Normal prior transform that maps unconstrained $u$ to the
+        constrained parameter. Tested with 7 LogNormal corner cases
+        (including the $\pm 25$ clamp boundaries) and 5 Normal random
+        draws.
+\end{enumerate}
+
+These three are the highest-risk transitions because each is a
+small piece of code that ``looks obvious'' but encodes a non-obvious
+mathematical convention (basis change, reflection, parameter
+constraint). The diff test names them explicitly so that any future
+agent who breaks one is caught immediately.
+
+\subsection{Functions in Julia with no Lean4 twin (CPU side)}
+
+These exist in the Julia model files but are not separately
+diff-tested; they are array-level wrappers whose correctness inherits
+from the per-particle primitives above:
+
+\begin{itemize}[itemsep=2pt]
+  \item \texttt{Plant.plant\_rollout} (\path{_plant.jl}) --- multi-bin
+        rollout, repeatedly applies \texttt{plant\_step}. Correctness
+        follows from \texttt{plant\_step} being correct.
+  \item \texttt{Estimation.propagate} (\path{estimation.jl}) ---
+        advance an $M$-particle cloud one EM step. Correctness follows
+        from the per-particle drift / diffusion / reflect being
+        correct.
+  \item \texttt{Estimation.PARAM\_NAMES},
+        \texttt{Estimation.PARAM\_PRIOR\_CONFIG} ---
+        configuration constants, not functions.
+\end{itemize}
+
+The GPU files \texttt{gpu\_pf.jl} and \texttt{gpu\_control.jl} also
+have no Lean4 twin; \S\ref{sec:gap} treats them as a separate verification
+gap because their content is qualitatively different (whole new
+algorithms, not just array-level wrappers).
+
+
+% =====================================================================
+\section{The differential test harness --- verifying parity}
+\label{sec:diff-test}
+
+The harness lives at\\
+\path{version_1_5_Julia/diff_test/test_lean_diff_v15.jl}\\
+and is the executable proof that the Julia and Lean4 sides agree. This
+section walks through it end-to-end so a future reader can re-run it,
+modify it, and trust its outputs.
+
+\subsection{What it does, in one paragraph}
+
+For each of the eight Lean4-exposed functions in
+Table~\ref{tab:dispatch}, the harness generates inputs (random states,
+random parameters, pre-drawn noise), sends one JSON request to the
+\texttt{fsa\_v15\_cli} subprocess, runs the same call locally in Julia,
+and asserts \texttt{|Julia - Lean| < tolerance}. Five random trials per
+function plus corner cases for the boundary-reflection and prior-clamp
+tests. The whole run takes a few seconds.
+
+\subsection{Subprocess setup}
+
+The Lean4 binary is opened once at start of test and left running for
+the duration:
+
+\begin{lstlisting}
+function open_lean_client()
+    isfile(LEAN_BIN) || error("LEAN binary not found at $LEAN_BIN ...")
+    io = open(`$LEAN_BIN`, "r+")
+    return LeanClient(io)
+end
+\end{lstlisting}
+
+\noindent (\path{test_lean_diff_v15.jl:42-63}). One process, one stdin,
+one stdout, line-buffered. The \texttt{round\_trip} helper writes one
+JSON line, \texttt{flush}es, reads one line, parses it. JSON values
+allow \texttt{$\pm$Inf} via \texttt{allow\_inf=true} on both encode and
+decode.
+
+\subsection{Pre-drawn noise convention}
+
+For \texttt{emStep} and \texttt{plantStep} the harness pre-draws all
+noise on the Julia side and passes it as an array to \emph{both} the
+Julia call and the Lean4 call:
+
+\begin{lstlisting}
+function _random_noise(rng)
+    randn(rng, 3)
+end
+\end{lstlisting}
+
+\noindent (\path{test_lean_diff_v15.jl:107-109}). This eliminates
+RNG-divergence as a noise source --- the test is purely about the
+deterministic numerical agreement of the math, not about whether two
+languages happen to produce the same Mersenne-Twister stream from the
+same seed (they don't).
+
+\subsection{Tolerance ladder}
+
+Two tolerances are used, set at the top of the file
+(\path{test_lean_diff_v15.jl:36-37}):
+
+\begin{itemize}[itemsep=2pt]
+  \item \texttt{SINGLE\_STEP\_TOL = 1e-6} for: \texttt{drift},
+        \texttt{diffusion}, \texttt{reflectUnit}, \texttt{paramsV15ToV1},
+        \texttt{plantStep}, \texttt{obsLogWeight}, \texttt{applyPrior}.
+        These are deterministic single-step operations; agreement at
+        $10^{-6}$ is the IEEE-754 round-off floor for the
+        relevant compositions.
+  \item \texttt{INTEGRATED\_TOL = 1e-4} for: \texttt{emStep} (4-substep
+        Euler--Maruyama). The looser tolerance accounts for accumulated
+        floating-point error across substeps and one Wiener increment.
+\end{itemize}
+
+A failure at either tolerance is by construction a Julia bug
+(or, in principle, a Lean4 bug --- but in practice the Lean4 side
+type-checks and is much shorter, so the asymmetry is stable).
+
+\subsection{Per-testset coverage}
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabular}{lll}
+\toprule
+Testset & Inputs per session & Tolerance \\
+\midrule
+\texttt{reflect\_unit}        & 10 corner + 5 random        & $10^{-6}$ \\
+\texttt{apply\_prior}         & 7 LogNormal + 5 Normal      & $10^{-6}$ \\
+\texttt{params\_v15\_to\_v1}  & 1 (14 fields each compared) & $10^{-6}$ \\
+\texttt{drift}                & 5 random                    & $10^{-6}$ \\
+\texttt{diffusion\_state\_dep}& 5 random                    & $10^{-6}$ \\
+\texttt{em\_step\_substepped} & 5 random with noise         & $10^{-4}$ \\
+\texttt{plant\_step}          & 5 random with sde + obs noise & $10^{-6}$ \\
+\texttt{obs\_log\_weight\_one}& 5 random                    & $10^{-6}$ \\
+\bottomrule
+\end{tabular}
+\caption{Coverage of the eight testsets in
+\texttt{test\_lean\_diff\_v15.jl}. ``Random'' inputs are drawn uniformly
+from the physiological-bound box $B \in [0,1]$, $F \in [0,1]$,
+$A \in [0,1]$.}
+\label{tab:diff_test_coverage}
+\end{table}
+
+\subsection{Run command}
+
+To reproduce the verification end-to-end:
+
+\begin{lstlisting}[language=bash]
+# 1. Build the Lean4 binary (only needed once per Lean4 source change):
+cd /home/ajay/Repos/python-smc2-filtering-control/version_1_5_LEAN
+lake build
+
+# 2. Run the diff test:
+cd /home/ajay/Repos/python-smc2-filtering-control/version_1_5_Julia
+julia --project=. diff_test/test_lean_diff_v15.jl
+\end{lstlisting}
+
+The expected output is a green Julia testset summary with no
+\texttt{Error}s and no \texttt{Fail}s. If any testset goes red, the
+relevant (input, Julia output, Lean4 output) triple is printed, and
+the diff is by construction a Julia (or Lean4) bug at that function.
+
+\subsection{Pipeline flow diagram}
+
+Figure~\ref{fig:pipeline} shows the data-flow from LaTeX maths to a
+green diff test, including which files are involved at each stage.
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[
+  node distance=8mm and 14mm,
+  every node/.style={font=\small},
+  box/.style={draw, rectangle, rounded corners=2pt, align=center,
+              minimum width=58mm, minimum height=10mm,
+              inner sep=4pt},
+  ungated/.style={draw=red!70!black, dashed, rectangle, rounded corners=2pt,
+                  align=center, minimum width=58mm, minimum height=10mm,
+                  inner sep=4pt, fill=red!5},
+  arr/.style={-{Latex[length=2mm]}, thick},
+  rarr/.style={-{Latex[length=2mm]}, thick, dashed}
+]
+
+% Top: LaTeX spec
+\node[box, fill=blue!5] (latex) {LaTeX maths --- \S\ref{sec:model} of this doc \\
+  (drift, diffusion, obs channels, parameter table)};
+
+% Lean4 modules
+\node[box, below=of latex, fill=blue!5] (lean) {Lean4 modules at
+  \texttt{version\_1\_5\_LEAN/Fsa/V15/} \\
+  Types, Truth, Adapters, Dynamics, Plant, Estimation};
+
+% lake build
+\node[box, below=of lean] (build) {\texttt{lake build} \\
+  $\downarrow$ \\ \texttt{.lake/build/bin/fsa\_v15\_cli} (native binary)};
+
+% Diff test driver
+\node[box, below=of build, fill=green!5] (diff)
+   {\path{test_lean_diff_v15.jl} (Julia driver) \\
+    asserts $|\Delta| < 10^{-6}$ / $10^{-4}$ over 8 testsets};
+
+% Julia model files (right of diff)
+\node[box, right=of diff, fill=green!5, xshift=10mm] (jlmodel)
+   {Julia models at \\ \texttt{version\_1\_5\_Julia/models/fsa\_high\_res/} \\
+    \path{_dynamics.jl}, \path{_plant.jl}, \\ \path{estimation.jl},
+    \path{simulation.jl}};
+
+% PASS arrow down
+\node[box, below=of diff, fill=green!10] (pass) {PASS $\to$ verified core math};
+
+% GPU layer (downstream, ungated)
+\node[ungated, below=of pass] (gpu) {GPU layer (\path{gpu_pf.jl}, \path{gpu_control.jl}) \\
+  \textbf{NOT diff-tested} --- see \S\ref{sec:gap}};
+
+% Arrows
+\draw[arr] (latex) -- (lean);
+\draw[arr] (lean) -- (build);
+\draw[arr] (build) -- node[right]{\small JSON over stdin/stdout} (diff);
+\draw[arr] (jlmodel) -- (diff);
+\draw[arr] (diff) -- (pass);
+\draw[rarr] (pass) -- (gpu);
+
+\end{tikzpicture}
+\caption{LaTeX $\to$ Lean4 $\to$ Julia pipeline for FSA v1.5. Solid
+arrows are tested data-flow; the dashed arrow into the GPU layer marks
+an unverified handoff (per \S\ref{sec:gap}). Every box names the
+on-disk file path needed to reproduce that stage.}
+\label{fig:pipeline}
+\end{figure}
+
+
+% =====================================================================
+\section{Verification gap --- what the diff test does NOT cover}
+\label{sec:gap}
+
+The differential test in \S\ref{sec:diff-test} verifies the eight
+core SDE primitives at $10^{-6}$/$10^{-4}$ tolerance. Two GPU files
+in the same model directory are \emph{not} covered:
+
+\begin{itemize}[itemsep=2pt]
+  \item \path{version_1_5_Julia/models/fsa_high_res/gpu_pf.jl}
+  \item \path{version_1_5_Julia/models/fsa_high_res/gpu_control.jl}
+\end{itemize}
+
+This section records what is in those files and why it isn't currently
+diff-tested.
+
+\subsection{Concrete gap inventory}
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabular}{p{36mm}p{55mm}p{40mm}c}
+\toprule
+Layer & File:line (approx.) & What it does & Lean4 twin? \\
+\midrule
+Control cost rollout    & \path{gpu_control.jl}, \texttt{fsa\_v1\_cost\_kernel!} (lines 54--147)
+                        & RBF-parameterised $\Phi(t)$, substepped EM forward simulation,
+                          soft fatigue penalty per Eq.~\ref{eq:cost}
+                        & N \\
+Segmented PF kernel     & \path{gpu_pf.jl}, \texttt{propagate\_segment\_kernel!} (lines 53--143)
+                        & per-particle SDE + obs log-weight in a multi-bin loop,
+                          NaN guard on out-of-domain particles
+                        & inner SDE math duplicates the Lean4-verified
+                          \texttt{drift}/\texttt{diffusion}/\texttt{reflect}/
+                          \texttt{obsLogWeight}; outer loop has no twin \\
+HMC leapfrog            & \path{gpu_pf.jl}, \texttt{parallel\_hmc\_one\_move} (lines 555--610)
+                        & per-chain leapfrog with prior gradient
+                        & N \\
+FD gradient batcher     & \path{gpu_pf.jl}, \texttt{gpu\_grads} (lines 506--543)
+                        & central-difference gradient on GPU
+                        & N \\
+NaN guard fallback      & \path{gpu_pf.jl}, line 120 (approx.)
+                        & resets a particle to the init state if a step produces NaN
+                        & N (Lean4 \texttt{Float} ops don't fall back) \\
+OT rescue / ESS         & \path{gpu_pf.jl}, lines 270--298 (approx.)
+                        & resampling-rescue heuristics under near-degenerate weights
+                        & N \\
+\bottomrule
+\end{tabular}
+\caption{What's in the GPU layer that the differential test doesn't
+exercise. Line ranges are approximate (rounded to the nearest 10);
+re-grep at audit time if the files have moved.}
+\label{tab:gap}
+\end{table}
+
+\subsection{Two qualifying notes}
+
+\paragraph{1. The per-particle SDE math \emph{inside} the GPU kernels
+duplicates the verified core line-by-line.} The drift, diffusion, $[0,1]$
+reflection, and 3-channel Gaussian obs log-weight that
+\path{propagate_segment_kernel!} executes are textually equivalent to
+the corresponding code in \path{_dynamics.jl} / \path{_plant.jl} /
+\path{estimation.jl} (which is what the diff test verifies). So the
+GPU kernels could in principle be diff-tested by adding a
+single-thread debug path that re-uses the same JSON CLI. Today they
+aren't --- this is a future-work item, not a known bug.
+
+\paragraph{2. What the GPU code is currently trusted on.}
+End-to-end empirical parity with the Python+JAX reference, written up
+in
+\\\texttt{compare\_v15\_julia\_vs\_python/docs/julia\_vs\_python\_v15\_writeup.tex}\\
+(see \cite{writeup}). That gives a \emph{statistical} guarantee at the
+closed-loop bench level, not a per-function guarantee at $10^{-6}$. The
+two are complementary: the diff test pins the SDE primitives; the
+empirical comparison pins the full pipeline including the GPU
+algorithms.
+
+\paragraph{Status.} Marked as future work. Not in scope of this
+documentation pass. The recommended next step --- if anyone wants to
+close this gap --- is to expose a single-thread, single-particle debug
+path in each GPU kernel that emits the same JSON the diff test already
+understands, and add new testsets to
+\path{test_lean_diff_v15.jl} for them.
+
+
+% =====================================================================
+\begin{thebibliography}{9}
+
+\bibitem{writeup}
+  \emph{FSA v1.5 closed-loop SMC$^2$-MPC: a side-by-side Python+JAX vs
+  Julia comparison study.} 2026-05-08.
+  \\\url{compare_v15_julia_vs_python/docs/julia_vs_python_v15_writeup.pdf}.
+
+\bibitem{techguide}
+  \emph{Current best Julia v1.5 SMC$^2$-FC config (RTX 5090, T=28d).}
+  2026-05-08.
+  \\\url{compare_v15_julia_vs_python/docs/technical_guide_to_current_best_Julia_SMC2FC_config.pdf}.
+
+\end{thebibliography}
+
+\end{document}
