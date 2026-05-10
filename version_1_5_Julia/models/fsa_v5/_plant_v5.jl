@@ -13,17 +13,18 @@ using StaticArrays
 using StableRNGs
 
 import ..DynamicsV5: em_step_v5
-import ..SimulationV5: DT_BIN_DAYS, BINS_PER_DAY, DEFAULT_INIT,
+import ..SimulationV5: DT_BIN_DAYS, BINS_PER_DAY, SEDENTARY_INIT,
                         TRAINED_ATHLETE_INIT, TRUTH_PARAMS_V5
 
-export PlantState6D, plant_step_v5, plant_rollout_v5, init_plant_state_v5
+export PlantState6D, plant_step_v5, plant_rollout_v5, init_plant_state_sedentary
 export init_plant_state_trained
 
 
 # ── Plant state ────────────────────────────────────────────────────────
 # Mirrors `Fsa.V5.PlantState` (`Fsa/V5/Types.lean::State6D`) plus a bin
 # counter `t_bin` for the rollout. Immutable so plant_step always
-# returns a fresh state.
+# returns a fresh instance.
+
 
 """
     PlantState6D(state, t_bin)

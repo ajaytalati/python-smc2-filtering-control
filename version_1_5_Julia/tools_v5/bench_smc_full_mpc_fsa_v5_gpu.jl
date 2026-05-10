@@ -149,17 +149,17 @@ function main(args::Dict{String,Any})
 
     # ── Plant initial-state preset selection ──
     # Single source of truth: every downstream site reads from
-    # `(init_state_fn, init_nt)`, never from DEFAULT_INIT /
+    # `(init_state_fn, init_nt)`, never from SEDENTARY_INIT /
     # TRAINED_ATHLETE_INIT directly. Enforces "all sites use the same
     # preset" by construction.
     init_preset = string(args["init-preset"])
     init_state_fn, init_nt = if init_preset == "TRAINED_ATHLETE_INIT"
         (init_plant_state_trained, TRAINED_ATHLETE_INIT)
-    elseif init_preset == "DEFAULT_INIT"
-        (init_plant_state_v5, DEFAULT_INIT)
+    elseif init_preset == "SEDENTARY_INIT"
+        (init_plant_state_sedentary, SEDENTARY_INIT)
     else
         error("--init-preset must be \"TRAINED_ATHLETE_INIT\" or " *
-              "\"DEFAULT_INIT\", got: \"$init_preset\"")
+              "\"SEDENTARY_INIT\", got: \"$init_preset\"")
     end
     @info "init preset: $init_preset"
 

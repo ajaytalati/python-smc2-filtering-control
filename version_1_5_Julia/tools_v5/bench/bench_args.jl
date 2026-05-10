@@ -70,7 +70,7 @@ function _parse_args(argv::Vector{String})
         #   "TRAINED_ATHLETE_INIT" — const at `models/fsa_v5/simulation_v5.jl:167-174`
         #                            (tech guide §8.1: "canonical test-scenario
         #                             starting point"). DEFAULT.
-        #   "DEFAULT_INIT"         — const at `models/fsa_v5/simulation_v5.jl:158-165`
+        #   "SEDENTARY_INIT"         — const at `models/fsa_v5/simulation_v5.jl:158-165`
         #                            (tech guide §9.10: "deconditioned but
         #                             otherwise healthy"). Forward-sim from
         #                             this under moderate Φ takes weeks to

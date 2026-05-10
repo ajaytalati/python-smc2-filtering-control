@@ -51,7 +51,7 @@ export drift_v5, diffusion_v5, em_step_v5
 export hr_mean, sleep_prob, stress_mean, steps_log_mean, volume_load_mean
 
 export PlantState6D, plant_step_v5, plant_rollout_v5
-export init_plant_state_v5, init_plant_state_trained
+export init_plant_state_sedentary, init_plant_state_trained
 
 export PARAM_NAMES_V5, PARAM_PRIOR_CONFIG_V5
 export obs_log_weight_v5, propagate_v5
