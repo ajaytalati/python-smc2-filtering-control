@@ -111,7 +111,7 @@ function save_bench_outputs(out_dir::AbstractString,
         f["posterior_window_mask"]  = collect(Bool, posterior_window_mask)
         f["param_names"]          = String.(PARAM_NAMES_V5)
         f["truth_params_dict"]    = Dict{String,Float64}(string(k) => v
-                                                          for (k, v) in FULL_PARAMS_V5)
+                                                          for (k, v) in cfg.full_params)
         f["seed"]                 = args["seed"]
         f["wall_seconds"]         = t_total
 
@@ -217,12 +217,16 @@ function save_bench_outputs(out_dir::AbstractString,
         "seed"             => args["seed"],
         "wall_seconds"     => t_total,
         "device"           => string(CUDA.name(CUDA.device())),
-        "pinned_dynamics"  => Dict(string(k) => v for (k, v) in FROZEN_PARAMS_V5),
+        "truth_preset"     => cfg.truth_preset,
+        # Reads from cfg.frozen_params (= FROZEN_PARAMS_V5_RECOMMENDED_V2 under
+        # --truth-preset v2; canonical FROZEN_PARAMS_V5 otherwise) so the
+        # manifest records the values actually used by the filter inner-PF.
+        "pinned_dynamics"  => Dict(string(k) => v for (k, v) in cfg.frozen_params),
         "estimated_params" => String.(PARAM_NAMES_V5),
-        # Truth values for the 10 estimated v1.5 params; mirrored from
-        # FULL_PARAMS_V5 so the Phase-D comparison script can read truth
-        # from the manifest (avoids parsing the JLD2 Dict with h5py).
-        "truth_params"     => Dict(String(k) => Float64(FULL_PARAMS_V5[k])
+        # Truth values for the estimated params under the selected
+        # --truth-preset (canonical or v2). Read from cfg.full_params so
+        # the manifest reflects the actual run, not the top-level const.
+        "truth_params"     => Dict(String(k) => Float64(cfg.full_params[k])
                                      for k in PARAM_NAMES_V5),
     )
     open(joinpath(out_dir, "manifest.json"), "w") do io

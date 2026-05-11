@@ -36,11 +36,6 @@ roles, two distinct type names.
 -/
 abbrev Schedule := Array BimodalPhi
 
-/-- Standard logistic sigmoid `σ(x) = 1 / (1 + e^{-x})`. Mirrors
-    `jax.nn.sigmoid`. -/
-@[inline] def sigmoid (x : Float) : Float :=
-  1.0 / (1.0 + Float.exp (-x))
-
 /-- Inverse-sigmoid bias for a default `Φ` mid-range. Mirrors
     `c_Phi = log(Phi_default / (Phi_max - Phi_default))` at
     `control.py:57-58`. With this bias, `sigmoid(c_Phi) * Phi_max

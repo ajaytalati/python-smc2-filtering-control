@@ -28,7 +28,9 @@ using StaticArrays
 # ── Posterior → constrained v5 Dict ───────────────────────────────────
 
 """
-    posterior_mean_v5(U_post::AbstractMatrix{Float64}) -> Dict{Symbol, Float64}
+    posterior_mean_v5(U_post::AbstractMatrix{Float64};
+                       frozen::AbstractDict = FROZEN_PARAMS_V5)
+        -> Dict{Symbol, Float64}
 
 Convert the outer-SMC² posterior particle cloud (rows are particles,
 columns are parameters in `PARAM_NAMES_V5` order, all 37 LogNormal-
@@ -38,12 +40,16 @@ the 13 frozen entries merged in.
 The result is the 50-key Dict the v5 controller / plant consume:
 - 15 estimated dynamics (PARAM_NAMES_V5[1:15])
 - 22 estimated obs-channel (PARAM_NAMES_V5[16:37])
-- 13 frozen entries from FROZEN_PARAMS_V5 (5 diffusion + 8 dynamics-side)
+- 13 frozen entries from the caller-supplied `frozen` dict (defaults to
+  canonical FROZEN_PARAMS_V5; bench passes FROZEN_PARAMS_V5_RECOMMENDED_V2
+  under --truth-preset v2 so the controller's cost rollout sees the right
+  B_dec / S_dec).
 
 Hardcoded for v5's 37 LogNormal priors per `PARAM_PRIOR_CONFIG_V5`;
 uses `exp(mean(u_mean))` per dimension.
 """
-function posterior_mean_v5(U_post::AbstractMatrix{Float64})
+function posterior_mean_v5(U_post::AbstractMatrix{Float64};
+                             frozen::AbstractDict = FROZEN_PARAMS_V5)
     @assert size(U_post, 2) == 37 "expected 37 estimated params, got $(size(U_post, 2))"
     u_mean = vec(mean(U_post; dims = 1))
     constrained = exp.(u_mean)
@@ -55,7 +61,7 @@ function posterior_mean_v5(U_post::AbstractMatrix{Float64})
     end
     # Frozen entries (5 diffusion + 8 dynamics-side); these don't appear
     # in PARAM_NAMES_V5 since they aren't estimated. Tech guide §7.1.
-    for (k, v) in FROZEN_PARAMS_V5
+    for (k, v) in frozen
         out[k] = v
     end
     return out

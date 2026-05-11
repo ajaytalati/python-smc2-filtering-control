@@ -67,20 +67,46 @@ function _parse_args(argv::Vector{String})
         # Plant initial-state preset. The flag value is the literal name of
         # the named-tuple constant in `models/fsa_v5/simulation_v5.jl`.
         #
-        #   "TRAINED_ATHLETE_INIT" — const at `models/fsa_v5/simulation_v5.jl:167-174`
-        #                            (tech guide §8.1: "canonical test-scenario
-        #                             starting point"). DEFAULT.
-        #   "SEDENTARY_INIT"         — const at `models/fsa_v5/simulation_v5.jl:158-165`
-        #                            (tech guide §9.10: "deconditioned but
-        #                             otherwise healthy"). Forward-sim from
-        #                             this under moderate Φ takes weeks to
-        #                             settle.
+        #   "TRAINED_ATHLETE_INIT"    — canonical trained-athlete state
+        #                                (tech guide §8.1). DEFAULT. Works
+        #                                under both --truth-preset canonical
+        #                                and v2 but is only on the slow
+        #                                manifold under canonical.
+        #   "SEDENTARY_INIT"          — "deconditioned but otherwise healthy"
+        #                                (tech guide §9.10). Forward-sim from
+        #                                this under moderate Φ takes weeks
+        #                                to settle.
+        #   "TRAINED_ATHLETE_INIT_V2" — v2 slow-manifold equilibrium at the
+        #                                island centre (Φ ≈ (1.06, 0.78)).
+        #                                Requires --truth-preset v2.
+        #   "MIDDLE_INIT_V2"          — per-component average of SEDENTARY_INIT
+        #                                and TRAINED_ATHLETE_INIT_V2. A
+        #                                middle-of-the-road starting point;
+        #                                easier controllability test from a
+        #                                less extreme launchpad. Requires
+        #                                --truth-preset v2.
         #
         # Threaded through: bench plant init, controller open-loop s0,
         # filter last_xhat, the bench-glue first-window fallback, and the
         # inner-PF kernel's NaN-guard (tech guide §6.4).
         "init-preset"     => "TRAINED_ATHLETE_INIT",
-        
+
+        # Truth-side parameter preset. Selects the dynamics-parameter dict fed
+        # into the plant rollout, the open-loop controller's initial plan, and
+        # the closed-loop ctx.full_params.
+        #
+        #   "canonical" — TRUTH_PARAMS_V5 (DEFAULT; canonical island centre
+        #                  ~ (0.30, 0.30); production tech-guide parametrisation).
+        #   "v2"        — TRUTH_PARAMS_V5_RECOMMENDED_V2 (v2 island centre
+        #                  ~ (1.06, 0.78); widened basin; for the
+        #                  controllability_v2_proofs.pdf theorems).
+        #
+        # Under "v2", use --init-preset TRAINED_ATHLETE_INIT_V2 (the canonical
+        # trained init is not on the v2 slow manifold). The bench raises an
+        # error if --init-preset TRAINED_ATHLETE_INIT_V2 is used without
+        # --truth-preset v2.
+        "truth-preset"    => "canonical",
+
         # Starting stimulus intensity for "Base Aerobic" (Φ_B) and "Strength" (Φ_S).
         # Initial controller stimulus. Overrides the previously-hardcoded
         # `Φ_B = Φ_S = 1.0`. Threads through TWO sites in the bench:
@@ -332,23 +358,33 @@ function _parse_args(argv::Vector{String})
         # ─────────────────────────────────────────────────────────────────
         #  Controller Prior Center (Φ_default)
         # ─────────────────────────────────────────────────────────────────
-        #  DEFAULT: 0.3 (Baseline training load).
+        #  DEFAULT: 1.0 (centred on the v2 healthy island).
         #
-        #  The starting stimulus intensity for the controller's search.
-        #  The RBF coefficients θ optimize deviations *relative* to
-        #  this value.
+        #  The starting stimulus intensity for the controller's SMC²
+        #  search. The RBF coefficients θ optimize deviations *relative*
+        #  to this value; at θ=0 the resulting Φ schedule is a flat line
+        #  at Φ_default.
         #
-        #  Rationale:
-        #    - FSA-v5 Interpretation: Φ=0.3 is the steady-state baseline.
-        #      Φ=1.0 is considered heavy overtraining.
-        #    - Search Efficiency: Centering the search on 0.3 allows the
-        #      SMC particles to explore healthy regions immediately.
+        #  Rationale (changed from 0.3 → 1.0 once v2 became the default
+        #  parametrisation we work with):
+        #    - Under v2 (RECOMMENDED_V2), the healthy attractor sits near
+        #      Φ ≈ (1.06, 0.78); Φ=1.0 is roughly the island centre and
+        #      Φ=1.0 maintenance gives A ≈ A* = 1.238 (PDF Thm 6.4).
+        #    - Under canonical TRUTH_PARAMS_V5, the healthy island sits
+        #      at Φ ≈ (0.30, 0.30). If you're running canonical, override
+        #      with --ctrl-phi-default 0.3 — otherwise the SMC² search
+        #      cold-starts far from the canonical island and has to push
+        #      Φ DOWN to find it.
+        #    - Search efficiency: HMC takes far fewer tempering levels
+        #      to find good plans when the prior centre is in the right
+        #      neighbourhood of the active truth's island.
         #
         #  Usage in Code:
-        #    Converted to logit-bias `c_Phi` in `gpu_control_v5.jl:292`.
-        #    If θ=0, the resulting plan is a flat line at Φ_default.
+        #    Converted to logit-bias `c_Phi = log(Φ_default / (Φ_max −
+        #    Φ_default))` inside `FSAv5ControlGPUTarget`'s constructor;
+        #    used as the RBF-decoder bias `c_Phi` in `gpu_control_v5.jl`.
         # ─────────────────────────────────────────────────────────────────
-        "ctrl-phi-default" => 0.3,
+        "ctrl-phi-default" => 1.0,
 
         # ─────────────────────────────────────────────────────────────────
         #  Effort Penalty Coefficient (λ_Φ)
@@ -415,6 +451,77 @@ function _parse_args(argv::Vector{String})
         #    (separatrix approximation).
         # ─────────────────────────────────────────────────────────────────
         "ctrl-lam-chance" => 1.0,
+
+        # ─────────────────────────────────────────────────────────────────
+        #  Collapse Boundary Threshold (A_thr)
+        # ─────────────────────────────────────────────────────────────────
+        #  DEFAULT: 0.3
+        #
+        #  Threshold below which the soft chance constraint penalizes the
+        #  agent. Lower bounds the stable region for Alertness A.
+        # ─────────────────────────────────────────────────────────────────
+        "ctrl-a-thr"      => 0.3,
+
+        # ─────────────────────────────────────────────────────────────────
+        #  Soft Chance-Constraint Coefficient (λ_chance_B)
+        # ─────────────────────────────────────────────────────────────────
+        #  DEFAULT: 1.0
+        # ─────────────────────────────────────────────────────────────────
+        "ctrl-lam-chance-b" => 1.0,
+
+        # ─────────────────────────────────────────────────────────────────
+        #  Collapse Boundary Threshold (B_thr)
+        # ─────────────────────────────────────────────────────────────────
+        #  DEFAULT: 0.2
+        # ─────────────────────────────────────────────────────────────────
+        "ctrl-b-thr"      => 0.2,
+
+        # ─────────────────────────────────────────────────────────────────
+        #  Soft Chance-Constraint Coefficient (λ_chance_S)
+        # ─────────────────────────────────────────────────────────────────
+        #  DEFAULT: 1.0
+        # ─────────────────────────────────────────────────────────────────
+        "ctrl-lam-chance-s" => 1.0,
+
+        # ─────────────────────────────────────────────────────────────────
+        #  Collapse Boundary Threshold (S_thr)
+        # ─────────────────────────────────────────────────────────────────
+        #  DEFAULT: 0.2
+        # ─────────────────────────────────────────────────────────────────
+        "ctrl-s-thr"      => 0.2,
+
+        # ─────────────────────────────────────────────────────────────────
+        #  Reward weight for ∫A dt (λ_a)
+        # ─────────────────────────────────────────────────────────────────
+        #  Cost reward term is  − λ_a · A_acc.
+        #  DEFAULT: 1.0 (matches the historical bare `-A_acc` cost line).
+        #  Set to 0.0 to switch the A-reward off entirely — useful for
+        #  isolating the contribution of the island pull and other terms.
+        # ─────────────────────────────────────────────────────────────────
+        "ctrl-lam-a"      => 1.0,
+
+        # ─────────────────────────────────────────────────────────────────
+        #  Reward weights for ∫B dt and ∫S dt (λ_b, λ_s)
+        # ─────────────────────────────────────────────────────────────────
+        #  Cost reward term is  − λ_a · A_acc − λ_b · B_acc − λ_s · S_acc.
+        #  Default 0.0 for both → reward is purely max-A. Used to isolate
+        #  whether B/S rewards are interfering with A-escape behaviour.
+        # ─────────────────────────────────────────────────────────────────
+        "ctrl-lam-b"      => 0.0,
+        "ctrl-lam-s"      => 0.0,
+
+        # ─────────────────────────────────────────────────────────────────
+        #  Healthy-island gradient surrogate (λ_island, β_island)
+        # ─────────────────────────────────────────────────────────────────
+        #  Smooth Φ-pull toward μ̄(0; Φ) > 0 — adds the term
+        #     λ_island · ∫ (1/β_island)·softplus(-β_island·μ̄(0; Φ_t)) dt
+        #  Smooth (C^∞) over the entire (Φ_B, Φ_S) plane, gives HMC a
+        #  consistent escape gradient from the mono-collapsed region
+        #  where the chance penalty's Φ-gradient vanishes.
+        #  DEFAULTS: λ = 0.0 (disabled), β = 50.0 (matches β_chance).
+        # ─────────────────────────────────────────────────────────────────
+        "ctrl-lam-island"  => 0.0,
+        "ctrl-beta-island" => 50.0,
     )
     
     # ── Filter-side flag aliases (updated) ─────────────────────────

@@ -41,7 +41,7 @@ export BINS_PER_DAY, DT_BIN_DAYS
 export A_TYP, F_TYP
 export TRUTH_PARAMS_V4, TRUTH_PARAMS_V5
 export DEFAULT_OBS_PARAMS_V5
-export DEFAULT_INIT, TRAINED_ATHLETE_INIT
+export DEFAULT_INIT, TRAINED_ATHLETE_INIT, TRAINED_ATHLETE_INIT_V2, MIDDLE_INIT_V2
 export FROZEN_PARAMS_V5
 export PARAM_KEYS_V5, OBS_PARAM_KEYS_V5
 export sample_obs_v5, params_dict_to_nt
@@ -51,12 +51,13 @@ export drift_v5, diffusion_v5, em_step_v5
 export hr_mean, sleep_prob, stress_mean, steps_log_mean, volume_load_mean
 
 export PlantState6D, plant_step_v5, plant_rollout_v5
-export init_plant_state_sedentary, init_plant_state_trained
+export init_plant_state_sedentary, init_plant_state_trained, init_plant_state_from
 
-export PARAM_NAMES_V5, PARAM_PRIOR_CONFIG_V5
+export PARAM_NAMES_V5, PARAM_PRIOR_CONFIG_V5, PARAM_PRIOR_CONFIG_V5_RECOMMENDED_V2
+export build_prior_config_v5, select_prior_config_v5
 export obs_log_weight_v5, propagate_v5
 
-export mu_bar, find_a_sep, a_sep_grid
+export mu_bar, mu_bar_state, find_a_sep, a_sep_grid
 
 export sigmoid, c_phi, schedule_from_theta, design_matrix
 

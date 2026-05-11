@@ -152,6 +152,23 @@ def findASep (phi : BimodalPhi) (p : Params) : Float :=
   else if hasSep then root
   else 1.0 / 0.0                         -- +inf
 
+/-! ## Soft chance-constraint surrogate
+
+`softChancePenalty` mirrors the differentiable surrogate used in the
+GPU cost kernel. It returns σ(β·(thr−val)/scale) · (thr−val)² —
+a smooth gate (≈1 below `thr`, ≈0 above) multiplied by the quadratic
+violation depth, so the integrand grows the further `val` drops below
+`thr` rather than saturating at a bounded value.
+-/
+
+/-- Soft chance-constraint surrogate: σ(β·(thr−val)/scale) · (thr−val)².
+    Smooth everywhere (HMC-friendly); ≈ 0 for val above thr;
+    grows quadratically for val below thr.
+    Mirrors `gpu_control_v5.jl` inner term. -/
+def softChancePenalty (val thr beta scale : Float) : Float :=
+  let d := thr - val
+  sigmoid (beta * d / scale) * d * d
+
 /-! ## Per-particle, per-bin separator grid (kills Bug 2)
 
 The output shape is `(n_particles, n_steps)`. The historical Python

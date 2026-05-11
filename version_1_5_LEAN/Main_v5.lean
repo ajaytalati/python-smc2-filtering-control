@@ -278,6 +278,12 @@ def handleRequest (input : Json) : Except String String := do
   | "sigmoid" =>
     let x ← getFloat input "x"
     pure (fmtScalar "x" (sigmoid x))
+  | "softChancePenalty" =>
+    let val ← getFloat input "val"
+    let thr ← getFloat input "thr"
+    let beta ← getFloat input "beta"
+    let scale ← getFloat input "scale"
+    pure (fmtScalar "x" (softChancePenalty val thr beta scale))
   | other => Except.error s!"unknown fn: {other}"
 
 partial def loop (h : IO.FS.Stream) : IO Unit := do

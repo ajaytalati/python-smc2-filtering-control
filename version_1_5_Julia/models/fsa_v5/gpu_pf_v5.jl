@@ -380,7 +380,13 @@ function FSAv5GPUTarget(; K_per_chain::Int, M_max::Int, T_steps::Int,
                           nan_fallback_F::Real   = DEFAULT_INIT.F,
                           nan_fallback_A::Real   = DEFAULT_INIT.A,
                           nan_fallback_KFB::Real = DEFAULT_INIT.KFB,
-                          nan_fallback_KFS::Real = DEFAULT_INIT.KFS)
+                          nan_fallback_KFS::Real = DEFAULT_INIT.KFS,
+                          # Frozen-parameter dict (consumed by inner-PF
+                          # likelihood). Default is canonical FROZEN_PARAMS_V5;
+                          # the bench passes FROZEN_PARAMS_V5_RECOMMENDED_V2
+                          # under --truth-preset v2 so the filter's forward
+                          # model matches the plant's B_dec / S_dec.
+                          frozen::AbstractDict = FROZEN_PARAMS_V5)
     @assert T_steps % R == 0 "T_steps=$T_steps must be divisible by R=$R"
 
     rng = MersenneTwister(noise_seed)
@@ -396,19 +402,21 @@ function FSAv5GPUTarget(; K_per_chain::Int, M_max::Int, T_steps::Int,
         Float32(ot_max_weight),
         Float32(K_per_chain * ot_threshold_frac),
         Float32(ot_temperature),
-        # Frozen scalars from FROZEN_PARAMS_V5
-        Float32(FROZEN_PARAMS_V5[:KFB_0]),
-        Float32(FROZEN_PARAMS_V5[:KFS_0]),
-        Float32(FROZEN_PARAMS_V5[:tau_K]),
-        Float32(FROZEN_PARAMS_V5[:B_dec]),
-        Float32(FROZEN_PARAMS_V5[:S_dec]),
-        Float32(FROZEN_PARAMS_V5[:mu_dec_B]),
-        Float32(FROZEN_PARAMS_V5[:mu_dec_S]),
-        Float32(FROZEN_PARAMS_V5[:sigma_B]),
-        Float32(FROZEN_PARAMS_V5[:sigma_S]),
-        Float32(FROZEN_PARAMS_V5[:sigma_F]),
-        Float32(FROZEN_PARAMS_V5[:sigma_A]),
-        Float32(FROZEN_PARAMS_V5[:sigma_K]),
+        # Frozen scalars from the caller-supplied `frozen` dict (defaults
+        # to canonical FROZEN_PARAMS_V5; bench uses
+        # FROZEN_PARAMS_V5_RECOMMENDED_V2 under --truth-preset v2).
+        Float32(frozen[:KFB_0]),
+        Float32(frozen[:KFS_0]),
+        Float32(frozen[:tau_K]),
+        Float32(frozen[:B_dec]),
+        Float32(frozen[:S_dec]),
+        Float32(frozen[:mu_dec_B]),
+        Float32(frozen[:mu_dec_S]),
+        Float32(frozen[:sigma_B]),
+        Float32(frozen[:sigma_S]),
+        Float32(frozen[:sigma_F]),
+        Float32(frozen[:sigma_A]),
+        Float32(frozen[:sigma_K]),
         Float32(A_TYP), Float32(F_TYP),
         # NaN-guard fallback (preset-selected)
         Float32(nan_fallback_B),   Float32(nan_fallback_S),

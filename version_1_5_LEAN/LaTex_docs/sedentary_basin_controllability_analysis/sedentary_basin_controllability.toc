@@ -1,0 +1,133 @@
+\contentsline {section}{\numberline {1}Introduction and problem statement}{4}{section.1}%
+\contentsline {subsection}{\numberline {1.1}The empirical observation}{4}{subsection.1.1}%
+\contentsline {subsection}{\numberline {1.2}Working assumptions}{4}{subsection.1.2}%
+\contentsline {subsection}{\numberline {1.3}The question, formally}{5}{subsection.1.3}%
+\contentsline {subsection}{\numberline {1.4}Headline result preview}{5}{subsection.1.4}%
+\contentsline {section}{\numberline {2}Model recall}{5}{section.2}%
+\contentsline {subsection}{\numberline {2.1}State and control}{5}{subsection.2.1}%
+\contentsline {subsection}{\numberline {2.2}Drift equations}{6}{subsection.2.2}%
+\contentsline {subsection}{\numberline {2.3}Cascade structure and slow manifold}{6}{subsection.2.3}%
+\contentsline {subsection}{\numberline {2.4}Numerical anchor: the sanity table}{6}{subsection.2.4}%
+\contentsline {subsection}{\numberline {2.5}Parameter values used throughout}{7}{subsection.2.5}%
+\contentsline {subsection}{\numberline {2.6}Self-contained reproducer: \texttt {SEDENTARY\_INIT}}{7}{subsection.2.6}%
+\contentsline {paragraph}{The 6 state variables.}{7}{section*.2}%
+\contentsline {paragraph}{The initial condition.}{7}{section*.3}%
+\contentsline {paragraph}{Interpretive notes.}{8}{section*.4}%
+\contentsline {paragraph}{State clipping (plant convention).}{8}{section*.5}%
+\contentsline {paragraph}{Self-contained reproducer for $\mu (\texttt {SEDENTARY\_INIT})$.}{8}{section*.6}%
+\contentsline {paragraph}{Intermediate values for line-by-line verification.}{9}{section*.7}%
+\contentsline {paragraph}{Why the value is $\Phi $-independent at $t=0$.}{9}{section*.8}%
+\contentsline {section}{\numberline {3}The control system}{9}{section.3}%
+\contentsline {subsection}{\numberline {3.1}Admissible controls}{9}{subsection.3.1}%
+\contentsline {subsection}{\numberline {3.2}Reachable set and target}{9}{subsection.3.2}%
+\contentsline {section}{\numberline {4}Slow-manifold reduction and cascade upper envelopes}{10}{section.4}%
+\contentsline {subsection}{\numberline {4.1}An a-priori upper bound on $B(t)$}{10}{subsection.4.1}%
+\contentsline {subsection}{\numberline {4.2}An a-priori lower bound on $F(t)$}{10}{subsection.4.2}%
+\contentsline {subsection}{\numberline {4.3}An a-priori bound on $A(t)$}{10}{subsection.4.3}%
+\contentsline {subsection}{\numberline {4.4}Effect of the upper bound on $a_X$ at $\bar A = 0.30$}{10}{subsection.4.4}%
+\contentsline {section}{\numberline {5}The forcing-rate bottleneck: an upper bound on $\mu (t)$}{10}{section.5}%
+\contentsline {subsection}{\numberline {5.1}Conservative omissions for the upper bound}{10}{subsection.5.1}%
+\contentsline {subsection}{\numberline {5.2}The retained terms and their bounds}{11}{subsection.5.2}%
+\contentsline {subsection}{\numberline {5.3}Numerical evaluation at \texttt {SEDENTARY\_INIT}}{11}{subsection.5.3}%
+\contentsline {section}{\numberline {6}Constructive escape attempts}{12}{section.6}%
+\contentsline {subsection}{\numberline {6.1}Candidate 1: Constant balanced $\Phi \equiv (0.30, 0.30)$}{12}{subsection.6.1}%
+\contentsline {paragraph}{Slow-manifold timescale.}{12}{section*.9}%
+\contentsline {paragraph}{Initial $\mu $ value.}{12}{section*.10}%
+\contentsline {paragraph}{Time-evolution of $\mu (t)$ under constant $\Phi = (0.30, 0.30)$.}{12}{section*.11}%
+\contentsline {paragraph}{Numerical evaluation of $\mu (t)$ at sample times.}{13}{section*.12}%
+\contentsline {paragraph}{Numerical integration via RK4.}{13}{section*.13}%
+\contentsline {paragraph}{Conclusion for Candidate 1.}{13}{section*.14}%
+\contentsline {subsection}{\numberline {6.2}Candidate 2: Bang--bang aerobic burst then taper}{13}{subsection.6.2}%
+\contentsline {paragraph}{During the burst $[0, T_{\rm burst}]$ at $\Phi ^{\max } = 1$.}{13}{section*.15}%
+\contentsline {paragraph}{Estimated $\DOTSI \intop \ilimits@ _0^5 \mu $ during burst.}{14}{section*.16}%
+\contentsline {paragraph}{After burst, $\Phi = (0.30, 0.30)$ on $[5, 100]$.}{14}{section*.17}%
+\contentsline {paragraph}{Numerical integration of Candidate 2.}{14}{section*.18}%
+\contentsline {paragraph}{Conclusion for Candidate 2.}{14}{section*.19}%
+\contentsline {subsection}{\numberline {6.3}Candidate 3: Smart ramp from $(\Phi ^{\max }, \Phi ^{\max })$ to $(0.30, 0.30)$}{14}{subsection.6.3}%
+\contentsline {paragraph}{Numerical integration of Candidate 3}{14}{section*.20}%
+\contentsline {subsection}{\numberline {6.4}Sweep over constant $\Phi $ values}{14}{subsection.6.4}%
+\contentsline {section}{\numberline {7}The impossibility certificate}{15}{section.7}%
+\contentsline {subsection}{\numberline {7.1}Scalar comparison theorem on $A$}{15}{subsection.7.1}%
+\contentsline {subsection}{\numberline {7.2}The impossibility theorem}{15}{subsection.7.2}%
+\contentsline {subsection}{\numberline {7.3}Numerical evaluation of the certificate constant}{16}{subsection.7.3}%
+\contentsline {paragraph}{Linear contributions.}{16}{section*.21}%
+\contentsline {paragraph}{Hill-deconditioning contributions.}{16}{section*.22}%
+\contentsline {paragraph}{Combined integral.}{16}{section*.23}%
+\contentsline {subsection}{\numberline {7.4}Why the upper-bound certificate fails to certify impossibility}{17}{subsection.7.4}%
+\contentsline {paragraph}{Diagnosis.}{17}{section*.24}%
+\contentsline {subsection}{\numberline {7.5}A tighter upper bound: average $\Phi $ analysis}{17}{subsection.7.5}%
+\contentsline {subsection}{\numberline {7.6}Pragmatic certificate via candidate sweep}{17}{subsection.7.6}%
+\contentsline {section}{\numberline {8}Resolution at \texttt {SEDENTARY\_INIT}}{17}{section.8}%
+\contentsline {subsection}{\numberline {8.1}Summary of evidence}{17}{subsection.8.1}%
+\contentsline {subsection}{\numberline {8.2}The case for $U = [0,3]^2$}{18}{subsection.8.2}%
+\contentsline {subsection}{\numberline {8.3}Resolution}{18}{subsection.8.3}%
+\contentsline {section}{\numberline {9}Controllability region}{18}{section.9}%
+\contentsline {subsection}{\numberline {9.1}Certified non-escape set}{19}{subsection.9.1}%
+\contentsline {subsection}{\numberline {9.2}2-D phase plot in $(B_0, S_0)$}{19}{subsection.9.2}%
+\contentsline {paragraph}{Interpretation.}{19}{section*.25}%
+\contentsline {paragraph}{Caveat.}{19}{section*.26}%
+\contentsline {subsection}{\numberline {9.3}What this means for choosing initial conditions}{19}{subsection.9.3}%
+\contentsline {section}{\numberline {10}Implications for closed-loop control}{19}{section.10}%
+\contentsline {subsection}{\numberline {10.1}Why no controller could succeed}{20}{subsection.10.1}%
+\contentsline {subsection}{\numberline {10.2}What to test instead}{20}{subsection.10.2}%
+\contentsline {section}{\numberline {11}Mechanisation roadmap toward Lean4}{20}{section.11}%
+\contentsline {subsection}{\numberline {11.1}What is already in Lean4}{20}{subsection.11.1}%
+\contentsline {subsection}{\numberline {11.2}What is needed for Theorem~\ref {thm:impossibility}}{21}{subsection.11.2}%
+\contentsline {subsection}{\numberline {11.3}What is needed for Conjecture~\ref {conj:avg-phi}}{21}{subsection.11.3}%
+\contentsline {subsection}{\numberline {11.4}Estimated formalisation effort}{21}{subsection.11.4}%
+\contentsline {section}{\numberline {12}Open questions and stochastic extension}{21}{section.12}%
+\contentsline {subsection}{\numberline {12.1}Stochastic extension}{21}{subsection.12.1}%
+\contentsline {subsection}{\numberline {12.2}Periodic-control averaging}{22}{subsection.12.2}%
+\contentsline {subsection}{\numberline {12.3}Richer admissible classes}{22}{subsection.12.3}%
+\contentsline {section}{\numberline {13}Sensitivity to pinned parameters}{22}{section.13}%
+\contentsline {subsection}{\numberline {13.1}Why these are pinned}{22}{subsection.13.1}%
+\contentsline {subsection}{\numberline {13.2}Where the obstruction comes from in the parameters}{22}{subsection.13.2}%
+\contentsline {subsection}{\numberline {13.3}Sensitivity sweep}{22}{subsection.13.3}%
+\contentsline {subsection}{\numberline {13.4}Recommendation}{23}{subsection.13.4}%
+\contentsline {paragraph}{Note on §13 vs §14 results.}{23}{section*.27}%
+\contentsline {section}{\numberline {14}Healthy-island analysis under single deconditioning modifications}{23}{section.14}%
+\contentsline {subsection}{\numberline {14.1}Mod~A — $\mu _{B-} = \mu _{S-}$ halved (0.10 $\to $ 0.05)}{24}{subsection.14.1}%
+\contentsline {subsection}{\numberline {14.2}Mod~B — $B_{\rm dec} = S_{\rm dec}$ lowered (0.07 $\to $ 0.04)}{24}{subsection.14.2}%
+\contentsline {subsection}{\numberline {14.3}Mod~C — Hill exponent $n$ reduced (4 $\to $ 2)}{24}{subsection.14.3}%
+\contentsline {subsection}{\numberline {14.4}Summary: single mods are insufficient}{24}{subsection.14.4}%
+\contentsline {section}{\numberline {15}Multi-parameter sweep to shift the island toward $(1, 1)$}{24}{section.15}%
+\contentsline {subsection}{\numberline {15.1}Pure deconditioning-block sweep}{25}{subsection.15.1}%
+\contentsline {subsection}{\numberline {15.2}Combined sweep (deconditioning + reward-side $\mu _F, \mu _{FF}$)}{25}{subsection.15.2}%
+\contentsline {subsection}{\numberline {15.3}Recommended parametrisation}{25}{subsection.15.3}%
+\contentsline {paragraph}{Verification of the three qualitative criteria}{25}{section*.28}%
+\contentsline {subsection}{\numberline {15.4}Honest scope note}{26}{subsection.15.4}%
+\contentsline {section}{\numberline {16}Constructive controllability under the recommended parametrisation}{26}{section.16}%
+\contentsline {subsection}{\numberline {16.1}Definition of TRAINED\_ATHLETE\_INIT\_v2}{26}{subsection.16.1}%
+\contentsline {subsection}{\numberline {16.2}§16.1 — Pathological sedentary basin from SEDENTARY\_INIT}{26}{subsection.16.2}%
+\contentsline {paragraph}{Result.}{26}{section*.29}%
+\contentsline {subsection}{\numberline {16.3}§16.2 — Constructive escape witness from SEDENTARY\_INIT}{27}{subsection.16.3}%
+\contentsline {paragraph}{LEAN-mechanisable claim.}{27}{section*.30}%
+\contentsline {subsection}{\numberline {16.4}§16.3 — Pathological over-training basin (shifted) from TRAINED\_ATHLETE\_INIT\_v2}{27}{subsection.16.4}%
+\contentsline {paragraph}{Passive over-training.}{27}{section*.31}%
+\contentsline {paragraph}{Constructive maintenance.}{27}{section*.32}%
+\contentsline {subsection}{\numberline {16.5}Summary of the three qualitative behaviours}{27}{subsection.16.5}%
+\contentsline {paragraph}{One important caveat (addressed in §\ref {sec:revisions-v17}).}{28}{section*.33}%
+\contentsline {section}{\numberline {17}Revisions: timescale halving and a FIM-duality witness search}{28}{section.17}%
+\contentsline {subsection}{\numberline {17.1}Recommended parametrisation v2 (timescale-halved)}{28}{subsection.17.1}%
+\contentsline {paragraph}{Invariance lemma.}{28}{section*.34}%
+\contentsline {paragraph}{Trajectory speed-up.}{29}{section*.35}%
+\contentsline {paragraph}{Re-definition of TRAINED\_ATHLETE\_INIT\_v2.}{29}{section*.36}%
+\contentsline {subsection}{\numberline {17.2}FIM-duality witness search}{29}{subsection.17.2}%
+\contentsline {paragraph}{The duality, briefly.}{29}{section*.37}%
+\contentsline {paragraph}{Application to the §16.2 witness problem.}{29}{section*.38}%
+\contentsline {paragraph}{Grid search procedure.}{29}{section*.39}%
+\contentsline {paragraph}{Result: top candidates.}{29}{section*.40}%
+\contentsline {paragraph}{Empirical evaluation of the duality.}{30}{section*.41}%
+\contentsline {paragraph}{Choice of witness.}{30}{section*.42}%
+\contentsline {subsection}{\numberline {17.3}Updated §16.1 — Pathological sedentary basin (v2, $T = 100$\,d)}{30}{subsection.17.3}%
+\contentsline {subsection}{\numberline {17.4}Updated §16.2 — Constructive escape witness (FIM-selected, $T = 100$\,d)}{30}{subsection.17.4}%
+\contentsline {paragraph}{LEAN-mechanisable claim — simpler than v1.}{31}{section*.43}%
+\contentsline {subsection}{\numberline {17.5}Updated §16.3 — Pathological over-training basin (v2, $T = 100$\,d)}{31}{subsection.17.5}%
+\contentsline {paragraph}{Passive over-training.}{31}{section*.44}%
+\contentsline {paragraph}{Maintenance.}{31}{section*.45}%
+\contentsline {subsection}{\numberline {17.6}Summary of §17 revisions}{31}{subsection.17.6}%
+\contentsline {section}{\numberline {A}Numerical anchors}{31}{appendix.A}%
+\contentsline {section}{\numberline {B}Composite Lyapunov function for FSA-v5}{32}{appendix.B}%
+\contentsline {subsection}{\numberline {B.1}Adaptation from FSA-v4}{32}{subsection.B.1}%
+\contentsline {subsection}{\numberline {B.2}Why this does not directly resolve controllability}{32}{subsection.B.2}%
+\contentsline {subsection}{\numberline {B.3}Mechanisation note}{33}{subsection.B.3}%

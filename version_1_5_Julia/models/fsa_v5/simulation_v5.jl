@@ -25,10 +25,12 @@ using StableRNGs
 
 export BINS_PER_DAY, DT_BIN_DAYS
 export A_TYP, F_TYP
-export TRUTH_PARAMS_V4, TRUTH_PARAMS_V5
+export TRUTH_PARAMS_V4, TRUTH_PARAMS_V5, TRUTH_PARAMS_V5_RECOMMENDED_V2
+export select_truth_preset
 export DEFAULT_OBS_PARAMS_V5
-export DEFAULT_INIT, SEDENTARY_INIT, TRAINED_ATHLETE_INIT
-export FROZEN_PARAMS_V5
+export DEFAULT_INIT, SEDENTARY_INIT, TRAINED_ATHLETE_INIT, TRAINED_ATHLETE_INIT_V2,
+       MIDDLE_INIT_V2
+export FROZEN_PARAMS_V5, FROZEN_PARAMS_V5_RECOMMENDED_V2
 export PARAM_KEYS_V5, OBS_PARAM_KEYS_V5
 export sample_obs_v5, params_dict_to_nt
 
@@ -134,6 +136,37 @@ const TRUTH_PARAMS_V5::Dict{Symbol, Float32} = let
     p
 end
 
+"""
+    TRUTH_PARAMS_V5_RECOMMENDED_V2::Dict{Symbol, Float32}
+
+v2 re-parametrisation of TRUTH_PARAMS_V5 for the controllability_v2_proofs
+theorems. Eight numerical entries differ from canonical; all other entries
+(tau_F, mu_dec_*, n_dec, K^0_*, mu_K, tau_K, sigma_*, mu_0, mu_B, mu_S, eta,
+epsilon_A*, lambda_A) are inherited unchanged.
+
+The 8 v2 overrides (controllability_v2_proofs.pdf §2.3):
+  tau_B    : 42 d        -> 21 d        (halved; B* invariant under (tau,kappa) -> (tau/2, 2 kappa))
+  kappa_B  : 0.01248     -> 0.02496     (doubled, centred form)
+  tau_S    : 60 d        -> 30 d
+  kappa_S  : 0.00816     -> 0.01632     (doubled, centred form)
+  B_dec    : 0.07        -> 0.25        (Hill threshold raised 3.6x; shifts island toward (1,1))
+  S_dec    : 0.07        -> 0.25
+  mu_F     : 0.26        -> 0.030       (reward-side fatigue penalty reduced 88%)
+  mu_FF    : 0.40        -> 0.020       (reduced 95%)
+"""
+const TRUTH_PARAMS_V5_RECOMMENDED_V2::Dict{Symbol, Float32} = let
+    p = copy(TRUTH_PARAMS_V5)
+    p[:tau_B]   = 21.0f0
+    p[:kappa_B] = 0.012f0 * (1.0f0 + 0.40f0 * A_TYP) * 2.0f0   # 0.02496f0
+    p[:tau_S]   = 30.0f0
+    p[:kappa_S] = 0.008f0 * (1.0f0 + 0.20f0 * A_TYP) * 2.0f0   # 0.01632f0
+    p[:B_dec]   = 0.25f0
+    p[:S_dec]   = 0.25f0
+    p[:mu_F]    = 0.030f0
+    p[:mu_FF]   = 0.020f0
+    p
+end
+
 
 # =============================================================================
 # 4. OBSERVATION PARAMETERS
@@ -185,12 +218,12 @@ const DEFAULT_OBS_PARAMS_V5::Dict{Symbol, Float32} = Dict(
 # =============================================================================
 
 """
-    DEFAULT_INIT::NamedTuple
+    SEDENTARY_INIT::NamedTuple
 
 "Deconditioned but healthy" starting point. Characterized by low aerobic 
 fitness (B=0.05) and low strength (S=0.10).
 """
-const DEFAULT_INIT = (
+const SEDENTARY_INIT = (
     B   = 0.05f0,
     S   = 0.10f0,
     F   = 0.30f0,
@@ -198,6 +231,14 @@ const DEFAULT_INIT = (
     KFB = 0.030f0,
     KFS = 0.050f0,
 )
+
+"""
+    DEFAULT_INIT::NamedTuple
+
+Alias for SEDENTARY_INIT. Used primarily by the particle filter as a generic 
+NaN-guard fallback state rather than a specific physical scenario.
+"""
+const DEFAULT_INIT = SEDENTARY_INIT
 
 """
     TRAINED_ATHLETE_INIT::NamedTuple
@@ -212,6 +253,45 @@ const TRAINED_ATHLETE_INIT = (
     A   = 0.45f0,
     KFB = 0.06f0,
     KFS = 0.07f0,
+)
+
+"""
+    TRAINED_ATHLETE_INIT_V2::NamedTuple
+
+Slow-manifold equilibrium of FSA-v5 under TRUTH_PARAMS_V5_RECOMMENDED_V2 at
+the v2 island centre Φ = (1.06, 0.78), upper-stable autonomic root A* = 1.238.
+Not on the slow manifold under canonical TRUTH_PARAMS_V5. See
+controllability_v2_proofs.pdf §2.4.
+"""
+const TRAINED_ATHLETE_INIT_V2 = (
+    B   = 0.7993f0,
+    S   = 0.4688f0,
+    F   = 0.7925f0,
+    A   = 1.2384f0,
+    KFB = 0.1414f0,
+    KFS = 0.1322f0,
+)
+
+"""
+    MIDDLE_INIT_V2::NamedTuple
+
+Per-component average of SEDENTARY_INIT and TRAINED_ATHLETE_INIT_V2. A
+"middle-of-the-road" starting point lying roughly halfway between the v2
+sedentary basin and the v2 slow-manifold trained equilibrium — intended as
+an easier launchpad for the SMC²-MPC controller when probing controllability
+from a less extreme initial condition.
+
+Only meaningful under --truth-preset v2 (it's averaged against the v2
+trained-athlete state). Using it under canonical TRUTH_PARAMS_V5 mixes a
+v2 reference point into a canonical run, which is not a coherent scenario.
+"""
+const MIDDLE_INIT_V2 = (
+    B   = (SEDENTARY_INIT.B   + TRAINED_ATHLETE_INIT_V2.B)   / 2.0f0,
+    S   = (SEDENTARY_INIT.S   + TRAINED_ATHLETE_INIT_V2.S)   / 2.0f0,
+    F   = (SEDENTARY_INIT.F   + TRAINED_ATHLETE_INIT_V2.F)   / 2.0f0,
+    A   = (SEDENTARY_INIT.A   + TRAINED_ATHLETE_INIT_V2.A)   / 2.0f0,
+    KFB = (SEDENTARY_INIT.KFB + TRAINED_ATHLETE_INIT_V2.KFB) / 2.0f0,
+    KFS = (SEDENTARY_INIT.KFS + TRAINED_ATHLETE_INIT_V2.KFS) / 2.0f0,
 )
 
 
@@ -241,6 +321,64 @@ const FROZEN_PARAMS_V5::Dict{Symbol, Float32} = Dict(
     :mu_dec_B => TRUTH_PARAMS_V5[:mu_dec_B],
     :mu_dec_S => TRUTH_PARAMS_V5[:mu_dec_S],
 )
+
+"""
+    FROZEN_PARAMS_V5_RECOMMENDED_V2::Dict{Symbol, Float32}
+
+v2 re-parametrisation of FROZEN_PARAMS_V5. Mirrors the v2 truth: B_dec and
+S_dec are raised from 0.07 to 0.25 (matching TRUTH_PARAMS_V5_RECOMMENDED_V2).
+The other 11 entries are identical to canonical FROZEN_PARAMS_V5.
+
+Used by the bench driver under --truth-preset v2 to feed the correct frozen
+values into the filter inner-PF and into `posterior_mean_v5` (which merges
+frozen entries into the controller's params dict). Without this, the filter
+and the controller's closed-loop cost rollout would silently use canonical
+B_dec=0.07/S_dec=0.07 even when the plant uses v2 (=0.25), producing severe
+model misspecification.
+"""
+const FROZEN_PARAMS_V5_RECOMMENDED_V2::Dict{Symbol, Float32} = Dict(
+    :sigma_B  => TRUTH_PARAMS_V5_RECOMMENDED_V2[:sigma_B],
+    :sigma_S  => TRUTH_PARAMS_V5_RECOMMENDED_V2[:sigma_S],
+    :sigma_F  => TRUTH_PARAMS_V5_RECOMMENDED_V2[:sigma_F],
+    :sigma_A  => TRUTH_PARAMS_V5_RECOMMENDED_V2[:sigma_A],
+    :sigma_K  => TRUTH_PARAMS_V5_RECOMMENDED_V2[:sigma_K],
+    :KFB_0    => TRUTH_PARAMS_V5_RECOMMENDED_V2[:KFB_0],
+    :KFS_0    => TRUTH_PARAMS_V5_RECOMMENDED_V2[:KFS_0],
+    :tau_K    => TRUTH_PARAMS_V5_RECOMMENDED_V2[:tau_K],
+    :n_dec    => TRUTH_PARAMS_V5_RECOMMENDED_V2[:n_dec],
+    :B_dec    => TRUTH_PARAMS_V5_RECOMMENDED_V2[:B_dec],   # 0.25 (v2)
+    :S_dec    => TRUTH_PARAMS_V5_RECOMMENDED_V2[:S_dec],   # 0.25 (v2)
+    :mu_dec_B => TRUTH_PARAMS_V5_RECOMMENDED_V2[:mu_dec_B],
+    :mu_dec_S => TRUTH_PARAMS_V5_RECOMMENDED_V2[:mu_dec_S],
+)
+
+"""
+    select_truth_preset(preset::AbstractString)
+        -> (truth_params::Dict, frozen_params::Dict)
+
+Resolve a `--truth-preset` string into the matching (truth, frozen) dict
+pair the bench should use for the plant, filter, and controller. Lives
+in SimulationV5 (rather than the bench driver) so the dispatch is
+testable in isolation.
+
+Legal preset values: `"canonical"`, `"v2"`. Any other value raises an
+explicit error so a misspelled flag can't silently fall back to a default.
+
+The two dicts returned MUST be used together: if the truth dict is v2,
+the frozen dict must also be v2 (otherwise the filter inner-PF and the
+closed-loop controller's posterior dict get canonical B_dec / S_dec
+while the plant uses v2's — the exact bug this function exists to make
+unrepeatable).
+"""
+function select_truth_preset(preset::AbstractString)
+    if preset == "canonical"
+        return (TRUTH_PARAMS_V5, FROZEN_PARAMS_V5)
+    elseif preset == "v2"
+        return (TRUTH_PARAMS_V5_RECOMMENDED_V2, FROZEN_PARAMS_V5_RECOMMENDED_V2)
+    else
+        error("--truth-preset must be \"canonical\" or \"v2\", got: \"$preset\"")
+    end
+end
 
 """
 Canonical field order required for deterministic JSON serialization and 

@@ -56,8 +56,8 @@ Arguments:
 - `params`: Parameter set (Dict or NamedTuple).
 - `phi`: Stimulus tuple (Phi_B, Phi_S).
 """
-@inline function drift_v5(y::AbstractVector{Float32}, params,
-                            phi::Tuple{Float32, Float32})
+@inline function drift_v5(y::AbstractVector, params,
+                            phi::Tuple{<:Real, <:Real})
     B, S, F, A, KFB, KFS = y[1], y[2], y[3], y[4], y[5], y[6]
     Phi_B, Phi_S = phi[1], phi[2]
 
@@ -121,7 +121,7 @@ State-dependent diagonal diffusion magnitudes.
 - Jacobi √(x(1-x)) ensures B,S remain in [0, 1].
 - CIR √x ensures F,A,K remain non-negative.
 """
-@inline function diffusion_v5(y::AbstractVector{Float32}, params)
+@inline function diffusion_v5(y::AbstractVector, params)
     B, S, F, A, KFB, KFS = y[1], y[2], y[3], y[4], y[5], y[6]
     return SVector{6, Float32}(
         _get(params, :sigma_B) * sqrt(max(B * (1.0f0 - B), 0.0f0)),
@@ -150,12 +150,12 @@ const _EPS_A = 1.0f-4
 Advances the 6D latent state by one bin step using the Euler-Maruyama scheme.
 Includes post-step clipping to ensure states remain within their physical domains.
 """
-function em_step_v5(y::AbstractVector{Float32},
-                     phi::Tuple{Float32, Float32},
+function em_step_v5(y::AbstractVector,
+                     phi::Tuple{<:Real, <:Real},
                      params,
-                     sigma_diag::AbstractVector{Float32},
-                     dt::Float32,
-                     noise::AbstractVector{Float32})
+                     sigma_diag::AbstractVector,
+                     dt::Real,
+                     noise::AbstractVector)
     d_y      = drift_v5(y, params, phi)
     sqrt_dt  = sqrt(dt)
 

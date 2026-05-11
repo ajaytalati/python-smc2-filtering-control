@@ -195,11 +195,12 @@ function run_one_stride_v5(acc, stride_idx::Int, ctx::NamedTuple)
     end
 
     # 5. Maybe replan (closed-loop only)
-    new_plan_B, new_plan_S, new_offset, n_temp_ctrl, ctrl_diag_rows =
+    new_plan_B, new_plan_S, new_offset, n_temp_ctrl, ctrl_diag_rows, cost_decomp =
         if should_run_replan(stride_idx, ctx.replan_K, ctx.is_open_loop,
                               new_filter_post !== nothing)
             t_plan = time()
-            params_post = posterior_mean_v5(new_filter_post)
+            params_post = posterior_mean_v5(new_filter_post;
+                                              frozen = ctx.frozen_params)
             ctrl_out = controller_plan_v5(params_post, new_xhat, ctx.H_plan_bins,
                                             max(1, ctx.bins_per_day ÷ 24), ctx.dt_days,
                                             ctx.ctrl_cfg,
@@ -210,11 +211,38 @@ function run_one_stride_v5(acc, stride_idx::Int, ctx::NamedTuple)
                            mean(ctrl_out.Phi_B_plan),
                            mean(ctrl_out.Phi_S_plan),
                            ctrl_out.n_temp_ctrl)
+            # Cost decomposition diagnostic — deterministic CPU re-evaluation
+            # of the per-component accumulators for the plan the controller
+            # just chose, on the same (init_state, params) it planned from.
+            # Used only for TB logging; not in the controller's SMC² loop.
+            decomp = eval_cost_decomp_v5(new_xhat, params_post,
+                                            ctrl_out.Phi_B_plan, ctrl_out.Phi_S_plan,
+                                            ctx.dt_days,
+                                            max(1, ctx.bins_per_day ÷ 24);
+                                            F_max        = 0.40,
+                                            A_thr        = ctx.ctrl_cfg.a_thr,
+                                            B_thr        = ctx.ctrl_cfg.b_thr,
+                                            S_thr        = ctx.ctrl_cfg.s_thr,
+                                            beta_chance  = 50.0,
+                                            scale_chance = 0.10,
+                                            beta_island  = ctx.ctrl_cfg.beta_island,
+                                            lam_Phi      = ctx.ctrl_cfg.lam_phi,
+                                            lam_A        = ctx.ctrl_cfg.lam_a,
+                                            lam_b        = ctx.ctrl_cfg.lam_b,
+                                            lam_s        = ctx.ctrl_cfg.lam_s,
+                                            lam_F        = ctx.ctrl_cfg.lam_f,
+                                            lam_chance   = ctx.ctrl_cfg.lam_chance,
+                                            lam_chance_B = ctx.ctrl_cfg.lam_chance_b,
+                                            lam_chance_S = ctx.ctrl_cfg.lam_chance_s,
+                                            lam_island   = ctx.ctrl_cfg.lam_island)
+            @info @sprintf("  [cost decomp] J=%.3f  -A=%.3f  +island=%.3f  (raw A=%.3f island=%.3f)",
+                           decomp.J_total, decomp.w_A_reward, decomp.w_island,
+                           decomp.A_acc, decomp.island_acc)
             (ctrl_out.Phi_B_plan, ctrl_out.Phi_S_plan, 0,
-              Int(ctrl_out.n_temp_ctrl), ctrl_out.diagnostics)
+              Int(ctrl_out.n_temp_ctrl), ctrl_out.diagnostics, decomp)
         else
             (acc.plan_phi_B, acc.plan_phi_S,
-              acc.plan_offset + ctx.stride_bins, 0, NamedTuple[])
+              acc.plan_offset + ctx.stride_bins, 0, NamedTuple[], nothing)
         end
 
     # Snapshot the latest filter posterior into the per-stride store.
@@ -248,7 +276,12 @@ function run_one_stride_v5(acc, stride_idx::Int, ctx::NamedTuple)
                           p.Phi_B, p.Phi_S,
                           log_row,
                           ctx.base_traj, ctx.stride_bins,
-                          ctx.init_phi_B, ctx.init_phi_S)
+                          ctx.init_phi_B, ctx.init_phi_S,
+                          ctx.full_params)
+        if cost_decomp !== nothing
+            log_cost_decomp_to_tb!(ctx.tb_logger, stride_idx,
+                                     cost_decomp, ctx.ctrl_cfg)
+        end
     end
 
     return (

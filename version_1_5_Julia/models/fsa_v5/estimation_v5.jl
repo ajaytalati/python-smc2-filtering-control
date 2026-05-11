@@ -19,9 +19,11 @@ using StableRNGs
 import ..DynamicsV5: em_step_v5
 import ..ObsV5:      hr_mean, sleep_prob, stress_mean,
                       steps_log_mean, volume_load_mean
-import ..SimulationV5: TRUTH_PARAMS_V5, DEFAULT_OBS_PARAMS_V5
+import ..SimulationV5: TRUTH_PARAMS_V5, TRUTH_PARAMS_V5_RECOMMENDED_V2,
+                        DEFAULT_OBS_PARAMS_V5
 
-export PARAM_NAMES_V5, PARAM_PRIOR_CONFIG_V5
+export PARAM_NAMES_V5, PARAM_PRIOR_CONFIG_V5, PARAM_PRIOR_CONFIG_V5_RECOMMENDED_V2
+export build_prior_config_v5, select_prior_config_v5
 export obs_log_weight_v5, propagate_v5
 
 
@@ -64,31 +66,81 @@ const PARAM_NAMES_V5 = [
 # v5 parameters are non-negative). σ = 0.30 matches v1.5's prior width
 # convention.
 
-# Helper: look up the truth value for a parameter (it lives in either
-# the dynamics dict or the obs-channel dict).
-function _truth_for(k::Symbol)
-    if haskey(TRUTH_PARAMS_V5, k)
-        return TRUTH_PARAMS_V5[k]
-    elseif haskey(DEFAULT_OBS_PARAMS_V5, k)
-        return DEFAULT_OBS_PARAMS_V5[k]
-    else
-        error("no truth value for parameter $k")
-    end
+const _PRIOR_SIGMA_DEFAULT::Float64 = 0.30
+
+"""
+    build_prior_config_v5(truth_dynamics::AbstractDict;
+                            sigma = $_PRIOR_SIGMA_DEFAULT)
+        -> Vector{Tuple{Symbol, Symbol, Float64, Float64}}
+
+Build a `(name, kind, μ, σ)` prior config vector centred on the supplied
+truth-side dynamics dict (merged with `DEFAULT_OBS_PARAMS_V5` for the 22
+observation-channel keys, which don't vary across truth presets).
+
+Used to derive `PARAM_PRIOR_CONFIG_V5` (canonical) and
+`PARAM_PRIOR_CONFIG_V5_RECOMMENDED_V2` (v2). The bench builds a local
+prior config from whichever truth dict `--truth-preset` selected, so the
+filter starts centred on the correct dynamics regime instead of always
+on canonical.
+
+The previous monolithic const took its means from `TRUTH_PARAMS_V5`
+directly — fine under `--truth-preset canonical` but silently wrong
+under `--truth-preset v2`, where the filter would cold-start at canonical
+priors regardless of what data it sees.
+"""
+function build_prior_config_v5(truth_dynamics::AbstractDict;
+                                  sigma::Real = _PRIOR_SIGMA_DEFAULT)
+    truth_for(k) = haskey(truth_dynamics, k) ? truth_dynamics[k] :
+                    haskey(DEFAULT_OBS_PARAMS_V5, k) ? DEFAULT_OBS_PARAMS_V5[k] :
+                    error("no truth value for parameter $k")
+    return [(k, :LogNormal, log(truth_for(k)), Float64(sigma))
+            for k in PARAM_NAMES_V5]
 end
 
 """
     PARAM_PRIOR_CONFIG_V5 :: Vector{Tuple{Symbol, Symbol, Float64, Float64}}
 
-`(name, kind, μ, σ)` per parameter. `kind ∈ (:LogNormal, :Normal)`.
-For v5 every parameter uses `:LogNormal` since they are all strictly
-positive in the tech guide's parametrisation. `μ` is `log(truth)`.
-
-Centred on truth so a cold-start filter is correctly biased; tunable
-later by widening σ if richer calibration data shifts the means.
+LogNormal prior config centred on **canonical** TRUTH_PARAMS_V5. Used
+by default and under `--truth-preset canonical`.
 """
-const PARAM_PRIOR_CONFIG_V5 = [
-    (k, :LogNormal, log(_truth_for(k)), 0.30) for k in PARAM_NAMES_V5
-]
+const PARAM_PRIOR_CONFIG_V5 = build_prior_config_v5(TRUTH_PARAMS_V5)
+
+"""
+    PARAM_PRIOR_CONFIG_V5_RECOMMENDED_V2
+
+LogNormal prior config centred on `TRUTH_PARAMS_V5_RECOMMENDED_V2` —
+the v2 re-parametrisation. Used by the bench under `--truth-preset v2`
+so the filter doesn't waste tempering levels migrating from a canonical-
+centred prior to a v2-truth posterior. Six of the 37 prior means differ
+from canonical (the 6 v2-overridden dynamics keys: tau_B, kappa_B,
+tau_S, kappa_S, mu_F, mu_FF); the other 31 are identical to
+PARAM_PRIOR_CONFIG_V5.
+"""
+const PARAM_PRIOR_CONFIG_V5_RECOMMENDED_V2 =
+    build_prior_config_v5(TRUTH_PARAMS_V5_RECOMMENDED_V2)
+
+"""
+    select_prior_config_v5(preset::AbstractString)
+        -> Vector{Tuple{Symbol, Symbol, Float64, Float64}}
+
+Dispatch helper, parallel to `SimulationV5.select_truth_preset`. Resolves
+the `--truth-preset` string into the matching prior config so the filter
+starts in the correct neighbourhood of dynamics-parameter space.
+
+The contract is: for the same `preset` string,
+`select_prior_config_v5(preset)` must use the SAME truth dict that
+`select_truth_preset(preset)` returns. The two are tested for
+consistency in `tests_v5/test_truth_preset_dispatch.jl`.
+"""
+function select_prior_config_v5(preset::AbstractString)
+    if preset == "canonical"
+        return PARAM_PRIOR_CONFIG_V5
+    elseif preset == "v2"
+        return PARAM_PRIOR_CONFIG_V5_RECOMMENDED_V2
+    else
+        error("--truth-preset must be \"canonical\" or \"v2\", got: \"$preset\"")
+    end
+end
 
 
 # ── Observation log-weight (5 channels with explicit gating) ──────────
@@ -122,7 +174,7 @@ function obs_log_weight_v5(particles::AbstractMatrix{<:Real},
                             obs::NamedTuple,
                             gates::NamedTuple,
                             C::Real,
-                            params::Dict{Symbol, Float64})
+                            params::AbstractDict)
     M = size(particles, 1)
     out = Vector{Float64}(undef, M)
 
@@ -198,30 +250,31 @@ mutate `particles`.
 deterministically as `hash((key, :prop, m))` so the same `(particles,
 phi, params, dt, key)` always returns the same result.
 """
-function propagate_v5(particles::AbstractMatrix{Float64},
+function propagate_v5(particles::AbstractMatrix,
                        phi::Tuple{<:Real, <:Real},
-                       params::Dict{Symbol, Float64},
-                       dt::Float64,
+                       params::AbstractDict,
+                       dt::Real,
                        key::UInt64)
     M = size(particles, 1)
-    out = Matrix{Float64}(undef, M, 6)
+    # Match particle type (likely Float32 if coming from GPU bench)
+    out = similar(particles, M, 6)
 
-    sigma_diag = SVector{6, Float64}(
-        params[:sigma_B], params[:sigma_S], params[:sigma_F],
-        params[:sigma_A], params[:sigma_K], params[:sigma_K],
+    sigma_diag = SVector{6, Float32}(
+        Float32(params[:sigma_B]), Float32(params[:sigma_S]), Float32(params[:sigma_F]),
+        Float32(params[:sigma_A]), Float32(params[:sigma_K]), Float32(params[:sigma_K]),
     )
 
     @inbounds for m in 1:M
         rng_m = StableRNG(hash((key, :prop, m)))
-        y_m   = SVector{6, Float64}(
-            particles[m, 1], particles[m, 2], particles[m, 3],
-            particles[m, 4], particles[m, 5], particles[m, 6],
+        y_m   = SVector{6, Float32}(
+            Float32(particles[m, 1]), Float32(particles[m, 2]), Float32(particles[m, 3]),
+            Float32(particles[m, 4]), Float32(particles[m, 5]), Float32(particles[m, 6]),
         )
-        ξ = SVector{6, Float64}(
-            randn(rng_m), randn(rng_m), randn(rng_m),
-            randn(rng_m), randn(rng_m), randn(rng_m),
+        ξ = SVector{6, Float32}(
+            randn(rng_m, Float32), randn(rng_m, Float32), randn(rng_m, Float32),
+            randn(rng_m, Float32), randn(rng_m, Float32), randn(rng_m, Float32),
         )
-        y_next = em_step_v5(y_m, phi, params, sigma_diag, dt, ξ)
+        y_next = em_step_v5(y_m, (Float32(phi[1]), Float32(phi[2])), params, sigma_diag, Float32(dt), ξ)
         out[m, 1], out[m, 2], out[m, 3] = y_next[1], y_next[2], y_next[3]
         out[m, 4], out[m, 5], out[m, 6] = y_next[4], y_next[5], y_next[6]
     end

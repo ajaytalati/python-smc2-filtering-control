@@ -106,6 +106,11 @@ def F_TYP : Float := 0.20
 /-- Typical stimulus rate (dimensionless). -/
 def PHI_TYP : Float := 1.0
 
+/-- Standard logistic sigmoid `σ(x) = 1 / (1 + e^{-x})`. Mirrors
+    `jax.nn.sigmoid`. -/
+@[inline] def sigmoid (x : Float) : Float :=
+  1.0 / (1.0 + Float.exp (-x))
+
 /-! ## Canonical truth-parameter sets
 
 Maps to `_dynamics.py:96-170`. `TRUTH_PARAMS` defaults to v4-recovering

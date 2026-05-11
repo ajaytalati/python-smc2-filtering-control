@@ -11,19 +11,20 @@
 #   - Boundary handling: clamp B,S; floor F,A,K (per tech guide §6.4)
 #   - Cost is the SOFT relaxation of the chance-constrained form (tech
 #     guide §5.3 + §5.5):
-#       J_soft(θ) = λ_Φ · ∫ (Φ_B² + Φ_S²) dt        // effort
-#                 - ∫ A dt - ∫ B dt - ∫ S dt         // rewards
-#                 + λ_F · ∫ max(F − F_max, 0)² dt   // soft fatigue penalty - not used
-#                 + λ_chance · ∫ σ(β·(A_thr − A)/scale) dt  // soft chance surrogate
-#     The soft chance surrogate uses a CONSTANT A_thr (default 0.05)
-#     rather than the per-bin A_sep(Φ_t) from `find_a_sep` (implemented
-#     in `cost_v5.jl`). The latter requires a 64-grid + 40-bisection
-#     root-find per (chain, bin) and is deferred — wiring it up needs a
-#     CPU-side precompute step or a separate GPU prep kernel. The
-#     constant-threshold form gives the same QUALITATIVE behaviour
-#     (penalise trajectories that approach low A) and is sufficient for
-#     closed-loop optimisation provided A_thr is set well below the
-#     healthy attractor.
+#       J_soft(θ) = λ_Φ · ∫ (Φ_B² + Φ_S²) dt              // effort
+#                 - ∫ A dt - ∫ B dt - ∫ S dt              // rewards
+#
+#
+#     Thresholds X_thr are CONSTANTS (defaults A_thr=0.05, B_thr=0.20,
+#     S_thr=0.20 in the constructor; CLI defaults A_thr=0.3, B_thr=0.2,
+#     S_thr=0.2 in `bench_args.jl`) rather than per-bin separators
+#     A_sep(Φ_t) from `find_a_sep` (implemented in `cost_v5.jl`). The
+#     latter requires a 64-grid + 40-bisection root-find per (chain,
+#     bin) and is deferred — wiring it up needs a CPU-side precompute
+#     step or a separate GPU prep kernel. The constant-threshold form
+#     gives the same QUALITATIVE behaviour (penalise trajectories that
+#     approach low X) and is sufficient for closed-loop optimisation
+#     provided thresholds are set well below the healthy attractor.
 #
 # HARD chance-constraint variant (with the indicator and per-bin A_sep)
 # is deliberately not implemented — per project decision the SOFT
@@ -43,6 +44,7 @@ import ..SimulationV5: TRUTH_PARAMS_V5, FROZEN_PARAMS_V5,
 export FSAv5ControlGPUTarget, gpu_cost_log_density_batched_v5
 export make_log_density_fn_v5, build_rbf_design_v5
 export gpu_cost_one!     # single-thread debug entry for the diff test
+export eval_cost_decomp_v5
 
 
 # ── RBF design matrix helper ──────────────────────────────────────────
@@ -92,9 +94,13 @@ end
     # Schedule decoder bias + envelope
     c_Phi::Float32, Phi_max::Float32,
     # Cost-shaping coefficients
-    lam_Phi::Float32, F_max::Float32, lam_F::Float32,
+    lam_Phi::Float32, lam_a::Float32, lam_b::Float32, lam_s::Float32,
+    F_max::Float32, lam_F::Float32,
     A_thr::Float32, lam_chance::Float32,
+    B_thr::Float32, lam_chance_B::Float32,
+    S_thr::Float32, lam_chance_S::Float32,
     beta_chance::Float32, scale_chance::Float32,
+    lam_island::Float32, beta_island::Float32,
     # Time-step
     dt::Float32, n_substeps::Int,
     n_steps::Int, n_anchors::Int,
@@ -125,6 +131,9 @@ end
         S_acc       = 0f0
         barrier_acc = 0f0
         chance_acc  = 0f0
+        chance_B_acc = 0f0
+        chance_S_acc = 0f0
+        island_acc  = 0f0       # ∫ (1/β)·softplus(-β·μ̄(0;Φ_t)) dt
 
         @inbounds for k in 1:n_steps
             # ── Decode Φ(t) from RBF coefs (theta has 2·n_anchors entries) ─
@@ -144,8 +153,55 @@ end
             B_acc       += B * dt
             S_acc       += S * dt
             barrier_acc += max(F - F_max, 0f0) * max(F - F_max, 0f0) * dt
-            soft_v       = 1f0 / (1f0 + exp(-beta_chance * (A_thr - A) / scale_chance))
-            chance_acc  += soft_v * dt
+            
+            # Soft chance surrogate: σ(β·(thr-X)/scale) · (thr-X)² —
+            # smooth gate × quadratic depth, so the penalty grows the
+            # further X drops below the threshold (the bounded sigmoid
+            # form saturated at 1 deep below thr and gave no extra
+            # pressure). Same shape applied to A, B, S.
+            d_A          = A_thr - A
+            soft_A       = 1f0 / (1f0 + exp(-beta_chance * d_A / scale_chance))
+            chance_acc  += soft_A * d_A * d_A * dt
+
+            d_B          = B_thr - B
+            soft_B       = 1f0 / (1f0 + exp(-beta_chance * d_B / scale_chance))
+            chance_B_acc += soft_B * d_B * d_B * dt
+
+            d_S          = S_thr - S
+            soft_S       = 1f0 / (1f0 + exp(-beta_chance * d_S / scale_chance))
+            chance_S_acc += soft_S * d_S * d_S * dt
+
+            # ── Healthy-island gradient surrogate ─────────────────────────
+            # Smooth pull toward μ̄(A_t; Φ_t) > 0. The activation factors
+            # a_B, a_S, a_F are evaluated at the CURRENT A_t (not A=0),
+            # so the bifurcation parameter tracks the actual trajectory's
+            # regime as A evolves — at low A the signal matches μ̄(0;Φ)
+            # closely; at higher A the favorable activation factors give
+            # the controller a "things are working, less pressure" cue.
+            #   integrand = (1/β)·softplus(β·(-μ̄))  →  max(0, -μ̄)
+            # Smooth (C^∞) — no regime-boundary discontinuity like A_sep.
+            a_B_t = (1f0 + p_epsilon_AB * A) / (1f0 + p_epsilon_AB * A_TYP_f32)
+            a_S_t = (1f0 + p_epsilon_AS * A) / (1f0 + p_epsilon_AS * A_TYP_f32)
+            a_F_t = (1f0 + p_lambda_A  * A) / (1f0 + p_lambda_A  * A_TYP_f32)
+            B_isl = p_tau_B * p_kappa_B * a_B_t * Phi_B
+            S_isl = p_tau_S * p_kappa_S * a_S_t * Phi_S
+            KFB_isl = p_KFB_0 + p_tau_K * p_mu_K * Phi_B
+            KFS_isl = p_KFS_0 + p_tau_K * p_mu_K * Phi_S
+            F_isl   = p_tau_F * (KFB_isl * Phi_B + KFS_isl * Phi_S) / a_F_t
+            F_dev_isl = F_isl - F_TYP_f32
+            Bn_isl = max(B_isl, 0f0); Bn_isl = Bn_isl * Bn_isl * Bn_isl * Bn_isl
+            Sn_isl = max(S_isl, 0f0); Sn_isl = Sn_isl * Sn_isl * Sn_isl * Sn_isl
+            Bdn_isl = p_B_dec * p_B_dec * p_B_dec * p_B_dec
+            Sdn_isl = p_S_dec * p_S_dec * p_S_dec * p_S_dec
+            dec_B_isl = p_mu_dec_B * Bdn_isl / (Bn_isl + Bdn_isl)
+            dec_S_isl = p_mu_dec_S * Sdn_isl / (Sn_isl + Sdn_isl)
+            mu_bar_isl = p_mu_0 +
+                          p_mu_B * B_isl + p_mu_S * S_isl -
+                          p_mu_F * F_isl - p_mu_FF * F_dev_isl * F_dev_isl -
+                          dec_B_isl - dec_S_isl
+            arg_isl = beta_island * (-mu_bar_isl)
+            sp_isl  = max(arg_isl, 0f0) + log(1f0 + exp(-abs(arg_isl)))
+            island_acc += (sp_isl / beta_island) * dt
 
             # ── Substepped EM (v5 drift, n_substeps drift sub-steps then ONE Wiener) ─
             for sub in 1:n_substeps
@@ -216,10 +272,197 @@ end
             KFS = max(0f0, KFS)
         end
 
-        cost_per_thread[i] = lam_Phi * effort_acc - A_acc - B_acc - S_acc +
+        cost_per_thread[i] = lam_Phi * effort_acc -
+                              lam_a * A_acc - lam_b * B_acc - lam_s * S_acc +
                               lam_F * barrier_acc +
-                              lam_chance * chance_acc
+                              lam_chance * chance_acc +
+                              lam_chance_B * chance_B_acc +
+                              lam_chance_S * chance_S_acc +
+                              lam_island * island_acc
     end
+end
+
+
+# ── CPU cost decomposition (diagnostics; mirrors the kernel above) ────
+#
+# Rolls the deterministic v5 ODE (no noise) forward over a fixed bimodal
+# Φ schedule, using the supplied params dict, and returns the 9 per-bin
+# accumulators that the per-thread kernel computes — but in fp64 on the
+# CPU, with no Wiener increments. Intended for TensorBoard logging at
+# each replan, so the user can watch which terms dominate the controller's
+# decision over time. NOT used inside the controller's SMC² loop.
+#
+# The integrator and accumulator math mirror `fsa_v5_cost_kernel!`
+# (lines 130-289) exactly; the only intentional differences are
+#   - fp64 (not fp32) so logs are stable for tracking,
+#   - no stochastic diffusion increment (deterministic ODE).
+#
+# Returns a NamedTuple with the unweighted integrals (effort, A, B, S,
+# barrier, chance, chance_B, chance_S, island), plus the weighted
+# components and the total cost J.
+function eval_cost_decomp_v5(init_state::AbstractVector,
+                              params::AbstractDict,
+                              Phi_B_plan::AbstractVector,
+                              Phi_S_plan::AbstractVector,
+                              dt::Real, n_substeps::Integer;
+                              F_max::Real = 0.40,
+                              A_thr::Real, B_thr::Real, S_thr::Real,
+                              beta_chance::Real = 50.0,
+                              scale_chance::Real = 0.10,
+                              beta_island::Real = 50.0,
+                              lam_Phi::Real, lam_A::Real, lam_b::Real, lam_s::Real,
+                              lam_F::Real,
+                              lam_chance::Real, lam_chance_B::Real,
+                              lam_chance_S::Real,
+                              lam_island::Real)
+
+    p = params  # local alias
+    A_TYP_f64 = Float64(A_TYP)
+    F_TYP_f64 = Float64(F_TYP)
+
+    p_tau_B      = Float64(p[:tau_B]);      p_kappa_B    = Float64(p[:kappa_B])
+    p_epsilon_AB = Float64(p[:epsilon_AB])
+    p_tau_S      = Float64(p[:tau_S]);      p_kappa_S    = Float64(p[:kappa_S])
+    p_epsilon_AS = Float64(p[:epsilon_AS])
+    p_tau_F      = Float64(p[:tau_F]);      p_lambda_A   = Float64(p[:lambda_A])
+    p_KFB_0      = Float64(p[:KFB_0]);      p_KFS_0      = Float64(p[:KFS_0])
+    p_tau_K      = Float64(p[:tau_K]);      p_mu_K       = Float64(p[:mu_K])
+    p_mu_0       = Float64(p[:mu_0])
+    p_mu_B       = Float64(p[:mu_B]);       p_mu_S       = Float64(p[:mu_S])
+    p_mu_F       = Float64(p[:mu_F]);       p_mu_FF      = Float64(p[:mu_FF])
+    p_eta        = Float64(p[:eta])
+    p_B_dec      = Float64(p[:B_dec]);      p_S_dec      = Float64(p[:S_dec])
+    p_mu_dec_B   = Float64(p[:mu_dec_B]);   p_mu_dec_S   = Float64(p[:mu_dec_S])
+
+    n_steps  = length(Phi_B_plan)
+    @assert length(Phi_S_plan) == n_steps "Phi_B/Phi_S plan length mismatch"
+    sub_dt   = Float64(dt) / Float64(n_substeps)
+    eps_B    = 1e-4
+    eps_S    = 1e-4
+
+    B   = Float64(init_state[1]);  S   = Float64(init_state[2])
+    F   = Float64(init_state[3]);  A   = Float64(init_state[4])
+    KFB = Float64(init_state[5]);  KFS = Float64(init_state[6])
+
+    effort_acc   = 0.0
+    A_acc        = 0.0
+    B_acc        = 0.0
+    S_acc        = 0.0
+    barrier_acc  = 0.0
+    chance_acc   = 0.0
+    chance_B_acc = 0.0
+    chance_S_acc = 0.0
+    island_acc   = 0.0
+
+    @inbounds for k in 1:n_steps
+        Phi_B = Float64(Phi_B_plan[k])
+        Phi_S = Float64(Phi_S_plan[k])
+
+        # PRE-step accumulators on the state BEFORE em_step (matches kernel).
+        effort_acc  += (Phi_B * Phi_B + Phi_S * Phi_S) * dt
+        A_acc       += A * dt
+        B_acc       += B * dt
+        S_acc       += S * dt
+        barrier_acc += max(F - F_max, 0.0)^2 * dt
+
+        d_A = A_thr - A
+        chance_acc   += (1.0 / (1.0 + exp(-beta_chance * d_A / scale_chance))) * d_A * d_A * dt
+        d_B = B_thr - B
+        chance_B_acc += (1.0 / (1.0 + exp(-beta_chance * d_B / scale_chance))) * d_B * d_B * dt
+        d_S = S_thr - S
+        chance_S_acc += (1.0 / (1.0 + exp(-beta_chance * d_S / scale_chance))) * d_S * d_S * dt
+
+        # Healthy-island gradient surrogate (mirrors lines 179-209 of kernel).
+        a_B_t = (1.0 + p_epsilon_AB * A) / (1.0 + p_epsilon_AB * A_TYP_f64)
+        a_S_t = (1.0 + p_epsilon_AS * A) / (1.0 + p_epsilon_AS * A_TYP_f64)
+        a_F_t = (1.0 + p_lambda_A  * A) / (1.0 + p_lambda_A  * A_TYP_f64)
+        B_isl = p_tau_B * p_kappa_B * a_B_t * Phi_B
+        S_isl = p_tau_S * p_kappa_S * a_S_t * Phi_S
+        KFB_isl = p_KFB_0 + p_tau_K * p_mu_K * Phi_B
+        KFS_isl = p_KFS_0 + p_tau_K * p_mu_K * Phi_S
+        F_isl   = p_tau_F * (KFB_isl * Phi_B + KFS_isl * Phi_S) / a_F_t
+        F_dev_isl = F_isl - F_TYP_f64
+        Bn_isl = max(B_isl, 0.0)^4
+        Sn_isl = max(S_isl, 0.0)^4
+        Bdn_isl = p_B_dec^4
+        Sdn_isl = p_S_dec^4
+        dec_B_isl = p_mu_dec_B * Bdn_isl / (Bn_isl + Bdn_isl)
+        dec_S_isl = p_mu_dec_S * Sdn_isl / (Sn_isl + Sdn_isl)
+        mu_bar_isl = p_mu_0 +
+                     p_mu_B * B_isl + p_mu_S * S_isl -
+                     p_mu_F * F_isl - p_mu_FF * F_dev_isl * F_dev_isl -
+                     dec_B_isl - dec_S_isl
+        arg_isl = beta_island * (-mu_bar_isl)
+        sp_isl  = max(arg_isl, 0.0) + log1p(exp(-abs(arg_isl)))
+        island_acc += (sp_isl / beta_island) * dt
+
+        # Deterministic EM (substepped drift; NO Wiener increment).
+        for _ in 1:n_substeps
+            F_dev = F - F_TYP_f64
+            Bn = max(B, 0.0)^4
+            Sn = max(S, 0.0)^4
+            dec_B = p_mu_dec_B * p_B_dec^4 / (Bn + p_B_dec^4)
+            dec_S = p_mu_dec_S * p_S_dec^4 / (Sn + p_S_dec^4)
+            mu_bif = p_mu_0 +
+                     p_mu_B * B + p_mu_S * S -
+                     p_mu_F * F - p_mu_FF * F_dev * F_dev -
+                     dec_B - dec_S
+            a_factor_B = (1.0 + p_epsilon_AB * A) / (1.0 + p_epsilon_AB * A_TYP_f64)
+            a_factor_S = (1.0 + p_epsilon_AS * A) / (1.0 + p_epsilon_AS * A_TYP_f64)
+            a_factor_F = (1.0 + p_lambda_A  * A) / (1.0 + p_lambda_A  * A_TYP_f64)
+            drift_B   = p_kappa_B * a_factor_B * Phi_B - B / p_tau_B
+            drift_S   = p_kappa_S * a_factor_S * Phi_S - S / p_tau_S
+            drift_F   = KFB * Phi_B + KFS * Phi_S - a_factor_F / p_tau_F * F
+            drift_A   = mu_bif * A - p_eta * A * A * A
+            drift_KFB = (p_KFB_0 - KFB) / p_tau_K + p_mu_K * Phi_B
+            drift_KFS = (p_KFS_0 - KFS) / p_tau_K + p_mu_K * Phi_S
+            B   += sub_dt * drift_B
+            S   += sub_dt * drift_S
+            F   += sub_dt * drift_F
+            A   += sub_dt * drift_A
+            KFB += sub_dt * drift_KFB
+            KFS += sub_dt * drift_KFS
+        end
+
+        # Boundary handling (match kernel; deterministic — no diffusion).
+        B   = clamp(B,   eps_B,  1.0 - eps_B)
+        S   = clamp(S,   eps_S,  1.0 - eps_S)
+        F   = max(F,   0.0)
+        A   = max(A,   0.0)
+        KFB = max(KFB, 0.0)
+        KFS = max(KFS, 0.0)
+    end
+
+    # Weighted components — sign-matched to the kernel's cost line.
+    w_effort     =   lam_Phi      * effort_acc
+    w_A_reward   = - lam_A        * A_acc
+    w_B_reward   = - lam_b        * B_acc
+    w_S_reward   = - lam_s        * S_acc
+    w_barrier    =   lam_F        * barrier_acc
+    w_chance     =   lam_chance   * chance_acc
+    w_chance_B   =   lam_chance_B * chance_B_acc
+    w_chance_S   =   lam_chance_S * chance_S_acc
+    w_island     =   lam_island   * island_acc
+    J_total      = w_effort + w_A_reward + w_B_reward + w_S_reward +
+                   w_barrier + w_chance + w_chance_B + w_chance_S + w_island
+
+    return (
+        # Unweighted integrals (the raw ∫ X dt accumulators)
+        effort_acc = effort_acc, A_acc = A_acc, B_acc = B_acc, S_acc = S_acc,
+        barrier_acc = barrier_acc, chance_acc = chance_acc,
+        chance_B_acc = chance_B_acc, chance_S_acc = chance_S_acc,
+        island_acc = island_acc,
+        # Weighted contributions to J (with the kernel's sign convention)
+        w_effort = w_effort, w_A_reward = w_A_reward,
+        w_B_reward = w_B_reward, w_S_reward = w_S_reward,
+        w_barrier = w_barrier, w_chance = w_chance,
+        w_chance_B = w_chance_B, w_chance_S = w_chance_S,
+        w_island = w_island,
+        # Total cost
+        J_total = J_total,
+        # Terminal state after the deterministic rollout
+        terminal_state = (B = B, S = S, F = F, A = A, KFB = KFB, KFS = KFS),
+    )
 end
 
 
@@ -237,11 +480,20 @@ mutable struct FSAv5ControlGPUTarget
     Phi_default::Float32
     c_Phi::Float32
     lam_Phi::Float32
+    lam_a::Float32
+    lam_b::Float32
+    lam_s::Float32
     lam_F::Float32
     lam_chance::Float32
     A_thr::Float32
+    B_thr::Float32
+    lam_chance_B::Float32
+    S_thr::Float32
+    lam_chance_S::Float32
     beta_chance::Float32
     scale_chance::Float32
+    lam_island::Float32
+    beta_island::Float32
     sigma_prior::Float64
     # Estimated dynamics (15)
     p_tau_B::Float32; p_kappa_B::Float32; p_epsilon_AB::Float32
@@ -274,11 +526,20 @@ function FSAv5ControlGPUTarget(; n_inner::Int, M_max::Int,
                                   Phi_max::Real = 3.0,
                                   Phi_default::Real = 1.0,
                                   lam_Phi::Real = 0.0,
+                                  lam_a::Real = 1.0,
+                                  lam_b::Real = 0.0,
+                                  lam_s::Real = 0.0,
                                   lam_F::Real = 1.0,
                                   lam_chance::Real = 0.0,
                                   A_thr::Real = 0.05,
+                                  B_thr::Real = 0.20,
+                                  lam_chance_B::Real = 0.0,
+                                  S_thr::Real = 0.20,
+                                  lam_chance_S::Real = 0.0,
                                   beta_chance::Real = 50.0,
                                   scale_chance::Real = 0.10,
+                                  lam_island::Real = 0.0,
+                                  beta_island::Real = 50.0,
                                   sigma_prior::Real = 1.5,
                                   params::AbstractDict = TRUTH_PARAMS_V5,
                                   init_state::AbstractVector = collect(values((
@@ -301,9 +562,13 @@ function FSAv5ControlGPUTarget(; n_inner::Int, M_max::Int,
         Float32(dt),
         Float32(F_max), Float32(Phi_max), Float32(Phi_default),
         Float32(c_Phi),
-        Float32(lam_Phi), Float32(lam_F),
+        Float32(lam_Phi), Float32(lam_a), Float32(lam_b), Float32(lam_s),
+        Float32(lam_F),
         Float32(lam_chance),
-        Float32(A_thr), Float32(beta_chance), Float32(scale_chance),
+        Float32(A_thr), Float32(B_thr), Float32(lam_chance_B),
+        Float32(S_thr), Float32(lam_chance_S),
+        Float32(beta_chance), Float32(scale_chance),
+        Float32(lam_island), Float32(beta_island),
         Float64(sigma_prior),
         # Estimated dynamics
         Float32(params[:tau_B]), Float32(params[:kappa_B]),
@@ -375,9 +640,13 @@ function gpu_cost_log_density_batched_v5(target::FSAv5ControlGPUTarget,
         # Noise + cost shaping + time
         target.fixed_w,
         target.c_Phi, target.Phi_max,
-        target.lam_Phi, target.F_max, target.lam_F,
+        target.lam_Phi, target.lam_a, target.lam_b, target.lam_s,
+        target.F_max, target.lam_F,
         target.A_thr, target.lam_chance,
+        target.B_thr, target.lam_chance_B,
+        target.S_thr, target.lam_chance_S,
         target.beta_chance, target.scale_chance,
+        target.lam_island, target.beta_island,
         target.dt, target.n_substeps,
         target.n_steps, target.n_anchors,
         M, target.n_inner;
@@ -461,9 +730,13 @@ function gpu_cost_one!(target::FSAv5ControlGPUTarget,
         target.A_TYP_f32, target.F_TYP_f32,
         fixed_w_one,
         target.c_Phi, target.Phi_max,
-        target.lam_Phi, target.F_max, target.lam_F,
+        target.lam_Phi, target.lam_a, target.lam_b, target.lam_s,
+        target.F_max, target.lam_F,
         target.A_thr, target.lam_chance,
+        target.B_thr, target.lam_chance_B,
+        target.S_thr, target.lam_chance_S,
         target.beta_chance, target.scale_chance,
+        target.lam_island, target.beta_island,
         target.dt, target.n_substeps,
         target.n_steps, target.n_anchors,
         1, 1;

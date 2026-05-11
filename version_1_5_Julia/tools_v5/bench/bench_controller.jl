@@ -25,20 +25,6 @@ Implementation Note: The solver leverages `Float32` precision and a strictly
 stateless, pure functional architecture to ensure compatibility with GPU-accelerated 
 SMC² kernels.
 """
-module BenchController
-
-using Statistics
-using StableRNGs
-using StaticArrays
-using CUDA
-
-# Re-import dynamics and kernel definitions
-import ..SimulationV5: A_TYP, F_TYP
-import ..GPUControlV5: FSAv5ControlGPUTarget, make_log_density_fn_v5
-import SMC2FC_functional: run_tempered_smc_gpu
-
-export controller_plan_v5
-
 
 # =============================================================================
 # 1. OPTIMAL CONTROL SOLVER (SMC²)
@@ -66,11 +52,11 @@ Executes a tempered SMC² optimization to find the optimal training plan.
 - `n_temp_ctrl::Int`: Number of tempering levels used.
 - `diagnostics`: HMC diagnostic traces (if requested).
 """
-function controller_plan_v5(params_v5::Dict{Symbol, Float32},
-                              init_state::SVector{6, Float32},
+function controller_plan_v5(params_v5::AbstractDict,
+                              init_state::AbstractVector,
                               T_total_bins::Int,
                               n_substeps::Int,
-                              dt::Float32,
+                              dt::Real,
                               ctrl_cfg::NamedTuple,
                               key::UInt64;
                               collect_diagnostics::Bool = false)
@@ -78,6 +64,9 @@ function controller_plan_v5(params_v5::Dict{Symbol, Float32},
     # ── Solver Configuration ──
     n_anchors::Int = ctrl_cfg.n_anchors
     theta_dim::Int = 2 * n_anchors  # Bimodal schedule: [B_anchors..., S_anchors...]
+    
+    # Ensure Float32 internally for the GPU Target
+    params_f32 = Dict{Symbol, Float32}(k => Float32(v) for (k, v) in params_v5)
 
     # Initialize GPU target with current posterior parameters
     ctrl_target = FSAv5ControlGPUTarget(
@@ -86,19 +75,29 @@ function controller_plan_v5(params_v5::Dict{Symbol, Float32},
         n_steps    = T_total_bins,
         n_anchors  = n_anchors,
         n_substeps = n_substeps,
-        dt         = dt,
+        dt         = Float32(dt),
         F_max      = 0.40f0,
         Phi_max    = 3.0f0,
         Phi_default = ctrl_cfg.phi_default,
         lam_Phi    = ctrl_cfg.lam_phi,
+        lam_a      = ctrl_cfg.lam_a,
+        lam_b      = ctrl_cfg.lam_b,
+        lam_s      = ctrl_cfg.lam_s,
         lam_F      = ctrl_cfg.lam_f,
         lam_chance = ctrl_cfg.lam_chance,
-        A_thr      = 0.05f0,
+        A_thr      = Float32(ctrl_cfg.a_thr),
+        lam_chance_B = ctrl_cfg.lam_chance_b,
+        B_thr      = Float32(ctrl_cfg.b_thr),
+        lam_chance_S = ctrl_cfg.lam_chance_s,
+        S_thr      = Float32(ctrl_cfg.s_thr),
         beta_chance = 50.0f0,
         scale_chance = 0.10f0,
+        lam_island   = ctrl_cfg.lam_island,
+        beta_island  = ctrl_cfg.beta_island,
         sigma_prior = ctrl_cfg.sigma_prior,
-        params     = params_v5,
-        init_state = Vector{Float32}(init_state),
+        params     = params_f32,
+        init_state = Float32[init_state[1], init_state[2], init_state[3], 
+                             init_state[4], init_state[5], init_state[6]],
         noise_seed = Int(key & typemax(Int32)),
     )
 
@@ -165,10 +164,11 @@ Pure functional decoder: transforms RBF coefficients into time-resolved
 training intensities. Uses Float32 for bit-equivalence with the GPU kernel.
 """
 function _decode_phi_plans(theta::Vector{Float32}, n_anchors::Int, 
-                            n_steps::Int, dt::Float32, c_Phi::Float32)
+                            n_steps::Int, dt::Real, c_Phi::Float32)
     
-    T_total::Float32 = n_steps * dt
-    t_grid::Vector{Float32}  = collect(0:(n_steps-1)) .* dt
+    dt_f32 = Float32(dt)
+    T_total::Float32 = n_steps * dt_f32
+    t_grid::Vector{Float32}  = collect(0:(n_steps-1)) .* dt_f32
     anchors::Vector{Float32} = collect(range(0.0f0, T_total; length = n_anchors))
     σ_rbf::Float32   = T_total / n_anchors
     
@@ -195,5 +195,3 @@ function _decode_phi_plans(theta::Vector{Float32}, n_anchors::Int,
     
     return (Phi_B = phi_B, Phi_S = phi_S)
 end
-
-end # module BenchController

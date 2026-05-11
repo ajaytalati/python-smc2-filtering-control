@@ -29,7 +29,7 @@ using StaticArrays
 
 import ..SimulationV5: A_TYP, F_TYP
 
-export mu_bar, find_a_sep, a_sep_grid
+export mu_bar, mu_bar_state, find_a_sep, a_sep_grid
 
 
 # ── Algorithm constants — mirror Fsa/V5/Cost.lean ──────────────────────
@@ -78,6 +78,43 @@ function mu_bar(A::Real,
     Sn  = max(S, 0.0)^n
     Bdn = _get(params, :B_dec)^n
     Sdn = _get(params, :S_dec)^n
+    dec_B = _get(params, :mu_dec_B) * Bdn / (Bn + Bdn)
+    dec_S = _get(params, :mu_dec_S) * Sdn / (Sn + Sdn)
+    return _get(params, :mu_0) +
+            _get(params, :mu_B) * B +
+            _get(params, :mu_S) * S -
+            _get(params, :mu_F) * F -
+            _get(params, :mu_FF) * F_dev * F_dev -
+            dec_B - dec_S
+end
+
+
+# ── State-level bifurcation parameter μ̄(B, S, F; params) ───────────────
+
+"""
+    mu_bar_state(B, S, F, params) -> Float64
+
+Direct evaluation of the v5 bifurcation parameter μ̄ at the supplied state
+`(B, S, F)`, with NO substitution onto the slow manifold. Mirrors
+controllability_v2_proofs.pdf Eq. (6):
+
+    μ̄(B, S, F) = μ_0 + μ_B B + μ_S S − μ_F F − μ_FF (F − F_TYP)²
+                  − μ_{B−} h_n(B; B_dec) − μ_{S−} h_n(S; S_dec)
+
+Used as a diagnostic ("is the controller steering the plant into μ̄ > 0?")
+logged per stride to TensorBoard by `log_stride_to_tb!`. The cousin
+`mu_bar(A, phi, params)` above is the SLOW-MANIFOLD version (substitutes
+B*(A; Φ), S*(A; Φ), F*(A; Φ)); use whichever matches what you want to ask
+about — `mu_bar_state` for "is the current state healthy?",
+`mu_bar` for "would this Φ produce a healthy equilibrium?".
+"""
+function mu_bar_state(B::Real, S::Real, F::Real, params)
+    F_dev = F - F_TYP
+    n     = _get(params, :n_dec)
+    Bn    = max(B, 0.0)^n
+    Sn    = max(S, 0.0)^n
+    Bdn   = _get(params, :B_dec)^n
+    Sdn   = _get(params, :S_dec)^n
     dec_B = _get(params, :mu_dec_B) * Bdn / (Bn + Bdn)
     dec_S = _get(params, :mu_dec_S) * Sdn / (Sn + Sdn)
     return _get(params, :mu_0) +

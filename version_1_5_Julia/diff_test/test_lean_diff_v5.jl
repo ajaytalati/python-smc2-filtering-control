@@ -65,12 +65,12 @@ end
 # Order doesn't matter for objects (Lean parses by key) but we use
 # the canonical key lists from SimulationV5 for readability.
 
-function _params_payload(p::Dict{Symbol, Float64})
-    Dict{String, Float64}(String(k) => p[k] for k in PARAM_KEYS_V5)
+function _params_payload(p::Dict{Symbol, <:Real})
+    Dict{String, Float64}(String(k) => Float64(p[k]) for k in PARAM_KEYS_V5)
 end
 
-function _obs_params_payload(op::Dict{Symbol, Float64})
-    Dict{String, Float64}(String(k) => op[k] for k in OBS_PARAM_KEYS_V5)
+function _obs_params_payload(op::Dict{Symbol, <:Real})
+    Dict{String, Float64}(String(k) => Float64(op[k]) for k in OBS_PARAM_KEYS_V5)
 end
 
 function _state_payload(y::AbstractVector)
@@ -124,6 +124,31 @@ end
                 x = 4.0 * randn(rng)
                 resp = round_trip(client, Dict("fn" => "sigmoid", "x" => x))
                 @test isapprox(sigmoid(x), Float64(resp.x); atol = SINGLE_STEP_TOL)
+            end
+        end
+
+        # ── softChancePenalty ─────────────────────────────────────────
+        @testset "softChancePenalty" begin
+            for trial in 1:5
+                val   = 2.0 * rand(rng)
+                thr   = 0.5 + rand(rng)
+                beta  = 50.0
+                scale = 0.1
+                req = Dict("fn"    => "softChancePenalty",
+                            "val"   => val,
+                            "thr"   => thr,
+                            "beta"  => beta,
+                            "scale" => scale)
+                resp = round_trip(client, req)
+                # Julia version from gpu_control_v5.jl:
+                # soft_X · (X_thr - X)²  where
+                #   soft_X = 1f0 / (1f0 + exp(-beta * (thr - val) / scale))
+                # (was the bare sigmoid; multiplied by (thr-val)² so the
+                # penalty grows with violation depth — matches Lean
+                # Cost.lean::softChancePenalty.)
+                d  = thr - val
+                jl = (1.0 / (1.0 + exp(-beta * d / scale))) * d * d
+                @test isapprox(jl, Float64(resp.x); atol = SINGLE_STEP_TOL)
             end
         end
 
@@ -571,7 +596,10 @@ end
                 F_max = 0.40, Phi_max = 3.0, Phi_default = 1.0,
                 lam_Phi = 0.0, lam_F = 1.0,
                 lam_chance = 0.0,        # disable chance term for the parity test
-                A_thr = 0.05, beta_chance = 50.0, scale_chance = 0.10,
+                A_thr = 0.05, 
+                B_thr = 0.20, lam_chance_B = 0.0,
+                S_thr = 0.20, lam_chance_S = 0.0,
+                beta_chance = 50.0, scale_chance = 0.10,
                 params = TRUTH_PARAMS_V5,
                 noise_seed = 1234,
             )
@@ -603,6 +631,8 @@ end
                 KFS = Float32(TRAINED_ATHLETE_INIT.KFS)
 
                 A_acc = 0f0
+                B_acc = 0f0
+                S_acc = 0f0
                 bar_acc = 0f0
                 F_max_f = Float32(0.40)
                 lam_F_f = Float32(1.0)
@@ -622,6 +652,8 @@ end
                     Phi_S = p_max / (1f0 + exp(-raw_S))
 
                     A_acc   += A * dt_f
+                    B_acc   += B * dt_f
+                    S_acc   += S * dt_f
                     bar_acc += max(F - F_max_f, 0f0)^2 * dt_f
 
                     for sub in 1:4
@@ -676,7 +708,7 @@ end
                     F = max(0f0, F); A = max(0f0, A)
                     KFB = max(0f0, KFB); KFS = max(0f0, KFS)
                 end
-                cpu_cost = Float64(-A_acc + lam_F_f * bar_acc)
+                cpu_cost = Float64(-A_acc - B_acc - S_acc + lam_F_f * bar_acc)
                 @test isapprox(gpu_cost, cpu_cost;
                                 atol = GPU_FP32_TOL,
                                 rtol = GPU_FP32_TOL)

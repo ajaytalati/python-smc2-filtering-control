@@ -1,0 +1,94 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath, amssymb}
+\usepackage{geometry}
+\usepackage{hyperref}
+\usepackage{booktabs}
+
+\geometry{margin=1in}
+
+\title{Soft Chance-Constrained MPC for FSA-v5: Implementation Note}
+\author{Gemini CLI Implementation Team}
+\date{May 11, 2026}
+
+\begin{document}
+
+\maketitle
+
+\section{Overview}
+This note documents the implementation of soft chance constraints for the Fitness-Stress-Autonomic (FSA) version 5 model predictive control (MPC) framework. We have extended the existing Alertness ($A$) constraint to include Base Aerobic fitness ($B$) and Strength capacity ($S$), ensuring that the optimized training plans remain within safe physiological boundaries for all key state variables.
+
+\section{Mathematical Formulation}
+
+The controller optimizes the bimodal stimulus schedule $\Phi(t) = [\Phi_B(t), \Phi_S(t)]$ by minimizing a multi-objective cost function $J(\theta)$.
+
+\subsection{Objective Function}
+The unified cost functional $J$ is defined as:
+\begin{equation}
+J = \lambda_\Phi J_{effort} + J_{reward} + \sum_{X \in \{A, B, S\}} \lambda_{chance, X} J_{chance, X}
+\end{equation}
+
+\subsection{Reward Term}
+To encourage balanced adaptation across all channels, the reward term now integrates the total area under the $A, B,$ and $S$ curves:
+\begin{equation}
+J_{reward} = - \int_0^T [A(t) + B(t) + S(t)] \, dt
+\end{equation}
+
+\subsection{Soft Chance Constraints}
+For each variable $X \in \{A, B, S\}$, we implement a differentiable soft penalty that activates when $X$ drops below a specified threshold $X_{thr}$. We use a sigmoid relaxation $\sigma$ multiplied by the quadratic violation depth, so that the penalty grows the further $X$ drops below the threshold. The product remains smooth everywhere, which preserves compatibility with Hamiltonian Monte Carlo (HMC) gradients:
+\begin{equation}
+J_{chance, X} = \int_0^T \sigma\left( \beta \cdot \frac{X_{thr} - X(t)}{scale} \right) \cdot \left(X_{thr} - X(t)\right)^2 \, dt
+\end{equation}
+where:
+\begin{itemize}
+    \item $\beta = 50.0$ (steepness of the smooth gate)
+    \item $scale = 0.10$ (gate transition width)
+\end{itemize}
+
+\paragraph{Why the quadratic factor.} An earlier version used the bare sigmoid $\sigma(\beta(X_{thr}-X)/scale)$ as the integrand. That form is bounded in $[0,1]$, so once $X$ drops more than a few multiples of $scale/\beta$ below the threshold the integrand saturates at $1$ and stops growing: a trajectory at $X = X_{thr}/2$ incurs the same penalty as a trajectory at $X = 0$. This gave the controller no incentive to recover once it had fallen well below the threshold. Multiplying by $(X_{thr}-X)^2$ removes the saturation: the integrand is now $\approx \mathbf{1} \cdot (X_{thr}-X)^2$ for $X \ll X_{thr}$ (quadratic in violation depth) and $\approx 0$ for $X > X_{thr}$, while remaining $C^\infty$ everywhere. Penalty values at probe $X = 0.05$:
+\begin{itemize}
+    \item $X_{thr}=0.1 \Rightarrow \sigma(\cdot) \cdot (0.05)^2 \approx 0.0025$
+    \item $X_{thr}=0.3 \Rightarrow \sigma(\cdot) \cdot (0.25)^2 \approx 0.0625$ (25$\times$ larger)
+\end{itemize}
+See \texttt{chance\_penalty\_options.png} in this folder for the comparison plot of the four candidate shapes considered.
+
+\paragraph{Note on $\lambda_{chance,X}$ scale.} The natural scale of the penalty weight has changed: the bounded-sigmoid form had units $[\text{prob}] \cdot [\text{time}]$, whereas the new form has units $[\text{depth}^2] \cdot [\text{time}]$. CLI defaults for $\lambda_{chance,X}$ may need re-tuning relative to the bounded-sigmoid era.
+
+\section{Implementation Details}
+
+\subsection{Julia GPU Kernel}
+The cost accumulation logic in \texttt{gpu\_control\_v5.jl} was updated to compute three independent chance accumulators. The kernel now accepts the following parameters via the \texttt{FSAv5ControlGPUTarget} structure:
+\begin{itemize}
+    \item \texttt{A\_thr, B\_thr, S\_thr}: Thresholds for each state.
+    \item \texttt{lam\_chance, lam\_chance\_B, lam\_chance\_S}: Respective penalty weights.
+\end{itemize}
+
+\subsection{Lean4 Reference}
+The formal specification in \texttt{Cost.lean} was updated with the \texttt{softChancePenalty} function, maintaining the "Lean-first" philosophy where the Lean code serves as the executable ground truth for the differentiable surrogates.
+
+\section{CLI Interface}
+Five new Command Line Interface (CLI) arguments were added to \texttt{bench\_args.jl} to allow for flexible configuration of the safety boundaries:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}lll@{}}
+\toprule
+Argument & Default & Description \\
+\midrule
+\texttt{--ctrl-a-thr} & 0.3 & Alertness safety threshold \\
+\texttt{--ctrl-b-thr} & 0.2 & Base Aerobic safety threshold \\
+\texttt{--ctrl-s-thr} & 0.2 & Strength safety threshold \\
+\texttt{--ctrl-lam-chance-b} & 1.0 & Penalty weight for B violations \\
+\texttt{--ctrl-lam-chance-s} & 1.0 & Penalty weight for S violations \\
+\bottomrule
+\end{tabular}
+\caption{New CLI arguments for FSA-v5 Bench.}
+\end{table}
+
+\section{Verification}
+The implementation was originally verified using the expanded differential test suite in \texttt{test\_lean\_diff\_v5.jl}. A total of 429 tests (including the \texttt{softChancePenalty} testset and updated single-thread GPU-CPU parity checks) passed successfully under the bounded-sigmoid form, confirming bit-equivalence between the Julia GPU implementation and the Lean4 functional reference.
+
+The change to $\sigma \cdot (X_{thr}-X)^2$ updates the body of \texttt{softChancePenalty} in both Lean (\texttt{Cost.lean}) and the kernel comparison expression in the diff-test, but does not change the function signature or the GPU-CPU parity testset (which sets $\lambda_{chance,X} = 0$). The diff test must be re-run after this change to confirm bit-equivalence is preserved.
+
+\end{document}
